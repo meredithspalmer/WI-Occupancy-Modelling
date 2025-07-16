@@ -1,0 +1,53 @@
+# Project: WI Occupancy Range Wide Trends
+
+# This file contains code to extract unique project_location from WI data and match those with cells within the 10x10km template raster.
+# This needs TO BE DONE ONLY ONCE 
+
+# Set working directory
+#setwd("/Users/meredithspalmer/Desktop/Work/Yale/Data/Wildlife Insights/Data")
+setwd("~/project/WI_2024/Wildlife Insights Data_2024")
+rm(list=ls()); gc()
+
+# Load libraries
+library(terra)
+library(arrow)
+library(tidyverse)
+
+# Load data 
+template <- rast(x = "raster_100km2_with_cellID.tif")
+overview_seq <- open_dataset("sequences_updated_20240710_parquet")
+overview_images <- open_dataset("images_updated_20240714_parquet")
+
+# Unique proj_depl locations
+loc_seq <- overview_seq |>
+  dplyr::select(project_id, deployment_location_id, longitude, latitude) |>
+  distinct() |>
+  collect()
+loc_images <- overview_images |>
+  dplyr::select(project_id, deployment_location_id, longitude, latitude) |>
+  distinct() |>
+  collect()
+loc <- rbind(loc_seq, loc_images) %>% 
+  mutate(longitude = round(as.numeric(longitude), 4),
+         latitude = round(as.numeric(latitude), 5)) %>% 
+  distinct() %>% 
+  drop_na()
+# there is a warning message, but the issue is solved
+
+# convert to SpatVector and re-project
+loc_vect <- vect(loc, geom=c("longitude", "latitude"), crs="EPSG:4326", keepgeom=TRUE)
+loc_vect <- project(loc_vect, template)
+
+# intersect with template to get cell_ID
+loc_cell_ID <- terra::extract(template, loc_vect)
+
+# add to loc info
+loc_cell_ID <- loc %>% 
+  mutate(cell_ID = loc_cell_ID$cell_ID) %>% 
+  group_by(project_id, deployment_location_id) %>% 
+  slice(1) # to remove proj_depl falling in two different cells (e.g. when have two sets of coords)
+
+# save
+write_csv(x = loc_cell_ID, file = "WI_loc_matching_cell_ID.csv")
+
+# DONE!
