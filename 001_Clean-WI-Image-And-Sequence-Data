@@ -1403,36 +1403,39 @@ rm(sub, sub_unmatched, sub_matched_full, sub_matched_first, sub_final_unmatched,
 
 # Fix search effort ----------------------------------------------------------------------
 
-FROM HERE 
-
-# check issues
+# Check for NA values 
 sum(is.na(image$sensor_start_date_and_time)) #0
 sum(is.na(image$sensor_end_date_and_time)) #0
 
-# format data 
-image <- image %>% 
-  mutate(photo_date = ymd(photo_date)) %>%
-  mutate(sensor_start_date_and_time_fix = ymd_hms(sensor_start_date_and_time)) %>% 
-  mutate(sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time))
+# Format date columns 
+image <- image %>%
+  mutate(
+    photo_date = ymd(photo_date),
+    sensor_start_date_and_time_fix = ymd_hms(sensor_start_date_and_time),
+    sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time))
 
-# look at NAs for start 
-missing.vals <- image[is.na(image$sensor_start_date_and_time_fix),]
+# Identify missing start times 
+missing.vals <- filter(image, is.na(sensor_start_date_and_time_fix))
 head(missing.vals[,c("sensor_start_date_and_time_fix", "sensor_start_date_and_time")]) 
 unique(missing.vals$sensor_start_date_and_time) #3 kinds 
 unique(missing.vals$sensor_end_date_and_time) #3 kinds 
 unique(missing.vals$site_name) #5 sites 
 
+# Examine problematic sites 
 View(missing.vals[missing.vals$site_name == "Camaras Trampa_Piamonte_Cauca",]) #can substitute first-img time for sensor-start time 
 View(missing.vals[missing.vals$site_name == "Elizabeth Gow",]) #all data missing
 View(missing.vals[missing.vals$site_name == "Yasuni",]) #columns shifted - can fix
 View(missing.vals[missing.vals$site_name == "Mau Forest Camera Trap Survey",]) #missing all search effort data 
 View(missing.vals[missing.vals$site_name == "Deep Learning for Wildlife Species Image Classification",]) #missing all search effort data 
 
-fix.vals.ctpc <- missing.vals[missing.vals$site_name == "Camaras Trampa_Piamonte_Cauca",]
-fix.vals.ctpc$sensor_start_date_and_time_fix <- fix.vals.ctpc$first_image_deployment_time
-fix.vals.y <- missing.vals[missing.vals$site_name == "Yasuni",]
-fix.vals.y <- fix.vals.y |>
-  dplyr::mutate(
+# Fix problematic sites 
+fix.ctpc <- missing.vals %>%
+  filter(site_name == "Camaras Trampa_Piamonte_Cauca") %>%
+  mutate(sensor_start_date_and_time_fix = first_image_deployment_time)
+
+fix.yasuni <- missing.vals %>%
+  filter(site_name == "Yasuni") %>%
+  mutate(
     camera_status = sensor_start_date_and_time,
     camera_height = sensor_end_date_and_time,
     camera_angle  = first_image_deployment_time,
@@ -1441,43 +1444,45 @@ fix.vals.y <- fix.vals.y |>
     sensor_end_date_and_time   = camera_make,
     first_image_deployment_time = camera_model,
     last_image_deployment_time  = event,
-    feature_type = iucn_status, 
-    camera_make              = NA,
-    camera_model            = NA,
+    feature_type = iucn_status,
+    camera_make = NA,
+    camera_model = NA,
     event = NA,
-    iucn_status            = NA
-  )
-View(fix.vals.y)
+    iucn_status = NA)
 
-image <- image[!is.na(image$sensor_start_date_and_time_fix),]
-image <- rbind(image, fix.vals.ctpc)
-image <- rbind(image, fix.vals.y)
+# Remove records with missing start date, then re-add fixes
+image <- filter(image, !is.na(sensor_start_date_and_time_fix))
+image <- bind_rows(image, fix.ctpc, fix.yasuni)
 rm(missing.vals); rm(fix.vals); rm(fix.vals.ctpc); rm(fix.vals.y)
+
+# Update end time fixes
 image <- image %>% mutate(sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time))
 
-# look at NA values for end 
-nrow(missing.vals <- image[is.na(image$sensor_end_date_and_time_fix),]) #2118
+# Identify missing end dates 
+nrow(missing.vals <- filter(image, is.na(sensor_end_date_and_time_fix)) #2118
 head(missing.vals[,c("sensor_end_date_and_time_fix", "sensor_end_date_and_time")]) 
 unique(missing.vals$sensor_end_date_and_time) #1 kind 
 unique(missing.vals$site_name) #1 sites 
 View(missing.vals) #can substitute last image
-missing.vals$sensor_end_date_and_time <- missing.vals$last_image_deployment_time
-missing.vals <- missing.vals %>% mutate(sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time))
-image <- image[!is.na(image$sensor_end_date_and_time_fix),]
-image <- rbind(image, missing.vals)
+missing.end <- missing.end %>%
+  mutate(sensor_end_date_and_time = last_image_deployment_time,
+         sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time))
+
+# Remove records with missing end date, then re-add fixes
+image <- filter(image, !is.na(sensor_end_date_and_time_fix))
+image <- bind_rows(image, missing.end)
 nrow(image[is.na(image$sensor_end_date_and_time_fix),]) #all fixed
 rm(missing.vals)
 
-# look for extreme dates in sensor start/end --- 
-# note: data was downloaded 2024-09-04
+# Check extreme sensor start and end dates (note: data were downloaded 2024-09-04) -------
 
-# start times 
+# Start times 
 range(image$sensor_start_date_and_time_fix) #NA to NA
 View(image[is.na(image$sensor_start_date_and_time_fix),]) 
 image[is.na(image$sensor_start_date_and_time_fix),]$sensor_start_date_and_time_fix <- ymd_hms(image[is.na(image$sensor_start_date_and_time_fix),]$sensor_start_date_and_time)
 range(image$sensor_start_date_and_time_fix) #1999-06-25 to 2024-07-28 -- all good 
 
-# end times 
+# End times 
 range(image$sensor_end_date_and_time_fix) #1999-08-03 to 2099-12-31
 sort(unique(year(image$sensor_end_date_and_time_fix)))
 
@@ -1511,7 +1516,7 @@ image <- image[!(image$sensor_end_date_and_time_fix > "2024-09-04 00:00:00"),]
 image <- rbind(image, to.fix)
 rm(to.fix)
 
-# look for capture dates that don't fall between image start/end --- 
+# look for capture dates that don't fall between image start/end  
 bad.date <- image[image$year > year(image$sensor_end_date_and_time_fix) | image$year < year(image$sensor_start_date_and_time_fix),]
 View(bad.date[,c("year", "photo_date", "sensor_start_date_and_time_fix", "sensor_end_date_and_time_fix")])
 length(unique(bad.date$site_name)) #510 sites 
@@ -1519,12 +1524,11 @@ View(bad.date) #honestly, not really sure how to fix these
 nrow(bad.date)/nrow(image)*100 #<2% of entire dataset; delete for now 
 image <- image[!(image$year > year(image$sensor_end_date_and_time_fix) | image$year < year(image$sensor_start_date_and_time_fix)),]
 
-# look for captures where end comes before beginning --- 
+# look for captures where end comes before beginning  
 nrow(bad.date <- image[year(image$sensor_end_time_and_time_fix) < year(image$sensor_start_date_and_time_fix),]) #0
 rm(bad.date)
 
-## save data -- 
-names(image)
+# Clean and save data --------------------------------------------------------------------
 image <- image %>% 
   select(-c(sensor_start_date_and_time, sensor_end_date_and_time)) %>% 
   rename(sensor_start_date_and_time = sensor_start_date_and_time_fix) %>% 
