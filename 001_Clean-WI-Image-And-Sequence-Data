@@ -1,6 +1,10 @@
 ## Cleaning raw image and sequence data from Wildlife Insights 
 ## Wildlife Insights private and public records data downloaded 04 Sep 2024 
 
+######################################################################################
+##### SEQUENCES ######################################################################
+######################################################################################
+
 rm(list=ls()); gc()
 setwd("~/project/WI_2024")
 
@@ -663,14 +667,14 @@ sequence <- sequence %>% select(-c(sensor_start_date_and_time_fix, sensor_end_da
 
 write.csv(sequence, "sequences_updated_20240710.csv", row.names=F)
 
-#############################################################################################
-
-# IMAGES 
+######################################################################################
+##### IMAGES #########################################################################
+######################################################################################
 
 setwd("~/project/WI_2024/Wildlife Insights Data_2024")
 rm(list=ls()); gc()
 
-# Load libraries -------------------------------------------------------
+# Load libraries -----------------------------------------------------------------------
 
 library(tidyverse)
 library(stringr)
@@ -682,146 +686,119 @@ library(dplyr)
 library(ggmap)
 library(arrow)
 
-# Load data ----------------------------------------------------------- 
+# Load  and filter data ----------------------------------------------------------------
 
-# Private projects: remove from all analyses -----------------------------------------
+# Private project IDs to exclude 
 rm_project_id <- c(2007556, 2007371, 2006485, 2006885, 2006031, 2003854, 2004980, 2006913)
 
-# Load data: project status ----------------------------------------------------------
+# Project status 
 status <- read.csv("20240904_project_status_WI.csv")
 
-# Load data: image projects ------------------------------------------------------
+# Image data 
 image <- read.delim("20240904_science_vw_all_ids_with_time_lag_20240904.txt") 
 nrow(image) #59911862
 
-## remove private projects
-image <- image[!image$project_id %in% rm_project_id,]
+# Remove private projects
+image <- image %>% filter(!project_id %in% rm_project_id)
 nrow(image) #59872157
 head(image) 
 
-# Clean data -------------------------------------------------------------------------
+# Fix shifted columns --------------------------------------------------------------------
 
-backup <- image
-
-## fix shifted columns
+# Review 
 taxonomies <- unique(image$taxonomy_subtype)
 shifted_seqs <- taxonomies[!taxonomies %in% c("wild-animal", "human", "admin", "domestic-animal", "object", "physical", "wild animal", "")]
-
 unique(image[image$taxonomy_subtype %in% shifted_seqs,]$site_name) #3 sites   
 
-#View(image[image$taxonomy_subtype %in% shifted_seqs & image$site_name == "SIMDeer BC Project",]) 
-#all original columns shifted by one; from "photo_date"
-
-#View(image[image$taxonomy_subtype %in% shifted_seqs & image$site_name == "Monitoramento de Biodiversidade  de SP - PE Morro do Diabo",])
-#all original columns shifted by two; from "sub_project" 
-
-#View(image[image$taxonomy_subtype %in% shifted_seqs & image$site_name == "Cámaras Trampa_PNR_Cerro Pàramo de Miraflores",])
-#all original columns shifted by two; from "sub_project" -- I think this needs two shifts
-
-# fix single column shift 
-sub_shift1 <- image[(image$taxonomy_subtype %in% shifted_seqs & image$site_name == "SIMDeer BC Project"),]  
+# Correct single column shift: all original columns shifted by one; from "photo_date" 
+View(image[image$taxonomy_subtype %in% shifted_seqs & image$site_name == "SIMDeer BC Project",]) 
+sub_shift1 <- image %>% filter(taxonomy_subtype %in% shifted_seqs, site_name == "SIMDeer BC Project")
 sub_shift1[, 16:51] <- sub_shift1[, 17:52]
 sub_shift1$ageinmin <- ""
 
-# fix two column shift 
-sub_shift2 <-  image[(image$taxonomy_subtype %in% shifted_seqs & image$site_name %in% c("Monitoramento de Biodiversidade  de SP - PE Morro do Diabo", "Cámaras Trampa_PNR_Cerro Pàramo de Miraflores")),]  
-sub_shift2[,10:51] <- sub_shift2[,11:52]
-sub_shift2[,16:51] <- sub_shift2[,17:52]
-sub_shift2$ageinmin <- sub_shift2$timelag <- ""
-sub_shift2$ageinmin <- sub_shift2$ageinmin <- ""
+# Correct two column shift: all original columns shifted by two; from "sub_project" 
+View(image[image$taxonomy_subtype %in% shifted_seqs & image$site_name == "Monitoramento de Biodiversidade  de SP - PE Morro do Diabo",])
+View(image[image$taxonomy_subtype %in% shifted_seqs & image$site_name == "Cámaras Trampa_PNR_Cerro Pàramo de Miraflores",])
+sub_shift2 <- image %>%
+  filter(taxonomy_subtype %in% shifted_seqs, 
+         site_name %in% c("Monitoramento de Biodiversidade  de SP - PE Morro do Diabo", "Cámaras Trampa_PNR_Cerro Pàramo de Miraflores"))
+sub_shift2[, 10:51] <- sub_shift2[, 11:52]
+sub_shift2[, 16:51] <- sub_shift2[, 17:52]
+sub_shift2$ageinmin <- ""
+sub_shift2$timelag <- ""
 
-image <- image[!image$taxonomy_subtype %in% shifted_seqs,]
-image <- rbind(image, sub_shift1)
-image <- rbind(image, sub_shift2)
-
+# Rebuild image dataset 
+image <- image[!image$taxonomy_subtype %in% shifted_seqs, ]
+image <- bind_rows(image, sub_shift1, sub_shift2)
 nrow(image); unique(image$taxonomy_subtype)
 rm(sub_shift1); rm(sub_shift2)
 
-## examine "" columns 
-sub <- image[image$taxonomy_subtype == "",]
-View(sub) #oh boy, lots going on 
-unique(sub$sensor_start_date_and_time) #will have to delete these anyway, as no search effort 
-image <- image[!image$taxonomy_subtype == "",]
-nrow(image)/nrow(backup) #removed <1% records
-rm(sub)
-
-# check again
+# Examine "" (empty) taxonomy columns 
+empty_tax <- image[image$taxonomy_subtype == "",]
+View(empty_tax) #oh boy, lots going on 
+unique(empty_tax$sensor_start_date_and_time) #will have to delete these anyway, as no search effort 
+image <- image %>% filter(taxonomy_subtype != "")
+rm(image <- image %>% filter(taxonomy_subtype != ""))
 unique(image$taxonomy_subtype)
 
-# format data 
-image <- image %>% 
-  mutate(latitude = as.numeric(latitude)) %>% 
-  mutate(longitude = as.numeric(longitude)) %>% 
-  mutate(photo_date = as.Date(photo_date, "%Y-%m-%d")) %>% 
-  mutate(photo_datetime = strptime(photo_datetime, "%Y-%m-%d %H:%M:%S"))
+# Format columns -------------------------------------------------------------------------
+image <- image %>%
+  mutate(
+    latitude = as.numeric(latitude),
+    longitude = as.numeric(longitude),
+    photo_date = as.Date(photo_date, "%Y-%m-%d"),
+    photo_datetime = as.POSIXct(photo_datetime, "%Y-%m-%d %H:%M:%S"))
 nrow(image) #59693229
 
-#quick save
-write.csv(image, "image_quicksave.csv", row.names=F)
-
-# Select data of interest --------------------------------------------------------
-
-# remove data not mammal/bird
+# Select taxonomy of interest ------------------------------------------------------------
 unique(image$class)  
 
-# quick check 
+# Quick check 
 check <- image[image$class == "",]
 unique(check$common_name_english)
 unique(check[check$common_name_english == "Animal",]$taxonomy_subtype) #can ignore 
 rm(check)
 
-# subset to mammals and birds 
-image <- image[image$class %in% c("Mammalia", "Aves"),]
-nrow(image) #54462501
+# Subset to mammals and birds 
+image <- image %>% filter(class %in% c("Mammalia", "Aves")
 
-# remove humans and other non-wild animals
+# Remove humans and other non-wild animals
 unique(image$taxonomy_subtype)
-image <- image[image$taxonomy_subtype %in% c("wild-animal", "wild animal"),]
+image <- image %>% filter(taxonomy_subtype %in% c("wild-animal", "wild animal")
 image[image$taxonomy_subtype == "wild animal",]$taxonomy_subtype <- "wild-animal"
 nrow(image) #42010019
 
-## Extract project metadata ------------------------------------------------------
-project_data <- image %>% select(project_metadata) 
-project_data$project_metadata <- str_replace_all(project_data$project_metadata, "[{}]", "")
-project_data <- cbind(image$project_id, project_data)
+# Extract and process project metadata ---------------------------------------------------
 
-# retain project_ids
-proj_id <- as.data.frame(project_data$`image$project_id`)  
-names(proj_id) <- "project_id"
-head(proj_id)
+project_data <- image %>%
+  select(project_id, project_metadata) %>%
+  mutate(project_metadata = str_replace_all(project_metadata, "[{}]", "")) %>%
+  distinct()
 
-# separate metadata into columns 
-project_data <- str_split_fixed(project_data$project_metadata, ',', n=Inf)
-project_data <- as.data.frame(project_data)
-project_data <- cbind(proj_id, project_data)
-head(project_data)
+# Split metadata into columns 
+metadata_split <- str_split_fixed(project_data$project_metadata, ",", n = Inf)
+metadata_df <- as.data.frame(metadata_split)
+project_data <- bind_cols(project_data["project_id"], metadata_df)
 
-# individual projects 
+# Refine to individual projects 
 project_data <- distinct(project_data)
 nrow(project_data) #1798
 head(project_data)
 
-# issues caused by some answers containing commas while columns are also delimited by commas
-(to_fix <- project_data[!(project_data$V34 == ""),]) #2 rows 
+# Remove problematic rows temporarily: issues caused by some answers containing commas while columns are also delimited by commas
+to_fix <- project_data %>% filter(V34 != "") #2 rows 
+to_fix <- project_data %>% filter(V34 != "")
 
-# for now, remove data that does not contain ":" and add back in to_fix df manually 
-project_data <- project_data[!project_data$project_id %in% to_fix$project_id,]
+# Set up metadata dataframe 
+metadata_cols <- c(
+  "project_id", "country_code", "project_admin", "project_species", "project_bait_use",
+  "project_admin_email", "project_blank_images", "project_sensor_layout", "project_sensor_method", 
+  "project_sensor_cluser", "project_stratification", "project_individual_animals"
+)
+project_metadata <- as.data.frame(matrix(ncol = length(metadata_cols), nrow = 0))
+colnames(project_metadata) <- metadata_cols
 
-# set up metadata dataframe
-project_metadata <- data.frame('project_id' = as.character(),
-                               'country_code' = as.character(), 
-                               'project_admin' = as.character(), 
-                               'project_species' = as.character(), 
-                               'project_bait_use' = as.character(),
-                               'project_admin_email' = as.character(), 
-                               'project_blank_images' = as.character(), 
-                               'project_sensor_layout' = as.character(), 
-                               'project_sensor_method' = as.character(), 
-                               'project_sensor_cluser' = as.character(), 
-                               'project_stratification' = as.character(), 
-                               'project_individual_animals' = as.character())
-
-# fix a few trailing backslash issues 
+# Fix known text issues in metadata (trailing backslashes) 
 project_data$V17[102] <- "Negev Highlands and Hyper Arid South (Arava Valley)"
 project_data$V15[136] <- "Control (in treatment area in restoration treatment)"
 project_data$V16[136] <- ""
@@ -834,7 +811,7 @@ project_data$V14[649] <- project_data$V15[649] <- project_data$V16[649] <- proje
 project_data$V13[1057]  <- "project_stratification_type: Sensors are primarily subdivided by farm crop composition half growing edible crops and half growing non-palatable crops farms"
 project_data$V14[1057] <- project_data$V15[1057] <- project_data$V16[1057] <- project_data$V17[1057] <- project_data$V18[1057] <- project_data$V19[1057] <- project_data$V20[1057] <- project_data$V21[1057] <- project_data$V22[1057] <- project_data$V23[1057] <- project_data$V24[1057] <- project_data$V25[1057] <- project_data$V26[1057] <-""
 
-# organize project metadata 
+# Populate metadata dataframe
 for(i in 1:nrow(project_data)){
   sub <- project_data[i,]
   sub <- sub[nzchar(sub)] #removes surrounding ""
@@ -848,48 +825,47 @@ for(i in 1:nrow(project_data)){
 }
 head(project_metadata)
 
-# add back in to_fix
-to_fix
-to_fix_df <- data.frame('project_id' = c("2006149", "2006834"),
-                        'country_code' = c("IDN", "IDN"), 
-                        'project_admin' = c("Sonja Heiliger", "Valentin Michel"), 
-                        'project_species' = c("Multiple", "Multiple"), 
-                        'project_bait_use' = c("No", "No"),
-                        'project_admin_email' = c("sonja.heiliger@stud.uni-goettingen.de", "valentin.joseph.michel@gmail.com"), 
-                        'project_blank_images' = c("No", "No"), 
-                        'project_sensor_layout' = c("Randomized", "Systematic"), 
-                        'project_sensor_method' = c("Sensor detection", "Sensor detection"), 
-                        'project_sensor_cluser' = c("No", "No"), 
-                        'project_stratification' = c("Yes", "Yes"), 
-                        'project_individual_animals' = c("No", "No"))
+# Add manually corrected rows 
+to_fix_df <- data.frame(
+  project_id = c("2006149", "2006834"),
+  country_code = c("IDN", "IDN"),
+  project_admin = c("Sonja Heiliger", "Valentin Michel"),
+  project_species = c("Multiple", "Multiple"),
+  project_bait_use = c("No", "No"),
+  project_admin_email = c("sonja.heiliger@stud.uni-goettingen.de", "valentin.joseph.michel@gmail.com"),
+  project_blank_images = c("No", "No"),
+  project_sensor_layout = c("Randomized", "Systematic"),
+  project_sensor_method = c("Sensor detection", "Sensor detection"),
+  project_sensor_cluser = c("No", "No"),
+  project_stratification = c("Yes", "Yes"),
+  project_individual_animals = c("No", "No"),
+  stringsAsFactors = FALSE
+)
+project_metadata <- bind_rows(project_metadata, to_fix_df)
 
-project_metadata <- rbind(project_metadata, to_fix_df)
+# Join with status table
 project_metadata <- plyr::join(project_metadata, status, by="project_id")
-
-# workspace clean
 rm(proj_id); rm(project_data); rm(sub); rm(to_fix); rm(to_fix_df)
 
-# extract image data
+# Clean and combine image data -----------------------------------------------------------
 head(image); names(image)
-image <- image %>% 
-  select(-project_metadata) %>% 
-  mutate(latitude_fix = as.numeric(latitude)) %>% 
-  mutate(longitude_fix = as.numeric(longitude)) %>% 
-  mutate(photo_date_fix = as.Date(photo_date, "%Y-%m-%d")) %>% 
-  mutate(photo_datetime_fix = strptime(photo_datetime, "%Y-%m-%d %H:%M:%S"))
 
-# combine dataframes
+image <- image %>%
+  select(-project_metadata) %>%
+  mutate(
+    latitude_fix = as.numeric(latitude),
+    longitude_fix = as.numeric(longitude),
+    photo_date_fix = as.Date(photo_date, "%Y-%m-%d"),
+    photo_datetime_fix = as.POSIXct(photo_datetime, "%Y-%m-%d %H:%M:%S")
+  )
+
+# Combine dataframes 
 image <- plyr::join(image, project_metadata, by="project_id")
 head(image)
 
-#quick save
-#write.csv(image, "image_quicksave.csv", row.names=F)
+# Examine and fix taxonomy ---------------------------------------------------------------
 
-# fixing / selecting taxonomy -----------------------------------------------------
-
-image <- read.csv("image_quicksave.csv")
-
-# examine data with no species ID 
+# Examine data with no species ID 
 sum(is.na(image$sp_binomial)) #0
 
 # examine data with blank species ID 
@@ -900,19 +876,22 @@ unique(image[image$common_name_english == "Mammal",]$order) #no other data
 image <- image[!image$sp_binomial == "",] #remove 
 nrow(image) #34307296
 
-# removing "test" or "demo" projects -----------------------------------------------
-image$site_name_testordemo <- tolower(image$site_name)
-image$site_name_testordemo <- ifelse(grepl("test", image$site_name_testordemo), "test", 
-                                     ifelse(grepl("demo", image$site_name_testordemo), 
-                                            "demo", "fine"))
-testordemo <- image[image$site_name_testordemo %in% c("test","demo"),]
+# Remove "test" or "demo" projects -------------------------------------------------------
+
+image <- image %>%
+  mutate(site_name_lower = tolower(site_name),
+         site_name_testordemo = case_when(
+           grepl("test", site_name_lower) ~ "test",
+           grepl("demo", site_name_lower) ~ "demo",
+           TRUE ~ "fine"))
+testordemo <- image %>% filter(site_name_testordemo %in% c("test", "demo"))
 unique(testordemo$site_name)
 
-# how many entries per project? assume demos small 
+# How many entries per project? Assume that demos are small 
 (demo_freq <- as.data.frame(table(testordemo$site_name)))
 demo_freq[demo_freq$Freq > 500,]
 
-# look at these further (>500 images uploaded )
+# Manually examine these further (>500 images uploaded )
 head(image[image$site_name == "DCTestGoldSet",]) #fine
 head(image[image$site_name == "Don Test of System",]) #remove (same as above?)
 head(image[image$site_name == "Fototrampeo Piedemonte Casanare Convenio Ecopetrol ",]) #fine
@@ -927,28 +906,28 @@ head(image[image$site_name == "TEST",]) #hm, remove
 head(image[image$site_name == "Velebit Mountains Wildlife Test Project",]) #fine
 head(image[image$site_name == "Wildlife Camera Project - Pilot Study 2022 - Test 3 (Image)",]) #fine
 
-fine <- c("DCTestGoldSet", "Fototrampeo Piedemonte Casanare Convenio Ecopetrol ", "Fototrampeo_TEAM_Piedemonte_Cauca", "I-5 Test Camera 74 NW", "Mads test Central NSW type image", "NAMDONG_Test", "Proyecto Vida Silvestre: Piedemonte andino-amazónico", "Sierra Nevada Carnivore Monitoring Program - TEST", "Southern Forests test project", "Velebit Mountains Wildlife Test Project", "Wildlife Camera Project - Pilot Study 2022 - Test 3 (Image)")
+keep_sites <- c("DCTestGoldSet", "Fototrampeo Piedemonte Casanare Convenio Ecopetrol ", "Fototrampeo_TEAM_Piedemonte_Cauca", "I-5 Test Camera 74 NW", "Mads test Central NSW type image", "NAMDONG_Test", "Proyecto Vida Silvestre: Piedemonte andino-amazónico", "Sierra Nevada Carnivore Monitoring Program - TEST", "Southern Forests test project", "Velebit Mountains Wildlife Test Project", "Wildlife Camera Project - Pilot Study 2022 - Test 3 (Image)")
 
-# remove tests/demos
-testordemo <- testordemo[!testordemo$site_name %in% fine,]
-image <- image[!image$site_name %in% testordemo$site_name,]
+# Remove test and demo projects 
+image <- image %>%
+  filter(!(site_name_testordemo %in% c("test", "demo") & !site_name %in% keep_sites)) %>%
+  select(-site_name_lower, -site_name_testordemo)
 rm(testordemo)
-image$site_name_testordemo <- NULL
 nrow(image) #34264245
 
-## Spatial fixes -------------------------------------------------------------------
+# Spatial fixes --------------------------------------------------------------------------
 
-# fix/remove data with bad coordinates 
+# Examine longitude 
 range(image$longitude_fix) #should be -180 to 180; some NAs
 na_imgs <- image[is.na(image$longitude_fix),]
 View(na_imgs) #no data - have to delete
-image <- image[!is.na(image$longitude_fix),]
+image <- image %>% filter(!is.na(longitude_fix))
 range(image$longitude_fix) #should be -180 to 180; now okay 
 rm(na_imgs)
 
-test <- image
-
+# Examine latitude 
 range(image$latitude_fix) #should be -90 to 90; some wonky coords! 
+
 wonky_coord <- image[image$latitude_fix < -90,]
 View(wonky_coord); unique(wonky_coord$site_name) #one site; these are flipped 
 wonky_coord_lat <- wonky_coord$longitude_fix
@@ -960,6 +939,7 @@ image <- image[!image$latitude_fix < -90,]
 image <- rbind(image, wonky_coord)
 
 range(image$latitude_fix) #should be -90 to 90; some wonky coords! 
+
 wonky_coord <- image[image$latitude_fix > 90,]
 View(wonky_coord) #shifted/duplicated columns 
 wonky_coord_lat <- wonky_coord$longitude 
@@ -972,29 +952,32 @@ image <- rbind(image, wonky_coord)
 range(image$latitude_fix) #should be -90 to 90; now okay
 rm(wonky_coord)
 
-# look at 0,0 coordinates
+# Examine 0,0 coordinates
 nrow(sub <- image[image$longitude_fix == 0 & image$latitude_fix == 0,]) #962
 unique(sub$organization_name) #4 orgs 
 View(sub[sub$organization_name == "University of Nevada, Las Vegas (UNLV)",]) #no long/lat info 
 View(sub[sub$organization_name == "Wildlife Conservation Society Uganda",]) #no long/lat info 
 View(sub[sub$organization_name == "Hobart Airport",]) #no long/lat info anywhere else 
 View(sub[sub$organization_name == "Western EcoSystems Technology, Inc",]) #no long/lat info 
-image <- image[!(image$longitude_fix == 0 & image$latitude_fix == 0),]
+image <- image %>% filter(!(longitude_fix == 0 & latitude_fix == 0))
 nrow(image) #34263032
 
-test <- image
+# Check for sites in water ---------------------------------------------------------------
 
-# ocean coordinates 
 image$longitude_fix <- as.numeric(image$longitude_fix)
 image$over_water <- CoordinateCleaner::cc_sea(image, lon = "longitude_fix", lat = "latitude_fix", value = "flagged")
-nrow(sub <- image[image$over_water == "FALSE",]) #these are the water ones; 872769
 
-unique(sub$site_name) #some of these are islands or on the coast, remove as highly likely (from manual exploration), water classifier is just slightly wrong
-coast <- c("Lehua Island Invasive Rodent Survey", "Mona Island Restoration Project", "Floreana Island Restoration Project", "Palau Islands Restoration Project", "Ulithi Atoll Restoration Project", "Juan Fernandez Islands Restoration Project", "Central Coast Deer Abundance 2017-18 (CCDA 2017-18)", "Kangaroo Island Dunnart Project", "South Walney Gull Colony Monitoring", "Catalina Island Shrew ", "Bowen Island", "ZSL Philippines IWTCF", "Exotic Herbivores in Isla de los Estados, Tierra del Fuego, Argentina", "Caracterización de mamíferos medianos y grandes en la zona marino-costera del Litoral del San Juan-Chocó, Colombia.", "Kangaroo Island Dunnart Data", "American Oystercatcher Camera Trap Study ", "Protecting Mayala island biodiversity and coastal environments", "Quoll Cameras- Sunshine Coast Hinterland- 2024")  
-sub <- sub[!sub$site_name %in% coast,]; rm(coast)
-unique(sub$site_name) #74 sites
+# Identify flagged "water" points
+water_pts <- image %>% filter(over_water == "FALSE") #872769 observations
 
-# manually review 
+# Remove coastal/island projects 
+unique(water_pts$site_name) #which appear to be near water? 
+coastal <- c("Lehua Island Invasive Rodent Survey", "Mona Island Restoration Project", "Floreana Island Restoration Project", "Palau Islands Restoration Project", "Ulithi Atoll Restoration Project", "Juan Fernandez Islands Restoration Project", "Central Coast Deer Abundance 2017-18 (CCDA 2017-18)", "Kangaroo Island Dunnart Project", "South Walney Gull Colony Monitoring", "Catalina Island Shrew ", "Bowen Island", "ZSL Philippines IWTCF", "Exotic Herbivores in Isla de los Estados, Tierra del Fuego, Argentina", "Caracterización de mamíferos medianos y grandes en la zona marino-costera del Litoral del San Juan-Chocó, Colombia.", "Kangaroo Island Dunnart Data", "American Oystercatcher Camera Trap Study ", "Protecting Mayala island biodiversity and coastal environments", "Quoll Cameras- Sunshine Coast Hinterland- 2024")  
+water_pts <- water_pts %>% filter(!site_name %in% coastal_sites)
+unique(water_pts$site_name) #74 sites
+rm(coastal)
+
+# Manually review 
 head(sub[sub$site_name == "Makira NP Carnivore survey 2011: Farankarina Forest",]) #on the coast
 head(sub[sub$site_name == "ENTMRPA Wildlife Monitoring",]) #on coast 
 head(sub[sub$site_name == "Quokka recovery in Northcliffe fire zone",]) #on coast 
@@ -1091,84 +1074,64 @@ head(sub[sub$site_name == "Wild pig",]) #coords wrong
 head(sub[sub$site_name == "memoire beno",]) #2 obs + no date-time - delete 
 to_delete <- c("Count optional", "TZA-001 Inventory of medium-to-large, terrestrial forest mammals and birds in the Tanzanian Eastern Arc Mountains", "Spotted Skunks - Image Project Type", "Expedición Oso Palmero", "gouldian finch ", "2002_KSWS_CameraTrap_Multi-speciesOccurrence", "Camera Traps2", "First Collection SCMA 29-30.3.2024", "HBA Fauna Camera", "Wild pig", "memoire beno") 
 
-# fix to delete 
-image  <- image[!(image$site_name %in% to_delete & image$over_water == FALSE),] 
+# Delete unsalvagable sites 
+image <- image %>% filter(!(site_name %in% to_delete & over_water == "FALSE"))
 rm(to_delete)
 
-# lat needs to be negated 
-sub <- image[(image$site_name %in% to_fix_lat & image$over_water == "FALSE"),] 
-sub$latitude_fix <- ifelse(sub$latitude_fix > 0, -sub$latitude_fix, sub$latitude_fix)
-image <- image[!(image$site_name %in% to_fix_lat & image$over_water == "FALSE"),]
-image <- rbind(image, sub)
+# Fix latitudes that need to be negated 
+image <- image %>%
+  mutate(latitude_fix = ifelse(site_name %in% to_fix_lat & over_water == "FALSE" & latitude_fix > 0, -latitude_fix, latitude_fix))
 rm(to_fix_lat)
 
-# long needs to be negated 
-sub <- image[(image$site_name %in% to_fix_long & image$over_water == "FALSE"),] 
-sub$longitude_fix <- ifelse(sub$longitude_fix > 0, -sub$longitude_fix, sub$longitude_fix)
-image <- image[!(image$site_name %in% to_fix_long & image$over_water == "FALSE"),]
-image <- rbind(image, sub)
+# Fix longitudes that need to be negated 
+image <- image %>%
+  mutate(longitude_fix = ifelse(site_name %in% to_fix_long & over_water == "FALSE" & longitude_fix > 0, -longitude_fix, longitude_fix))
 rm(to_fix_long)
 
-# both lat and long to be negated 
-sub <- image[(image$site_name %in% to_fix_latlong & image$over_water == "FALSE"),] 
-sub$longitude_fix <- ifelse(sub$longitude_fix > 0, -sub$longitude_fix, sub$longitude_fix)
-sub$latitude_fix <- ifelse(sub$latitude_fix > 0, -sub$latitude_fix, sub$latitude_fix)
-image <- image[!(image$site_name %in% to_fix_latlong & image$over_water == "FALSE"),]
-image <- rbind(image, sub)
+# Fix where latitude and longitude need to be negated 
+image <- image %>%
+  mutate(latitude_fix = ifelse(site_name %in% to_fix_latlong & over_water == "FALSE" & latitude_fix > 0, -latitude_fix, latitude_fix),
+         longitude_fix = ifelse(site_name %in% to_fix_latlong & over_water == "FALSE" & longitude_fix > 0, -longitude_fix, longitude_fix))
 rm(to_fix_latlong)
 
-# shift lat one decimal place 
-sub <- image[(image$site_name %in% shift_lat & image$over_water == "FALSE"),] 
-head(sub)
-sub$latitude_fix <- sub$latitude_fix * 10 
-image <- image[!(image$site_name %in% shift_lat & image$over_water == "FALSE"),]
-image <- rbind(image, sub)
+# Shift latitude by factor 10 
+image <- image %>%
+  mutate(latitude_fix = ifelse(site_name %in% shift_lat & over_water == "FALSE", latitude_fix * 10, latitude_fix))
 rm(shift_lat)
 
-# shift lat and long two decimal places
-sub <- image[(image$site_name %in% shift_latlong & image$over_water == "FALSE"),] 
-head(sub)
-sub$longitude_fix <- sub$longitude_fix * 100
-sub$latitude_fix <- sub$latitude_fix * 100
-image <- image[!(image$site_name %in% shift_latlong & image$over_water == "FALSE"),]
-image <- rbind(image, sub)
+# Shift both lat and long by factor 100
+image <- image %>%
+  mutate(latitude_fix = ifelse(site_name %in% shift_latlong & over_water == "FALSE", latitude_fix * 100, latitude_fix),
+         longitude_fix = ifelse(site_name %in% shift_latlong & over_water == "FALSE", longitude_fix * 100, longitude_fix))
 rm(shift_latlong)
 
-# flipped lat/long
-sub.lat <- image[(image$site_name %in% to_fix_flipped & image$over_water == "FALSE"),]$latitude_fix
-sub.long <- image[(image$site_name %in% to_fix_flipped & image$over_water == "FALSE"),]$longitude_fix
-image[(image$site_name %in% to_fix_flipped & image$over_water == "FALSE"),]$latitude_fix <- sub.long
-image[(image$site_name %in% to_fix_flipped & image$over_water == "FALSE"),]$longitude_fix <- sub.lat
-rm(to_fix_flipped); rm(sub.lat); rm(sub.long)
+# Flip latitude and longitude 
+image <- image %>%
+  mutate(
+    latitude_fix = ifelse(site_name %in% to_fix_flipped & over_water == "FALSE", longitude_fix, latitude_fix),
+    longitude_fix = ifelse(site_name %in% to_fix_flipped & over_water == "FALSE", latitude_fix, longitude_fix))
+rm(to_fix_flipped)
 
-#quick save
-#write.csv(image, "image_quicksave.csv", row.names=F)
-#image <- read.csv("image_quicksave.csv")
+# Temporal data --------------------------------------------------------------------------
 
-## Temporal data -----------------------------------------------------------------
-
-test <- image
-
-# look at weird dates --> note: if only location important, could retain (redo code) 
+# Examine NA dates 
 sum(is.na(image$photo_date_fix)) #316177
 sub <- image[is.na(image$photo_date_fix),]
 length(unique(sub$site_name)) #72
 View(sub) #no other date info available 
-image <- image[!is.na(image$photo_date_fix),]
-
+image <- image %>% filter(!is.na(photo_date_fix))
 sum(is.na(image$photo_datetime_fix)) #0
+
+# Examine problematic years 
 range(image$photo_date) #1900-01-01 to 2293-12-22
 sort(unique(image$year))
 
-View(image[image$year == 1900,])
-unique(image[image$year == 1900,]$site_name) #14, but 12 from same project 
-image <- image[!image$year == 1900,] #don't appear fixable - delete
-
+View(image[image$year == 1900,]) #not enough information to correct; 14 sites 
 View(image[image$year == 1902,]) #not enough information to correct; 1 obs 
 View(image[image$year == 1936,]) #not enough information to correct; 1 obs 
 View(image[image$year == 1961,]) #not enough information to correct; note camera damage
 View(image[image$year == 1980,]) #not enough information to correct; 11 obs 
-image <- image[!image$year %in% c(1902, 1936, 1961, 1980),]
+image <- image[!image$year %in% c(1900, 1902, 1936, 1961, 1980),]
 
 View(image[image$year == 1970,]) #not enough information to correct; 1 obs 
 unique(image[image$year == 1970,]$photo_time) #00:00:00 entries unrecoverable 
@@ -1305,66 +1268,59 @@ rm(sub)
 sort(unique(image$year))
 nrow(image) #33933563
 
-# look at weird times  
+# Examine unusual times 
 sum(is.na(image$photo_time)) #0
 head(sub <- (sequence[sequence$sequence_time == "00:00:00",])); nrow(sub) #201
 table(sub$site_name) #nothing looks unreasonable 
 
-# other checks -------------------------------------------------------------------
-sum(is.na(sequence$unique_id)) #0
+# Other checks ---------------------------------------------------------------------------
+sum(is.na(image$unique_id)) #0
 sort(unique(image$site_name)) #nothing looks too suspicious 
 
 sort(unique(image$organization_name))
-head(image[image$organization_name == "A Wildlife Organization",]) #hm, country code is TZA but calld "An Indonesia Project"; ranges in date from 2009 to 2020; a little suspicious 
-image <- image[!image$organization_name == "A Wildlife Organization",]
-head(image[image$organization_name == "xxx",]) #data seems okay
 head(image[image$organization_name == "My First Organization 1545164058435",]) #data seem okay
 head(image[image$organization_name == "My First Organization 1571392225585",]) #data seem okay
-head(image[image$organization_name == "My First Organization 1576159086430",]) #dates outside search effort 
-image <- image[!image$organization_name == "My First Organization 1576159086430",]
 head(image[image$organization_name == "My First Organization 1578957414780",]) #data seem okay    
 head(image[image$organization_name == "My First Organization 1582273749495",]) #data seem okay    
-head(image[image$organization_name == "My First Organization 1586158898487",]) #sensor and image dates don't match (only 1 obs)
-image <- image[!image$organization_name == "My First Organization 1586158898487",] 
-head(image[image$organization_name == "My First Organization 1586203210981",]) #sensor and image dates don't match 
-image <- image[!image$organization_name == "My First Organization 1586203210981",]
 head(image[image$organization_name == "My First Organization 1588882127163",]) #data seem okay
 head(image[image$organization_name == "My First Organization 1593045617195",]) #data seem okay
+head(image[image$organization_name == "xxx",]) #data seems okay
+
+head(image[image$organization_name == "A Wildlife Organization",]) #hm, country code is TZA but calld "An Indonesia Project"; ranges in date from 2009 to 2020; a little suspicious 
+head(image[image$organization_name == "My First Organization 1576159086430",]) #dates outside search effort 
+head(image[image$organization_name == "My First Organization 1586158898487",]) #sensor and image dates don't match (only 1 obs)
+head(image[image$organization_name == "My First Organization 1586203210981",]) #sensor and image dates don't match 
 head(image[image$organization_name == "My First Organization 1617288502231",]) #sensor and image dates don't match 
-image <- image[!image$organization_name == "My First Organization 1617288502231",] 
 head(image[image$organization_name == "bat test data",]) #sensor and image dates don't match 
-image <- image[!image$organization_name == "bat test data",] 
 head(image[image$organization_name == "A new TESTABC",]) #sensor and image dates don't match 
-image <- image[!image$organization_name == "A new TESTABC",]
+
+orgs_to_remove <- c("A Wildlife Organization", "My First Organization 1576159086430", 
+"My First Organization 1586158898487", "My First Organization 1586203210981", "My First Organization 1617288502231", 
+"bat test data", "A new TESTABC")
+image <- image %>% filter(!organization_name %in% orgs_to_remove)
 nrow(image) #33753380
 
+# Clean up columns -----------------------------------------------------------------------
+image <- image %>%
+  select(-c(latitude, longitude, over_water, photo_date, photo_datetime)) %>%
+  rename(latitude = latitude_fix,
+         longitude = longitude_fix,
+         photo_date = photo_date_fix,
+         photo_datetime = photo_datetime_fix)
+head(image)
 
-# clean df -------------------------------------------------------------------------
-names(image)
-test <- image 
-image <- image %>% 
-  select(-c(latitude, longitude, over_water, photo_date, photo_datetime)) %>% 
-  rename(latitude = latitude_fix) %>% 
-  rename(longitude = longitude_fix) %>% 
-  rename(photo_date = photo_date_fix) %>% 
-  rename(photo_datetime = photo_datetime_fix)
-names(image)
-
-
-# flag spatiotemporal duplicates ---------------------------------------------------
-test <- image
+# Flag spatiotemporal duplicates ---------------------------------------------------------
 image$photo_datetime <- as.character(image$photo_datetime)
 image$photo_date <- as.character(image$photo_date)
 image.dt <- data.table(image)
 image.dt$spatiotemp_duplicates <- duplicated(image.dt[, c("sp_binomial", "longitude", "latitude", "photo_datetime"),])
 nrow(image.dt[image.dt$spatiotemp_duplicates == TRUE,]) #8167806
 
-# check out where coming from 
+# Examine where coming from 
 head(sub <- image.dt[image.dt$spatiotemp_duplicates == TRUE,])
 length(unique(sub$site_name)) #1225 sites 
 
 image[image$sp_binomial == "Tayassu pecari" & image$photo_datetime == "2011-11-04 15:18:32",] #genuine duplicate? 
-
 image[image$sp_binomial == "Sus scrofa" & image$photo_datetime == "2023-12-24 15:41:51",] #genuine duplicate
 
 image.dt <- image.dt[!image.dt$spatiotemp_duplicates == TRUE,]
@@ -1372,88 +1328,82 @@ image <- as.data.frame(image.dt)
 image$spatiotemp_duplicates <- NULL
 head(image)
 
-test <- image
+# Taxonomic harmonization ----------------------------------------------------------------
 
-## Taxonomic harmonization -------------------------------------------
-
+# Load harmonizaiton data 
 birds <- read.csv("../WI_Harmonization/Birds_WI_to_MOL_harmonized_20220725.csv")
 mamms <- read.csv("../WI_Harmonization/Mammals_WI_to_MOL_harmonized_20220725.csv")
-taxa <- rbind(birds, mamms) %>% 
-  select(commonNameEnglish, wi_taxon_id, sp_binomial, Accepted_MOL)
+taxa <- rbind(birds, mamms) %>% select(commonNameEnglish, wi_taxon_id, sp_binomial, Accepted_MOL)
 rm(mamms, birds)
 
-image <- plyr::join(image, taxa, by="wi_taxon_id", type="left")
+# Join by WI taxon ID
+image <- image %>% left_join(taxa, by = "wi_taxon_id")
+
+# How many remain unmatched 
 sum(is.na(image$Accepted_MOL)) #49409
 
-sub <- image[is.na(image$Accepted_MOL),] %>% select(c(1:65))
-sum(unique(sub$sp_binomial) %in% unique(taxa$sp_binomial))
-sub <- plyr::join(sub, taxa, by="sp_binomial", type="left")   
-sum(is.na(sub$Accepted_MOL)) #39420
+# Try to match remaining using sp_binomial 
+unmatched <- image %>%
+  filter(is.na(Accepted_MOL)) %>%
+  select(1:65, sp_binomial) %>%
+  left_join(taxa, by = "sp_binomial")
+sum(is.na(unmatched$Accepted_MOL)) #39420 
+remaining_sp <- unique(sub$sp_binomial[is.na(sub$Accepted_MOL)])
 
-(sp_binom <- unique(sub[is.na(sub$Accepted_MOL),]$sp_binomial))
-full.mol <- read.csv("../WI_Harmonization/WI_harmonized_taxonomy_11_2022.csv")
+# Load full MOL harmonization dataset 
+full_mol <- read.csv("../WI_Harmonization/WI_harmonized_taxonomy_11_2022.csv")
+names(full_mol)[5] <- "sp_binomial"
 setdiff(sp_binom, unique(full.mol$Accepted)) #11
 setdiff(sp_binom, unique(full.mol$canonical)) #10
 
-sub.1 <- sub[is.na(sub$Accepted_MOL),] %>% select(c(1:65))
-names(full.mol)[5] <- "sp_binomial"
-sub.1 <- plyr::join(sub.1, full.mol, by = "sp_binomial", type = "left")
-nrow(sub.1[!is.na(sub.1$Accepted),]) #1195
+# Join with full MOL list 
+sub_unmatched <- sub %>%
+  filter(is.na(Accepted_MOL)) %>%
+  select(1:65, sp_binomial) %>%
+  left_join(full_mol, by = "sp_binomial")
+nrow(sub_unmatched.1[!is.na(sub_unmatched.1$Accepted),]) #1195
 
-# complete functional dataset ... 
-sub.1.fin <- sub.1[!is.na(sub.1$Accepted),]
-sub.1.fin <- sub.1.fin[,c(1:65, 76)]
-names(sub.1.fin)[66] <- "Accepted_MOL"
+# Create finished subsets
+sub_matched_full <- sub_unmatched %>% filter(!is.na(Accepted)) %> mutate(Accepted_MOL = Accepted) %>% select(1:65, Accepted_MOL)
+sub_matched_first <- sub %>% filter(!is.na(Accepted_MOL)) %>% select(1:65, Accepted_MOL)
 
-sub.fin <- sub[!is.na(sub$Accepted_MOL),]
-sub.fin <- sub.fin[,c(1:65,68)]
+# Keep only initially matched images
+image_clean <- image %>% filter(!is.na(Accepted_MOL)) %>% select(1:65, Accepted_MOL)
+image <- bind_rows(image_clean, sub_matched_first, sub_matched_full)
 
-image <- image[!is.na(image$Accepted_MOL),]
-image <- image[,c(1:65,68)]
-
-image <- rbind(image, sub.fin)
-image <- rbind(image, sub.1.fin)
-
-sub.2 <- sub.1[is.na(sub.1$Accepted),]
-unique(sub.2$common_name_english)
-unique(sub.2$sp_binomial)
-
+# Process final unmatched taxa; load canonical taxonomy 
 mamms <- read.csv("../WI_Harmonization/MOL_MammaliaTaxonomy_v2.3_complete_noamb.csv")
 birds <- read.csv("../WI_Harmonization/MOL_AvesTaxonomy_v2.3_complete_noamb.csv")
-taxa2 <- rbind(mamms, birds)
-taxa2 <- taxa2[taxa2$valid == TRUE,]
+taxa2 <- bind_rows(mamms, birds) %>% filter(valid == TRUE)
+names(taxa2)[3] <- "sp_binomial"
 
 setdiff(unique(sub.2$sp_binomial), unique(taxa2$canonical)) #7
 
-names(taxa2)[3] <- "sp_binomial"
-sub.2 <- plyr::join(sub.2, taxa2, by = "sp_binomial", type = "left")
-nrow(sub.2[is.na(sub.2$valid),]) #38061
+# Join with canonical taxonomy 
+sub_final_joined <- sub_final_unmatched %>% left_join(taxa2, by = "sp_binomial")
+nrow(sub_final_joined.2[is.na(sub_final_joined.2$valid),]) #38061
 
-sub.3 <- sub.2[is.na(sub.2$valid),]
-unique(sub.3$common_name_english)
-unique(sub.3[sub.3$common_name_english == "Great Egret",]$sp_binomial) #this is fine for MOL
-# rest aren't on MOL, so let go with species binomials given 
+# Split final matched vs unmatched
+sub_final_matched <- sub_final_joined %>%
+  filter(!is.na(valid)) %>%
+  mutate(Accepted_MOL = paste(genus.1, species.1)) %>%
+  select(1:65, Accepted_MOL)
 
-sub.2.fin <- sub.2[!is.na(sub.2$valid),]
-sub.2.fin <- sub.2.fin[,c(1:65, 88:89)]
-sub.2.fin$Accepted_MOL <- paste(sub.2.fin$genus.1, sub.2.fin$species.1)
-sub.2.fin$genus.1 <- sub.2.fin$species.1 <- NULL
-image <- rbind(image, sub.2.fin)
+sub_final_remaining <- sub_final_joined %>%
+  filter(is.na(valid)) %>%
+  mutate(Accepted_MOL = sp_binomial) %>%
+  select(1:65, Accepted_MOL)
 
-#sub.3.fin <- sub.3[!is.na(sub.3$valid),]
-sub.3.fin <- sub.3[,c(1:65, 88:89)]
-sub.3.fin$Accepted_MOL = sub.3.fin$sp_binomial
-sub.3.fin$genus.1 <- sub.3.fin$species.1 <- NULL
-image <- rbind(image, sub.3.fin)
+# Add to image
+image <- bind_rows(image, sub_final_matched, sub_final_remaining)
 
-rm(sub, sub.1, sub.2, sub.2.fin, sub.3, sub.3.fin)
-rm(taxa, taxa2)
+# Cleanup
+rm(sub, sub_unmatched, sub_matched_full, sub_matched_first, sub_final_unmatched, sub_final_joined, 
+  sub_final_matched, sub_final_remaining, taxa, taxa2, mamms, birds, full_mol)
 
+# Fix search effort ----------------------------------------------------------------------
 
-# fix search effort -----------------------------------------------------------------
-
-test <- image
-head(image)
+FROM HERE 
 
 # check issues
 sum(is.na(image$sensor_start_date_and_time)) #0
