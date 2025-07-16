@@ -14,6 +14,7 @@ library(tibble)
 library(CoordinateCleaner)
 library(dplyr)
 library(ggmap)
+library(arrow)
 
 # Load  and filter data ----------------------------------------------------------------
 
@@ -244,29 +245,31 @@ sequence <- sequence[!sequence$site_name %in% testordemo$site_name,]
 nrow(sequence) #2514137
 rm(testordemo)
 
-## Spatial fixes -------------------------------------------------------------------
+# Spatial fixes ---------------------------------------------------------------------------
 
-# fix/remove data with bad coordinates 
+# Check coordinate ranges 
 range(sequence$longitude_fix) #should be -180 to 180; looks okay 
 range(sequence$latitude_fix) #should be -90 to 90; looks okay 
 
-# look at 0,0 coordinates
+# Examine 0,0 coordinates 
 nrow(sub <- sequence[sequence$longitude_fix == 0 & sequence$latitude_fix == 0,])
-unique(sub$organization_name) #2 orgs 
-View(sub) #no long/lat info anywhere else 
-sequence <- sequence[!(sequence$longitude_fix == 0 & sequence$latitude_fix == 0),]
+unique(sub$organization_name) #2 organizations 
+View(sub) #no other coordinate info anywhere else in dataframe 
+sequence <- sequence %>% filter(!(longitude_fix == 0 & latitude_fix == 0)
 nrow(sequence) #2509496
 
-# ocean coordinates 
+# Flag records over water 
 sequence$over_water <- CoordinateCleaner::cc_sea(sequence, lon = "longitude_fix", lat = "latitude_fix", value = "flagged")
-nrow(sub <- sequence[sequence$over_water == "FALSE",]) #these are the water ones
+nrow(sub <- sequence %>% filter(over_water == "FALSE")) #FALSE = water images 
 
-unique(sub$site_name) #some of these are islands or on the coast, remove as highly likely (from manual exploration), water classifier is just slightly wrong
-coast <- c("Florida Keys Inventory and Monitoring", "The Nature Conservancy's Virginia Coast Reserve", "Crocodile Lake Inventory and Monitoring Project", "California Coast Coyote Project", "Point Reyes Beach Cameras")
-sub <- sub[!sub$site_name %in% coast,]; rm(coast)
+# Exclude sites clearly coastal or islands (CoordinateCleaner has margin of error, often flags near-water sites as water)
+unique(sub$site_name) 
+coastal_sites <- c("Florida Keys Inventory and Monitoring", "The Nature Conservancy's Virginia Coast Reserve", "Crocodile Lake Inventory and Monitoring Project", "California Coast Coyote Project", "Point Reyes Beach Cameras")
+sub <- sub %>% filter(!site_name %in% coastal_sites)
 unique(sub$site_name)
+rm(coastal_sites)
 
-# manually review 
+# Manually review other water record sites 
 head(sub[sub$site_name == "Season 2020/21",]) #on the coast; fine
 head(sub[sub$site_name == "Season 2013/14",]) #on the coast; fine
 head(sub[sub$site_name == "Season 2014/2015",]) #on the coast; fine
@@ -274,54 +277,18 @@ head(sub[sub$site_name == "Snapshot Europe 2021",]) #on the coast; fine
 head(sub[sub$site_name == "Snapshot USA 2021",]) #on the coast; fine
 head(sub[sub$site_name == "Panama: Ticks & Climate Change",]) #on the coast; fine
 head(sub[sub$site_name == "Coyotes de La Colorada project",]) #on the coast; fine
-
-head(sub[sub$site_name == "Bulk upload trial - Home sites",]) #LAT SHOULD BE NEG -> fix below
-to_fix_lat <- "Bulk upload trial - Home sites"
-
 head(sub[sub$site_name == "ERICA_WP3_2021",]) #on the coast; fine
 head(sub[sub$site_name == "Seattle Urban Mesocarnivore Project (2015-2017)",]) #on the coast; fine
 head(sub[sub$site_name == "Seattle Urban Carnivore Project",]) #on the coast; fine
 head(sub[sub$site_name == "K'gari Potoroo survey",]) #on the coast; fine
-
-head(sub[sub$site_name == "Barren Grounds quolls",]) #hm, longitude off? feels like with a few more decimal places, could be correct... only 31 records, DELETE for now 
-to_delete <- "Barren Grounds quolls"
-
 head(sub[sub$site_name == "Okaloosa S.C.I.E.N.C.E. Project",]) #on the coast; fine
 head(sub[sub$site_name == "Urban to Wild Project",]) #on the coast; fine
 head(sub[sub$site_name == "ERICA_WP3_2022",]) #on the coast; fine
-
-head(sub[sub$site_name == "HaMaarag Project T2 2017-2018 from Smithsonian's eMammal",]) #same lat as long... long likely right, but not way to fix lat FLAG TO CHECK WHOLE PROJECT 
-to_check <- "HaMaarag Project T2 2017-2018 from Smithsonian's eMammal"
-
-head(sub[sub$site_name == "Snapshot USA 2022",]) #on the coast; fine
-
-head(sub[sub$site_name == "PNAE_22",]) #not neg'd, not flipped, shifting decimals does not fix... DELETE for now 
-to_delete <- c(to_delete, "PNAE_22")
-
 head(sub[sub$site_name == "WildTracker Tasmania Project",]) #on the coast; fine
 head(sub[sub$site_name == "Snapshot Europe 2022",]) #on the coast; fine
 head(sub[sub$site_name == "North Carolina's Candid Critters Project",]) #on the coast; fine
 head(sub[sub$site_name == "RVSPAB Pedasi",]) #on the coast; fine
 head(sub[sub$site_name == "Snapshot USA 2020",]) #on the coast; fine
-
-head(sub[sub$site_name == "Project Create via API_d",]) #LONGITUDE 2 DECIMAL PLACES OFF 
-to_fix_decimal <- "Project Create via API_d"
-
-head(sub[sub$site_name == "Hamaarag long term monitoring T4 2021-2022",]) #LAT AND LONG FLIPPED
-to_fix_flipped <- "Hamaarag long term monitoring T4 2021-2022"
-
-head(sub[sub$site_name == "Princeton ",]) #LONG SHOULD BE NEGATIVE 
-to_fix_long <- "Princeton "
-
-head(sub[sub$site_name == "Monitoring arboreal mammals and birds using nestboxes",]) #LAT SHOULD BE NEGATIVE 
-to_fix_lat <- c(to_fix_lat, "Monitoring arboreal mammals and birds using nestboxes")
-
-head(sub[sub$site_name == "Dulci_sequence",]) #coords very imprecise... DELETE for now 
-to_delete <- c(to_delete, "Dulci_sequence")
-
-head(sub[sub$site_name == "SEGUIMIENTO CARNIVOROS",]) #LONG SHOULD BE NEG
-to_fix_long <- c(to_fix_long, "SEGUIMIENTO CARNIVOROS")
-
 head(sub[sub$site_name == "Milfontes",]) #on the coast; fine
 head(sub[sub$site_name == "Snapshot USA 2023",]) #on the coast; fine
 head(sub[sub$site_name == "Olympic Marten Project",]) #on the coast; fine
@@ -332,370 +299,369 @@ head(sub[sub$site_name == "Pepperdine University Biodiversity Snapshot",]) #on t
 head(sub[sub$site_name == "Scalable biodiversity monitoring research in Azuero Peninsula",]) #on the coast; fine
 head(sub[sub$site_name == "NYMS Bucket Cameras",]) #on the coast; fine
 head(sub[sub$site_name == "Panamá Pacifico  ",]) #on the coast; fine
+head(sub[sub$site_name == "Snapshot USA 2022",]) #on the coast; fine
 
-# quick save! 
-write.csv(sequence, "sequences_updated.csv", row.names = F)
-#sequence <- read.csv("sequences_updated.csv")
+# -> Latitude should be negative 
+head(sub[sub$site_name == "Bulk upload trial - Home sites",]) 
+head(sub[sub$site_name == "Monitoring arboreal mammals and birds using nestboxes",])  
+to_fix_lat <- c("Bulk upload trial - Home sites", "Monitoring arboreal mammals and birds using nestboxes")
 
-# fix identified issues 
+# -> Longitude should be negative 
+head(sub[sub$site_name == "Princeton ",]) #LONG SHOULD BE NEGATIVE 
+head(sub[sub$site_name == "SEGUIMIENTO CARNIVOROS",]) #LONG SHOULD BE NEG
+to_fix_long <- c("Princeton ", "SEGUIMIENTO CARNIVOROS")
 
-# to delete 
-sequence <- sequence[!(sequence$site_name %in% to_delete & sequence$over_water == FALSE),] 
+# -> Longitude two decimal places off 
+head(sub[sub$site_name == "Project Create via API_d",])  
+to_fix_decimal <- "Project Create via API_d"
 
-(check <- sequence[sequence$site_name %in% to_delete,] %>% # check if others in set are broken
-    select(c(site_name, latitude_fix, longitude_fix)) %>% 
-    distinct(.keep_all = TRUE))
-rm(check, to_delete)
+# -> Latitude and longitude flipped 
+head(sub[sub$site_name == "Hamaarag long term monitoring T4 2021-2022",])  
+to_fix_flipped <- "Hamaarag long term monitoring T4 2021-2022"
 
-# lat needs to be negated 
-sub <- sequence[(sequence$site_name %in% to_fix_lat & sequence$over_water == "FALSE"),] 
-sub$latitude_fix <- ifelse(sub$latitude_fix > 0, -sub$latitude_fix, sub$latitude_fix)
-sequence <- sequence[!(sequence$site_name %in% to_fix_lat & sequence$over_water == "FALSE"),]
-sequence <- rbind(sequence, sub)
+# -> Cannot fix, delete 
+head(sub[sub$site_name == "Barren Grounds quolls",]) 
+head(sub[sub$site_name == "PNAE_22",])  
+head(sub[sub$site_name == "Dulci_sequence",])  
+to_delete <- c("Barren Grounds quolls", "PNAE_22", "Dulci_sequence")
 
-check <- sequence[sequence$site_name %in% to_fix_lat,] %>% # check if others in set are broken
-  select(c(site_name, latitude_fix, longitude_fix)) %>% 
-  distinct(.keep_all = TRUE)
-View(check) #rest look good 
+# Fix issues
 
-rm(check, to_fix_lat)
+# -> Delete problematic sites  
+sequence <- sequence %>% filter(!(site_name %in% to_delete & over_water == "FALSE"))
 
-# long needs to be negated 
-sub <- sequence[(sequence$site_name %in% to_fix_long & sequence$over_water == "FALSE"),] 
-sub$longitude_fix <- ifelse(sub$longitude_fix > 0, -sub$longitude_fix, sub$longitude_fix)
-sequence <- sequence[!(sequence$site_name %in% to_fix_long & sequence$over_water == "FALSE"),]
-sequence <- rbind(sequence, sub)
+# -> Negate latitude 
+sequence <- sequence %>%
+  mutate(latitude_fix = ifelse(site_name %in% to_fix_lat & over_water == "FALSE" & latitude_fix > 0, -latitude_fix, latitude_fix))
 
-check <- sequence[sequence$site_name %in% to_fix_long,] %>% # check if others in set are broken
-  select(c(site_name, latitude_fix, longitude_fix)) %>% 
-  distinct(.keep_all = TRUE)
-View(check) #rest look good 
+# -> Negate longitude 
+sequence <- sequence %>%
+  mutate(longitude_fix = ifelse(site_name %in% to_fix_long & over_water == "FALSE" & longitude_fix > 0, -longitude_fix, longitude_fix))
 
-rm(check, to_fix_long)
+# -> Decimal shift fix 
+sequence <- sequence %>%
+  mutate(longitude_fix = ifelse(site_name %in% to_fix_decimal & over_water == "FALSE", longitude_fix / 100, longitude_fix))
 
-# shift long two decimal places
-sub <- sequence[(sequence$site_name %in% to_fix_decimal & sequence$over_water == "FALSE"),] 
-head(sub)
-sub$longitude_fix <- sub$longitude_fix / 100
-sequence <- sequence[!(sequence$site_name %in% to_fix_decimal & sequence$over_water == "FALSE"),]
-sequence <- rbind(sequence, sub)
-
-check <- sequence[sequence$site_name %in% to_fix_decimal,] %>% # check if others in set are broken
-  select(c(site_name, latitude_fix, longitude_fix)) %>% 
-  distinct(.keep_all = TRUE)
-View(check) #rest look good 
-
-rm(check, to_fix_decimal)
-
-# flipped lat/long
-sub.lat <- sequence[(sequence$site_name %in% to_fix_flipped & sequence$over_water == "FALSE"),]$latitude_fix
-sub.long <- sequence[(sequence$site_name %in% to_fix_flipped & sequence$over_water == "FALSE"),]$longitude_fix
-sequence[(sequence$site_name %in% to_fix_flipped & sequence$over_water == "FALSE"),]$latitude_fix <- sub.long
-sequence[(sequence$site_name %in% to_fix_flipped & sequence$over_water == "FALSE"),]$longitude_fix <- sub.lat
+# -> Flip lat/long 
+flip_idx <- which(sequence$site_name %in% to_fix_flipped & sequence$over_water == "FALSE")
+tmp_lat <- sequence$latitude_fix[flip_idx]
+tmp_long <- sequence$longitude_fix[flip_idx]
+sequence$latitude_fix[flip_idx] <- tmp_long
+sequence$longitude_fix[flip_idx] <- tmp_lat
 
 check <- sequence[sequence$site_name %in% to_fix_flipped,] %>% # check if others in set are broken
   select(c(site_name, latitude_fix, longitude_fix)) %>% 
   distinct(.keep_all = TRUE)
 View(check) #rest look good EXCEPT where longitude_fix == 0.09253814
+sequence <- sequence %>% filter(!(site_name %in% to_fix_flipped & longitude_fix == 0.09253814)) #remove rows with bad flipped coordinates
 
-sequence <- sequence[!(sequence$site_name %in% to_fix_flipped & sequence$longitude_fix == 0.09253814),]
-rm(sub.lat, sub.long)
+# Clean workspace 
+rm(to_delete); rm(to_fix_lat); rm(to_fix_long); rm(to_fix_decimal); rm(tmp_lat); rm(tmp_long); rm(to_fix_flipped); rm(check)
 
-## Temporal data -----------------------------------------------------------------
+# Temporal fixes --------------------------------------------------------------------------
 
-# look at weird dates --> note: if only location important, could retain 
-sum(is.na(sequence$sequence_date_fix)) #0
-sum(is.na(sequence$sequence_datetime_fix)) #339
+# Examine weird dates 
+sum(is.na(sequence$sequence_date_fix)) #0 records 
+sum(is.na(sequence$sequence_datetime_fix)) #339 records 
+
+# Fix missing datetimes 
 sequence$sequence_datetime_fix <- as.character(sequence$sequence_datetime_fix)
-sub <- sequence[is.na(sequence$sequence_datetime_fix),]
-View(sub) #dates and times both present; some not merged into datetime
-sub$sequence_datetime_fix <- (paste(sub$sequence_date, sub$sequence_time))
-sum(is.na(sub$sequence_datetime_fix)) #0
+missing_dt <- sequence %>% filter(is.na(sequence_datetime_fix))
+View(missing_dt) #dates and times both present; some not merged into datetime
+missing_dt <- missing_dt %>% mutate(sequence_datetime_fix = paste(sequence_date, sequence_time))
+sum(is.na(missing_dt$sequence_datetime_fix)) #0 records
 View(sub)
-sequence <- sequence[!is.na(sequence$sequence_datetime_fix),]
-sequence <- rbind(sequence, sub)
-sum(is.na(sequence$sequence_datetime_fix)) #110
-# there are issues arising with times that are 00:00:00 --> keep in mind for analytics 
 
-# fix bad years
-range(sequence$sequence_date)
-table(sequence$year)
+sequence <- sequence %>% filter(!is.na(sequence_datetime_fix))
+sequence <- rbind_rows(sequence, missing_dt)
+sum(is.na(sequence$sequence_datetime_fix)) #still 110 records 
 
+# Fix obviously wrong years 
+unique(sequence$sequence_date)
+
+# -> Some clearly mean to be 2017
 sequence[sequence$year == 2701,]
-sequence[sequence$unique_id %in% c(20779195:20779205),] #clearly mean to be 2017
-sequence[sequence$year == 2701,]$sequence_date_fix <- strptime("2017-11-18", "%Y-%m-%d")
-sequence[sequence$year == 2701,]$sequence_datetime_fix <- ("2017-11-18 10:21:00")
-sequence[sequence$year == 2701,]$year <- "2017"
+sequence[sequence$unique_id %in% c(20779195:20779205),] 
+sequence <- sequence %>%
+  mutate(
+    sequence_date_fix = ifelse(year == 2701, "2017-11-18", sequence_date_fix),
+    sequence_datetime_fix = ifelse(year == 2701, "2017-11-18 10:21:00", sequence_datetime_fix),
+    year = ifelse(year == 2701, "2017", year))
 
+# -> 2026: Shifted two years 
 sub <- sequence[(sequence$year == 2026) & (sequence$site_name %in% c("Corredor Protección del Jaguar", "McDowell Sonoran Conservancy - Wildlife Camera Project ")),] 
-sub$sequence_date_fix <- sub$sequence_date_fix - years(2)
-sub$sequence_datetime_fix <- ymd_hms(sub$sequence_datetime_fix)
-sub$sequence_datetime_fix <- sub$sequence_datetime_fix - years(2)
-sub$sequence_datetime_fix <- as.character(sub$sequence_datetime_fix)
-sub$year <- year(sub$sequence_date_fix)
-sequence <- sequence[!sequence$year == 2026,]
-sequence <- rbind(sequence, sub)  
+sequence <- sequence %>%
+  mutate(
+    sequence_date_fix = ifelse(year == 2026 & site_name %in% c("Corredor Protección del Jaguar", "McDowell Sonoran Conservancy - Wildlife Camera Project "), as.character(as.Date(sequence_date_fix) - years(2)), sequence_date_fix),
+    sequence_datetime_fix = ifelse(year == 2026 & site_name %in% c("Corredor Protección del Jaguar", "McDowell Sonoran Conservancy - Wildlife Camera Project "), as.character(ymd_hms(sequence_datetime_fix) - years(2)), sequence_datetime_fix)) %>%
+  mutate(year = ifelse(year == 2026 & site_name %in% c("Corredor Protección del Jaguar", "McDowell Sonoran Conservancy - Wildlife Camera Project "), year(as.Date(sequence_date_fix)), year))
 
+# -> 2025: Shifted two years 
 sub <- sequence[(sequence$year == 2025) & (sequence$site_name %in% c("Corredor Protección del Jaguar", "Corredor Guaviare Meta 2023I")),] 
-sub$sequence_date_fix <- sub$sequence_date_fix - years(2)
-sub$sequence_datetime_fix <- ymd_hms(sub$sequence_datetime_fix)
-sub$sequence_datetime_fix <- sub$sequence_datetime_fix - years(2)
-sub$sequence_datetime_fix <- as.character(sub$sequence_datetime_fix)
-sub$year <- year(sub$sequence_date_fix)
-sequence <- sequence[!sequence$year == 2025,]
-sequence <- rbind(sequence, sub)  
+sequence <- sequence %>%
+  mutate(
+    sequence_date_fix = ifelse(year == 2025 & site_name %in% c("Corredor Protección del Jaguar", "Corredor Guaviare Meta 2023I"), as.character(as.Date(sequence_date_fix) - years(2)), sequence_date_fix),
+    sequence_datetime_fix = ifelse(year == 2025 & site_name %in% c("Corredor Protección del Jaguar", "Corredor Guaviare Meta 2023I"), as.character(ymd_hms(sequence_datetime_fix) - years(2)), sequence_datetime_fix)) %>%
+  mutate(year = ifelse(year == 2025 & site_name %in% c("Corredor Protección del Jaguar", "Corredor Guaviare Meta 2023I"), year(as.Date(sequence_date_fix)), year))
 
-#manually evaluated the following dates; deployment years can be derived, BUT month/day of images did not fall within sensor start/stop range; many note camera failure; unable to reconstruct original date
-sequence <- sequence[!sequence$year %in% c(2106, 2065, 2036, 2037, 2033, 2032, 2031, 2030, 2028, 2027, 2026, 1976, 1999, 1970),]
+# -> Manually evaluated the following dates; deployment years can be derived, BUT month/day of images did not fall within sensor start/stop range; many note camera failure; unable to reconstruct original date
+bad_years <- c(2106, 2065, 2036, 2037, 2033, 2032, 2031, 2030, 2028, 2027, 2026, 1976, 1999, 1970)
+sequence <- sequence %>% filter(!year %in% bad_years)
 
+# -> 2024: Fix 2024 entries with months > August
 sequence$month <- as.numeric(sequence$month)
 sub <- sequence[sequence$year == 2024 & sequence$month > 8,] #can't be greater than september -> these one year off 
-sub$year <- 2023
-sub$sequence_date_fix <- sub$sequence_date_fix - years(1)
-sub$sequence_datetime_fix <- ymd_hms(sub$sequence_datetime_fix)
-sub$sequence_datetime_fix <- sub$sequence_datetime_fix - years(1)
-sub$sequence_datetime_fix <- as.character(sub$sequence_datetime_fix)
-sequence <- sequence[!(sequence$year == 2024 & sequence$month > 8),]
-sequence <- rbind(sequence, sub)
+sequence <- sequence %>%
+  mutate(
+    year = ifelse(year == 2024 & as.numeric(month) > 8, 2023, year),
+    sequence_date_fix = ifelse(year == 2023 & as.numeric(month) > 8,
+                               as.character(as.Date(sequence_date_fix) - years(1)),
+                               sequence_date_fix),
+    sequence_datetime_fix = ifelse(year == 2023 & as.numeric(month) > 8,
+                                   as.character(ymd_hms(sequence_datetime_fix) - years(1)),
+                                   sequence_datetime_fix))
 
 nrow(sequence) #2510901
 
-# look at weird times  
+# Check times -----------------------------------------------------------------------------
+
 sum(is.na(sequence$sequence_time)) #0
 head(sub <- (sequence[sequence$sequence_time == "00:00:00",])); nrow(sub) #201
 table(sub$site_name) #nothing looks unreasonable 
 
-# other checks -------------------------------------------------------------------
+# Other checks ----------------------------------------------------------------------------
+
 sum(is.na(sequence$unique_id)) #0
 unique(sequence$camera_notes) #looks fine
 sort(unique(sequence$site_name)) #nothing looks too suspicious 
 
 sort(unique(sequence$organization_name))
-head(sequence[sequence$organization_name == "A Wildlife Organization",]) #hm, seems real enough
+head(sequence[sequence$organization_name == "A Wildlife Organization",]) #seems real enough
 head(sequence[sequence$organization_name == "xxx",]) #data seems okay
 
-unique(sequence$camera_status) #query: Unknown Failure, Camera Hardware Failure, Wildlife Damage, Vandalism, Theft, Film Failure, Memory Card Failure 
-head(sequence[sequence$camera_status == "Memory Card Failure",])
-# hm, nothing seems out of the ordinary in the data, despite these status warnings
+# Clean up columns ------------------------------------------------------------------------
 
-# clean df -------------------------------------------------------------------------
 sequence <- sequence %>% select(-c(latitude, longitude, over_water, site_name_testordemo))
 
-# flag spatiotemporal duplicates ---------------------------------------------------
-test <- sequence
+# Flag spatiotemporal duplicates ----------------------------------------------------------
+
 sequence$sequence_datetime <- as.character(sequence$sequence_datetime)
 sequence$sequence_date_fix <- as.character(sequence$sequence_date_fix)
 sequence.dt <- data.table(sequence)
 sequence.dt$spatiotemp_duplicates <- duplicated(sequence.dt[, c("sp_binomial", "longitude_fix", "latitude_fix", "sequence_datetime_fix"),])
 nrow(sequence.dt[sequence.dt$spatiotemp_duplicates == TRUE,]) #104021
 
-# check out where coming from 
+# Examine where coming from 
 head(sub <- sequence.dt[sequence.dt$spatiotemp_duplicates == TRUE,])
 unique(sub$site_name) #>200 sites 
-
 sequence[sequence$sp_binomial == "Odocoileus hemionus" & sequence$sequence_datetime == "2014-04-24 18:05:01",] #appear to be multiple images in a sequence? 
-
 sequence[sequence$sp_binomial == "Odocoileus virginianus" & sequence$sequence_datetime == "2017-07-30 05:08:46",] #test another... another genuine duplicate 
 
+# Remove duplicated frows 
 sequence.dt <- sequence.dt[!sequence.dt$spatiotemp_duplicates == TRUE,]
 sequence <- as.data.frame(sequence.dt)
 sequence$spatiotemp_duplicates <- NULL
 head(sequence)
+rm(sequence.dt)
 
-# quick save! 
-write.csv(sequence, "sequences_updated.csv", row.names = F)
-#sequence <- read.csv("sequences_updated.csv")
+# Taxonomic harmonization -----------------------------------------------------------------
 
-## Taxonomic harmonization -------------------------------------------
-
+# Load taxonomies 
 birds <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/Birds_WI_to_MOL_harmonized_20220725.csv")
 mamms <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/Mammals_WI_to_MOL_harmonized_20220725.csv")
-taxa <- rbind(birds, mamms) %>% 
-  select(commonNameEnglish, wi_taxon_id, sp_binomial, Accepted_MOL)
+taxa <- rbind(birds, mamms) %>% select(commonNameEnglish, wi_taxon_id, sp_binomial, Accepted_MOL)
 rm(mamms, birds)
 
-test <- sequence
+# Join main data with taxonomy 
 sequence <- plyr::join(sequence, taxa, by="wi_taxon_id", type="left")
 
-sum(is.na(sequence$Accepted_MOL)) #2718
-sub <- sequence[is.na(sequence$Accepted_MOL),] %>% select(c(1:68))
-unique(sub$common_name_english)
+# Identify unmatched taxonomies 
+sum(is.na(sequence$Accepted_MOL)) #2718 without MOL taxonomy match 
+missing_mol <- sequence %>% filter(is.na(Accepted_MOL)) %> select(1:68)
+unique(missing_mol$common_name_english)
 
-sum(unique(sub$sp_binomial) %in% unique(taxa$sp_binomial))
-sub <- plyr::join(sub, taxa, by="sp_binomial", type="left")
+# Try matching by sp_binomial 
+missing_mol <- missing_mol %>% left_join(taxa, by = "sp_binomial")
 sum(is.na(sub$Accepted_MOL))
 
-(sp_binom <- unique(sub[is.na(sub$Accepted_MOL),]$sp_binomial))
-full.mol <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/WI_harmonized_taxonomy_11_2022.csv")
+# Check remaining unmatched 
+unmatched_binom <- missing_mol %>% filter(is.na(Accepted_MOL)) %> pull(sp_binomial) %>% unique()
+
+# Load full MOL taxonomy 
+full_mol <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/WI_harmonized_taxonomy_11_2022.csv")
+names(full_mol)[5] <- "sp_binomial"
+
 setdiff(sp_binom, unique(full.mol$Accepted)) #7
 setdiff(sp_binom, unique(full.mol$canonical)) #6
 
-sub.1 <- sub[is.na(sub$Accepted_MOL),] %>% select(c(1:68))
-names(full.mol)[5] <- "sp_binomial"
-sub.1 <- plyr::join(sub.1, full.mol, by = "sp_binomial", type = "left")
-nrow(sub.1[!is.na(sub.1$Accepted),]) #doing again by Accepted does not help 
+# Try matching by sp_binomial from full MOL 
+missing_mol <- missing_mol %>% left_join(full_mol, by = "sp_binomial")
+nrow(sub.1[!is.na(missing_mol.1$Accepted),]) #doing again by 'Accepted' does not help 
 
-# complete functional dataset ... 
-sub.1.fin <- sub.1[!is.na(sub.1$Accepted),]
-sub.1.fin <- sub.1.fin[,c(1:68, 79)]
-names(sub.1.fin)[69] <- "Accepted_MOL"
-sub.fin <- sub[!is.na(sub$Accepted_MOL),]
-sub.fin <- sub.fin[,c(1:68,71)]
-sequence <- sequence[!is.na(sequence$Accepted_MOL),]
-sequence <- sequence[,c(1:68,71)]
+# Separate rows matched successfully
+matched_v2 <- missing_mol %>% filter(!is.na(Accepted))
+matched_v2 <- matched_v2 %>% select(1:68, Accepted) %>% rename(Accepted_MOL = Accepted)
 
-sequence <- rbind(sequence, sub.fin)
-sequence <- rbind(sequence, sub.1.fin)
+# Combine all matched
+sequence <- sequence %>% filter(!is.na(Accepted_MOL)) %>% select(1:68, Accepted_MOL)
+sequence <- bind_rows(sequence, matched_v2)
 
-sub.2 <- sub.1[is.na(sub.1$Accepted),]
-unique(sub.2$common_name_english)
-unique(sub.2$sp_binomial)
+# Remaining unmatched
+still_unmatched <- missing_mol %>% filter(is.na(Accepted)) %>% select(1:68)
 
-mamms <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/MOL_MammaliaTaxonomy_v2.3_complete_noamb.csv")
+# Load alternative MOL  taxonomy 
+mol_mamms <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/MOL_MammaliaTaxonomy_v2.3_complete_noamb.csv")
 #birds <- read.csv("~/Desktop/Work/Yale/Data/Harmonization/MOL_AvesTaxonomy_v2.3_complete_noamb.csv")
-#taxa2 <- rbind(mamms, birds)
-taxa2 <- mamms[mamms$valid == T,]
+mol_mamms <- mol_mamms %>% filter(valid == TRUE)
+names(mol_mamms)[3] <- "sp_binomial"
+setdiff(unique(still_unmatched.2$sp_binomial), unique(mol_mamms$canonical)) #4
 
-setdiff(unique(sub.2$sp_binomial), unique(taxa2$canonical)) #4
+# Join on species binomial 
+still_unmatched <- still_unmatched %>% left_join(mol_mamms, by = "sp_binomial")
+nrow(still_unmatched.2[is.na(still_unmatched.2$valid),]) #still 446 unmatched observations 
 
-names(taxa2)[3] <- "sp_binomial"
-sub.2 <- plyr::join(sub.2, taxa2, by = "sp_binomial", type = "left")
-nrow(sub.2[is.na(sub.2$valid),]) #446
+# Separate rows that matched
+matched_v3 <- still_unmatched %>%
+  filter(!is.na(valid)) %>%
+  select(1:68, genus, species) %>%
+  mutate(Accepted_MOL = paste(genus, species))
 
-sub.3 <- sub.2[is.na(sub.2$valid),]
-unique(sub.3$common_name_english)
-unique(sub.3[sub.3$common_name_english == "Great Egret",]$sp_binomial) #this is fine for MOL
-# rest aren't on MOL, so let go with species binomials given 
+# Rows that remain unmatched after final attempt
+final_unmatched <- still_unmatched %>% filter(is.na(valid))
 
-sub.2.fin <- sub.2[!is.na(sub.2$valid),]
-sub.2.fin <- sub.2.fin[,c(1:68)]#, 103:104)]
-sub.2.fin$Accepted_MOL <- paste(sub.2.fin$genus, sub.2.fin$species)
-sequence <- rbind(sequence, sub.2.fin)
+# For remaining rows, if genus/species present, construct Accepted_MOL
+if ("genus" %in% names(final_unmatched) & "species" %in% names(final_unmatched)) {
+  final_unmatched <- final_unmatched %>%
+    filter(!is.na(genus) & !is.na(species)) %>%
+    mutate(Accepted_MOL = paste(genus, species))
+}
 
-#sub.3.fin <- sub.3[,c(1:68, 103:104)]
-sub.3.fin <- sub.3[!is.na(sub.3$valid),]
-sub.3.fin$Accepted_MOL = paste(sub.3.fin$genus, sub.3.fin$species)
-#sub.3.fin$species.1 <- NULL; sub.3.fin$genus.1 <- NULL
-sequence <- rbind(sequence, sub.3.fin)
+# Combine all and clean
+sequence <- bind_rows(sequence, matched_v3, final_unmatched)
+sequence <- sequence %>% 
+  select(-c(sp_binomial.1)) %>%
+  mutate(
+    sequence_date_fix = ymd(sequence_date_fix),
+    sensor_start_date_and_time_fix = ymd_hms(sensor_start_date_and_time),
+    sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time)
+  ) %>%
+  select(-c(sequence_date, sequence_datetime)) %>%
+  rename(
+    sequence_date = sequence_date_fix,
+    sequence_datetime = sequence_datetime_fix,
+    latitude = latitude_fix,
+    longitude = longitude_fix
+  )
+rm(taxa, full_mol, mol_mamms, matched_v2, matched_v3, still_unmatched, final_unmatched)
 
-rm(sub, sub.fin, sub.1, sub.1.fin, sub.2, sub.2.fin, sub.3, sub.3.fin)
-rm(taxa, taxa2)
-
-# save data -------------------------------------------------------------------------
-
-write.csv(sequence, "sequences_updated.csv", row.names=F)
-
-# fix search effort -----------------------------------------------------------------
+# Fix search effort -----------------------------------------------------------------------
 setwd("~/project/WI_2024/Wildlife Insights Data_2024")
-library(lubridate)
-library(arrow)
-
-# load and format data 
-seq <- read.csv("sequences_updated.csv") %>% 
-  select(-c(sp_binomial.1)) %>% 
-  mutate(sequence_date_fix = ymd(sequence_date_fix)) %>%
-  mutate(sensor_start_date_and_time_fix = ymd_hms(sensor_start_date_and_time)) %>% 
-  mutate(sensor_end_date_and_time_fix = ymd_hms(sensor_end_date_and_time))
-
-seq <- seq %>% 
-  select(-c(sequence_date, sequence_datetime)) %>% 
-  rename(sequence_date = sequence_date_fix) %>% 
-  rename(sequence_datetime = sequence_datetime_fix) %>% 
-  rename(latitude = latitude_fix) %>% 
-  rename(longitude = longitude_fix)
 
 # look at NAs
-missing.vals <- seq[is.na(seq$sensor_start_date_and_time_fix),]
+missing.vals <- sequence[is.na(sequence$sensor_start_date_and_time_fix),]
 head(missing.vals[,c("sensor_start_date_and_time_fix", "sensor_start_date_and_time")]) #confirming not messed up in conversion 
 unique(missing.vals$sensor_start_date_and_time) #all values missing
 unique(missing.vals$site_name) #multiple projects
-#View(missing.vals) #can't recover effort information -> delete (831 obs.)
-seq <- seq[!is.na(seq$sensor_start_date_and_time_fix),]
-
-missing.vals <- seq[is.na(seq$sensor_end_date_and_time_fix),] #no more NA values
+View(missing.vals) #can't recover effort information -> delete (831 obs.)
+sequence <- sequence %>% filter(!is.na(sensor_start_date_and_time_fix))
+missing.vals <- sequence[is.na(sequence$sensor_end_date_and_time_fix),] #no more NA values
 rm(missing.vals)
 
-# look for extreme dates in sensor start/end --- 
-# note: data was downloaded 2024-09-04
+# Look for extreme dates in sensor start/end (note that data were downloaded 2024-09-04) 
 
-# start times 
-range(seq$sensor_start_date_and_time) #1928-03-05 to 2024-09-01 
-sort(unique(year(seq$sensor_start_date_and_time)))
+# Start times -----------------------------------------------------------------------------
+range(sequence$sensor_start_date_and_time) #1928-03-05 to 2024-09-01 
+sort(unique(year(sequence$sensor_start_date_and_time)))
 
-#View(bad.date <- seq[year(seq$sensor_start_date_and_time) == 1928,])
-seq[year(seq$sensor_start_date_and_time) == 1928,]$sensor_start_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 1928,]$first_image_deployment_time #last image taken only a few hours before collection, so this should be fairly close
-seq[year(seq$sensor_start_date_and_time) == 1928,]$sensor_end_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 1928,]$last_image_deployment_time
+# Replace sensor start date with first time deployment time 
+View(bad.date <- sequence[year(sequence$sensor_start_date_and_time) == 1928,])
+View(bad.date <- sequence[year(sequence$sensor_start_date_and_time) == 1999,])
+View(bad.date <- sequence[year(sequence$sensor_start_date_and_time) == 2000,])
+View(bad.date <- sequence[year(sequence$sensor_start_date_and_time) == 2024 & month(sequence$sensor_start_date_and_time) == 9,])
 
-#View(bad.date <- seq[year(seq$sensor_start_date_and_time) == 1963,])
-seq[seq$deployment_name == "PC_22_d46710",] #no other values in deployment to pull from 
-# unable to fix, delete (4 obs.) 
-seq <- seq[!year(seq$sensor_start_date_and_time) == 1963,]
+sequence <- sequence %>%
+  mutate(sensor_start_date_and_time = case_when(
+    year(sensor_start_date_and_time) == 1928 ~ first_image_deployment_time,
+    year(sensor_start_date_and_time) == 1999 ~ first_image_deployment_time,
+    year(sensor_start_date_and_time) == 2000 ~ first_image_deployment_time,
+    year(sensor_start_date_and_time) == 2024 & month(sensor_start_date_and_time) == 9 ~ first_image_deployment_time,
+    TRUE ~ sensor_start_date_and_time
+  ))
 
-#View(bad.date <- seq[year(seq$sensor_start_date_and_time) == 1999,])
-seq[year(seq$sensor_start_date_and_time) == 1999,]$sensor_start_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 1999,]$first_image_deployment_time #last image taken only a few hours before collection, so this should be fairly close
+# As part of above, identified a few sensor end dates can fix with last image deployment time
+sequence <- sequence %>%
+  mutate(sensor_end_date_and_time = case_when(
+    year(sensor_start_date_and_time) == 1928 ~ last_image_deployment_time,
+    year(sensor_start_date_and_time) == 2000 ~ last_image_deployment_time,
+    year(sensor_start_date_and_time) == 2024 & month(sensor_start_date_and_time) == 9 ~ last_image_deployment_time,
+    TRUE ~ sensor_end_date_and_time
+  ))
 
-#View(bad.date <- seq[year(seq$sensor_start_date_and_time) == 2000,])
-seq[year(seq$sensor_start_date_and_time) == 2000,]$sensor_start_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 2000,]$first_image_deployment_time #last image taken only a few hours before collection, so this should be fairly close
-seq[year(seq$sensor_start_date_and_time) == 2000,]$sensor_end_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 2000,]$last_image_deployment_time
+# Cannot fix; delete 
+View(bad.date <- sequence[year(sequence$sensor_start_date_and_time) == 1963,])
+sequence[sequence$deployment_name == "PC_22_d46710",] #no other values in deployment to pull from; delete (4 observations) 
+sequence <- sequence[!year(seq$sensor_start_date_and_time) == 1963,]
 
-#View(bad.date <- seq[year(seq$sensor_start_date_and_time) == 2024 & month(seq$sensor_start_date_and_time) == 9,])
-seq[year(seq$sensor_start_date_and_time) == 2024 & month(seq$sensor_start_date_and_time) == 9,]$sensor_start_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 2024 & month(seq$sensor_start_date_and_time) == 9,]$first_image_deployment_time
-seq[year(seq$sensor_start_date_and_time) == 2024 & month(seq$sensor_start_date_and_time) == 9,]$sensor_end_date_and_time <- seq[year(seq$sensor_start_date_and_time) == 2024 & month(seq$sensor_start_date_and_time) == 9,]$last_image_deployment_time
+# End times -------------------------------------------------------------------------------
+range(sequence$sensor_end_date_and_time) #1928-03-05 to 2024-09-01 
+sort(unique(year(sequence$sensor_end_date_and_time)))
 
-# end times 
-range(seq$sensor_end_date_and_time) #1928-03-05 to 2024-09-01 
-sort(unique(year(seq$sensor_end_date_and_time)))
+# Replace sensor end date with last time deployment time 
+View(bad.date <- sequence[year(sequence$sensor_end_date_and_time) == 2000,])
+View(bad.date <- sequence[year(sequence$sensor_end_date_and_time) == 2106,])
+View(bad.date <- sequence[year(sequence$sensor_end_date_and_time) == 2028,])
+View(bad.date <- sequence[year(sequence$sensor_end_date_and_time) == 2026,])
 
-View(bad.date <- seq[year(seq$sensor_end_date_and_time) == 2000,])
-seq[year(seq$sensor_end_date_and_time) == 2000,]$sensor_end_date_and_time <- seq[year(seq$sensor_end_date_and_time) == 2000,]$last_image_deployment_time
+years_to_fix <- c(2000, 2106, 2028, 2026)
+for (yr in years_to_fix) {
+  idx <- year(sequence$sensor_end_date_and_time) == yr
+  sequence$sensor_end_date_and_time[idx] <- sequence$last_image_deployment_time[idx]
+}
 
-#View(bad.date <- seq[year(seq$sensor_end_date_and_time) == 2025,])
+# Examine 2025 records 
+View(bad.date <- sequence[year(sequence$sensor_end_date_and_time) == 2025,])
 unique(bad.date$site_name)
-#View(bad.date[bad.date$site_name == "Wasatch Wildlife Watch",]) #can't fix -- delete 
-#View(bad.date[bad.date$site_name == "Jawajawa Jili",]) #use last img deployment time 
-#View(bad.date[bad.date$site_name == "Malleefowl Mound Monitoring in the Upper Limestone Coast",]) #some dates in here that seem out of place (jumps years) -- don't trust end data, so can't use last img information -- delete 
-View(bad.date[bad.date$site_name == "Wildlife Utilization and Movements Relative to Culvert Location and Characteristics in Metro Atlanta",]) #use last img deployment time 
-View(bad.date[bad.date$site_name == "SGCN Small Mammal Surveys",]) #use last img deployment time 
+View(bad.date[bad.date$site_name == "Wasatch Wildlife Watch",]) 
+View(bad.date[bad.date$site_name == "Jawajawa Jili",]) 
+View(bad.date[bad.date$site_name == "Malleefowl Mound Monitoring in the Upper Limestone Coast",]) 
+View(bad.date[bad.date$site_name == "Wildlife Utilization and Movements Relative to Culvert Location and Characteristics in Metro Atlanta",])
+View(bad.date[bad.date$site_name == "SGCN Small Mammal Surveys",]) 
 
-seq <- seq[!(year(seq$sensor_end_date_and_time) == 2025 & seq$site_name %in% c("Wasatch Wildlife Watch", "Malleefowl Mound Monitoring in the Upper Limestone Coast")),] 
+# 2025: Sites to delete (cannot fix reliably)
+sites_to_delete <- c("Wasatch Wildlife Watch", "Malleefowl Mound Monitoring in the Upper Limestone Coast")
 
-seq[(year(seq$sensor_end_date_and_time) == 2025 & seq$site_name %in% c("Jawajawa Jili", "Wildlife Utilization and Movements Relative to Culvert Location and Characteristics in Metro Atlanta", "SGCN Small Mammal Surveys")),]$sensor_end_date_and_time <- seq[(year(seq$sensor_end_date_and_time) == 2025 & seq$site_name %in% c("Jawajawa Jili", "Wildlife Utilization and Movements Relative to Culvert Location and Characteristics in Metro Atlanta", "SGCN Small Mammal Surveys")),]$last_image_deployment_time
+# 2025: Sites to fix by using last_image_deployment_time
+sites_to_fix <- c("Jawajawa Jili", "Wildlife Utilization and Movements Relative to Culvert Location and Characteristics in Metro Atlanta",  "SGCN Small Mammal Surveys")
 
-#View(bad.date <- seq[year(seq$sensor_end_date_and_time) == 2026,])
-seq[year(seq$sensor_end_date_and_time) == 2026,]$sensor_end_date_and_time <- seq[year(seq$sensor_end_date_and_time) == 2026,]$last_image_deployment_time
+# Delete unfixable sites
+sequence <- sequence[!(year(sequence$sensor_end_date_and_time) == 2025 & sequence$site_name %in% sites_to_delete), ]
 
-#View(bad.date <- seq[year(seq$sensor_end_date_and_time) == 2028,])
-seq[year(seq$sensor_end_date_and_time) == 2028,]$sensor_end_date_and_time <- seq[year(seq$sensor_end_date_and_time) == 2028,]$last_image_deployment_time
+# Fix remaining sites
+fix_idx <- (year(sequence$sensor_end_date_and_time) == 2025) & (sequence$site_name %in% sites_to_fix)
+sequence$sensor_end_date_and_time[fix_idx] <- sequence$last_image_deployment_time[fix_idx]
 
-#View(bad.date <- seq[year(seq$sensor_end_date_and_time) == 2035,])
-#wide range of dates, don't really trust, only a few entries - delete
-seq <- seq[!year(seq$sensor_end_date_and_time) == 2035,]
+# Remove entries with sensor_end_date_and_time in 2035 (wide range of dates, don't really trust )
+sequence <- sequence[year(sequence$sensor_end_date_and_time) != 2035, ]
 
-#View(bad.date <- seq[year(seq$sensor_end_date_and_time) == 2106,])
-seq[year(seq$sensor_end_date_and_time) == 2106,]$sensor_end_date_and_time <- seq[year(seq$sensor_end_date_and_time) == 2106,]$last_image_deployment_time
+# Capture dates that don't fall between sensor start/end ----------------------------------
 
-
-# look for capture dates that don't fall between image start/end --- 
-bad.date <- seq[seq$year > year(seq$sensor_end_date_and_time) | seq$year < year(seq$sensor_start_date_and_time),]
-#View(bad.date[,c("year", "sensor_start_date_and_time", "sensor_end_date_and_time")])
+bad.date <- sequence[sequence$year > year(sequence$sensor_end_date_and_time) | sequence$year < year(sequence$sensor_start_date_and_time),]
+View(bad.date[,c("year", "sensor_start_date_and_time", "sensor_end_date_and_time")])
 bad.sites <- (unique(bad.date$site_name))
-#View(bad.date[bad.date$site_name == bad.sites[2],][c("sequence_start_time", "sequence_end_time", "sensor_start_date_and_time", "sensor_end_date_and_time", "first_image_deployment_time", "last_image_deployment_time")])
+View(bad.date[bad.date$site_name == bad.sites[2],][c("sequence_start_time", "sequence_end_time", "sensor_start_date_and_time", "sensor_end_date_and_time", "first_image_deployment_time", "last_image_deployment_time")])
 # -> some of these could be saved, but would require a very large amount of manual review; given that: 
 nrow(bad.date)/nrow(seq)*100
 # this represents ~1% of the entire dataset, delete for now 
-seq <- seq[!(seq$year > year(seq$sensor_end_date_and_time) | seq$year < year(seq$sensor_start_date_and_time)),]
+sequence <- sequence[!(sequence$year > year(sequence$sensor_end_date_and_time) | sequence$year < year(sequence$sensor_start_date_and_time)),]
 
-# look for captures where end comes before beginning --- 
-bad.date <- seq[year(seq$sensor_end_time_and_time) < year(seq$sensor_start_date_and_time),]
-# -> 0 records 
+# Check for any cases where end date is before start date
+bad.date <- sequence[year(sequence$sensor_end_time_and_time) < year(sequence$sensor_start_date_and_time),] #0 records 
 
-## save data -- 
-head(seq); names(seq)
-seq <- seq %>% select(-c(sensor_start_date_and_time_fix, sensor_end_date_and_time_fix))
+# Clean and save data ---------------------------------------------------------------------
+head(sequence); names(sequence)
+sequence <- sequence %>% select(-c(sensor_start_date_and_time_fix, sensor_end_date_and_time_fix))
 
-write.csv(seq, "sequences_updated_20240710.csv", row.names=F)
-write_parquet(seq, "sequences_updated_20240710.parquet")
-write_dataset(path = "sequences_updated_20240710", format = "parquet")
+write.csv(sequence, "sequences_updated_20240710.csv", row.names=F)
 
 #############################################################################################
 
