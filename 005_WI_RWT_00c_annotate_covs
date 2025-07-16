@@ -1,0 +1,507 @@
+# Project: WI Occupancy Range Wide Trends
+
+# This file contains code to create a preannotated version of the covariates for 
+# the occupancy models. The output report the values of each covariates for the full
+# range of cells and periods, depending on the type of covariate:
+# * site-level covariates (static). Format: cells x 1 column per each covariate;
+# * primary period-level covariates (dynamic). Format: cells x periods per each covariate. 
+#       Some of these covariates (e.g. year) will have the repeated values in more than 
+#       one column;
+# * observation-level covariates. Format: cells x periods x observation (which is equal to a 7-day period).
+
+# "Sampling design" covariates are created using information in the WI data
+# "Driver" covariates are created using information extracted from different sources.
+
+# Set workspace
+rm(list=ls()); gc()
+setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024")
+
+# Load libraries
+library(tidyverse)
+library(lubridate)
+library(arrow)
+library(terra)
+library(data.table)
+
+source("custom_functions/custom_predict.R")
+
+# Sampling design data ---------------------------------------------------------
+
+# Load data 
+overview_seq <- open_dataset("sequences_updated_20240710_parquet")
+overview_images <- open_dataset("images_updated_20240714_parquet")
+cell_ID <- read.csv("WI_loc_matching_cell_ID.csv")
+template <- rast("raster_100km2_with_cellID.tif")
+
+## extract info from WI data
+depl_seq <- overview_seq %>% 
+  select(project_id, deployment_location_id, 
+         sensor_start_date_and_time, sensor_end_date_and_time) %>% 
+  distinct()  %>% 
+  collect() %>%
+  drop_na()
+depl_images <- overview_images %>% 
+  select(project_id, deployment_location_id, 
+         sensor_start_date_and_time, sensor_end_date_and_time) %>% 
+  distinct() %>% 
+  collect()  %>%
+  drop_na() 
+depl <- rbind(depl_seq, depl_images) %>% 
+  mutate(sensor_start_date = as.Date(sensor_start_date_and_time),
+         sensor_end_date = as.Date(sensor_end_date_and_time)) %>% 
+  select(-c(sensor_start_date_and_time, sensor_end_date_and_time)) %>% 
+  drop_na() %>% # to remove datetime that were ""
+  left_join(cell_ID %>% 
+              mutate(project_id = as.character(project_id)) %>% 
+              select(project_id, deployment_location_id, cell_ID))
+rm(depl_images, depl_seq, overview_images, overview_seq)
+gc()
+
+# TEMPORARY: to fix issue of sampling before 2000 and after 2025
+depl <- depl %>% 
+  filter(sensor_start_date >= "1999-12-01" & sensor_end_date <= "2024-11-30")
+# TEMPORARY: to fix issue of sampling start date after end date
+depl <- depl %>% 
+  filter(sensor_start_date <= sensor_end_date)
+
+## set dimensions -------------------------------------------------------------
+ncell <- length(unique(depl$cell_ID))
+nweek <- 13
+min_year <- 2000 #min(year(depl$sensor_start_date))
+max_year <- 2024 #max(year(depl$sensor_end_date))
+
+# extract unique project-depl locations
+proj_depl <- depl %>% 
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_")) 
+proj_depl_unique <- proj_depl %>% 
+  select(proj_depl, cell_ID) %>% 
+  distinct()
+
+## covs: static (dim: ncell) ---------------------------------------------------
+### cell_ID ---------------------------------------------------------------------
+cell_ID_unique <- unique(depl$cell_ID)
+
+
+### coords ----------------------------------------------------------------------
+# have to be in a projected coord system (here from raster projection)
+coords <- as.data.frame(template, xy = TRUE) %>% 
+  filter(cell_ID %in% cell_ID_unique)
+rm("template")
+gc()
+
+## covs: primary occasion (dim: ncell x nperiods) ------------------------------
+### periods ------------------------------------------------------
+# Define seasonal periods
+# Winter: Dec - Feb
+# Spring: March - May
+# Summer: June - Aug
+# Fall: Sept - Nov
+
+# Define year-long periods
+# year range 
+range_year <- c(min_year, max_year)
+
+# range (+1 to accommodate last year records) 
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+
+# build data.frame
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+# remove last row
+periods <- periods[-nrow(periods),]
+
+# add info about season
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+
+# add info about year
+periods$year <- year(periods$start_period)
+
+# add period counter (for autologistic process within occupancy model)
+periods$period_counter <- 1:nrow(periods)
+
+# number of periods
+nperiod <- nrow(periods)
+
+
+### trend ------------
+# organize periods in matrix
+trend <- data.frame(cell_ID = cell_ID_unique) %>%
+  tidyr::crossing(periods[, 6]) %>% 
+  mutate(period_counter = `periods[, 6]`) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = period_counter) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+### season ------------
+Season <- data.frame(cell_ID = cell_ID_unique) %>%
+  tidyr::crossing(periods[c(4, 6)]) %>% 
+  mutate(season_num = as.factor(season),
+         season_num = as.numeric(fct_relevel(season_num, "Winter", "Spring", "Summer", "Fall"))) %>%
+  arrange(period_counter) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = season_num) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+
+### year ------
+Year <- data.frame(cell_ID = cell_ID_unique) %>%
+  tidyr::crossing(periods[5:6]) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  arrange(period_counter) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = year) %>%  
+  select(-cell_ID) %>% 
+  as.matrix()
+
+## covs: observation-level (dim: ncell x nperiod x nweek) ---------------------
+### effort ------
+# days from start to end project
+sampling_dates <- seq.Date(periods[1,2], periods[nrow(periods),3], by =  "1 days")
+
+# create empty matrix, add column and row names
+cam_op <- matrix(NA, nrow = nrow(proj_depl_unique), 
+                 ncol = length(sampling_dates))
+colnames(cam_op) <- as.character(sampling_dates)
+rownames(cam_op) <- proj_depl_unique$proj_depl
+
+# fill matrix with 1 when cameras were active at a certain deployment location
+sapply(1:nrow(proj_depl), function(i) {
+  dates <- seq.Date(as.Date(depl$sensor_start_date[i]), 
+                    as.Date(depl$sensor_end_date[i]), 
+                    by = 1)
+  cam_op[as.character(proj_depl$proj_depl[i]), as.character(dates)] <<- 1
+})
+
+# prepare list to store cam_op (i.e. effort) by period
+cam_op_ls <- vector("list", length = nrow(periods))
+
+# split cam_op matrix by period
+for (i in 1:nrow(periods)){
+  cam_op_ls[[i]] <- cam_op[, as.character(seq.Date(as.Date(periods$start_period[i]), 
+                                                   as.Date(periods$end_period[i]), 
+                                                   by =  "1 days"))]
+}
+rm("cam_op")
+gc()
+
+# Check that all items in list have same dimensions
+table(unlist(sapply(cam_op_ls, dim)))
+
+# aggregate at weekly scale for each period
+indx <- seq(1, ncol(cam_op_ls[[1]])+1, 7)
+effort_ls <- lapply(cam_op_ls, function(x) {
+  
+  # create a matrix to store the results
+  temp <- matrix(NA, nrow = nrow(x), ncol = length(indx) - 1)
+  rownames(temp) <- rownames(x)
+  
+  # Iterate over each range in 'indx' and compute the column sum for each slice of 'x'
+  for (i in 1:(length(indx) - 1)) {
+    # Slice the columns of x based on the range indx[i]:(indx[i+1]-1)
+    cols_to_sum <- x[, indx[i]:(indx[i + 1] - 1), drop = FALSE]
+    
+    # Sum each row for the selected columns, ignoring NA values
+    row_sums <- rowSums(cols_to_sum, na.rm = TRUE)
+    
+    # If the row sum is 0 and all elements are NA, replace with NA (because sum is NA)
+    # This works because rowSums() will return 0 for rows with no non-NA values
+    temp[, i] <- ifelse(rowSums(is.na(cols_to_sum)) == ncol(cols_to_sum), NA, row_sums)
+  }
+  
+  return(temp)
+})
+rm("cam_op_ls")
+gc()
+
+# Add info about period and cell_ID 
+effort_ls <- Map(function(effort, period) {
+  new_cols <- cbind(rep(period, nrow(effort)), proj_depl_unique$cell_ID)
+  colnames(new_cols) <- c("period", "cell_ID")
+  cbind(effort, new_cols)
+}, effort_ls, periods$period)
+
+# Convert effort_ls from list of matrices to dataframe
+effort_df <- do.call(rbind, effort_ls)  # Converts list of matrices to a single data frame
+effort_df <- as.data.frame(effort_df) 
+colnames(effort_df)[1:nweek] <- paste("effort_w", seq(1, nweek, 1), sep = "") 
+rm("effort_ls")
+
+# Aggregate by cell_ID within each period
+setDT(effort_df)
+
+# Convert "effort_w" columns to numeric 
+effort_cols <- grep("^effort_w", names(effort_df), value = TRUE)
+effort_df[, (effort_cols) := lapply(.SD, as.numeric), .SDcols = effort_cols]
+
+# Group by period and cell_ID and sum, returning NAs when all values are NA
+effort_cell <- effort_df[, lapply(.SD, function(x) {
+  result <- sum(x, na.rm = TRUE)
+  if (all(is.na(x))) NA_real_ else result  # Ensure NA is numeric
+}), by = .(period, cell_ID)]
+
+
+### ndepl -----
+# Group by period and cell_ID and count>1, returning NAs when all values are NA
+ndepl_cell <- effort_df[, lapply(.SD, function(x) {
+  result <- sum(!is.na(x), na.rm = TRUE)
+  as.double(if (all(is.na(x))) NA_real_ else result)  # Ensure NA is numeric
+}), by = .(period, cell_ID)]
+colnames(ndepl_cell)[3:15] <- paste("ndepl_w", seq(1, nweek, 1), sep = "") 
+
+
+### minjul ------
+# create matrix containing julian dates
+juldat <- matrix(rep(yday(sampling_dates), ncell), 
+                 ncol = length(sampling_dates),
+                 byrow = TRUE)
+colnames(juldat) <- as.character(sampling_dates)
+rownames(juldat) <- cell_ID_unique
+
+# prepare list to store juldat by period
+juldat_ls <- vector("list", length = nrow(periods))
+
+# split juldat matrix by period
+for (i in 1:nrow(periods)){
+  juldat_ls[[i]] <- juldat[, as.character(seq.Date(as.Date(periods$start_period[i]), 
+                                                   as.Date(periods$end_period[i]), 
+                                                   by =  1))]
+}
+
+
+# Check that all items in list have same dimensions
+table(unlist(sapply(juldat_ls, dim)))
+
+# aggregate at weekly scale: keep minimum julian date in the 7-day interval
+sel_dates <- seq(1, length(sampling_dates), 7)
+min_dates <- sampling_dates[sel_dates]
+minjul_ls <- lapply(juldat_ls, function(x){
+  x[, which(colnames(x) %in% as.character(c(min_dates)))]
+})
+
+# Add info about period and cell_ID 
+minjul_ls <- Map(function(minjul, period) {
+  new_cols <- cbind(rep(period, ncell), rownames(minjul))
+  colnames(new_cols) <- c("period", "cell_ID")
+  cbind(minjul, new_cols)
+}, minjul_ls, periods$period)
+table(unlist(sapply(minjul_ls, dim)))
+
+# unlist and convert to dataframe
+minjul_cell <- do.call(rbind, minjul_ls)  # Converts list of matrices to a single data frame
+minjul_cell <- as.data.frame(minjul_cell) 
+colnames(minjul_cell)[1:nweek] <- paste("minjul_w", seq(1, nweek, 1), sep = "") 
+rm("minjul_ls", "min_dates", "sel_dates")
+minjul_cell <- minjul_cell %>%
+  mutate(across(starts_with("minjul_w"), as.numeric))
+
+### minjul_sq ------
+minjul_sq_cell <- minjul_cell %>%
+  mutate(across(starts_with("minjul_w"), ~ .^2))
+
+## save sampling design covariates ---------------------------------------------
+sampling_cov <- list(cell_ID = cell_ID,
+                     coords = coords,
+                     periods = periods,
+                     trend = trend,
+                     season = Season,
+                     year = Year, 
+                     effort = effort_cell,
+                     ndepl= ndepl_cell,
+                     minjul = minjul_cell,
+                     minjul_sq = minjul_sq_cell)
+saveRDS(sampling_cov, file = "output/Sampling_design_covs.rds")
+
+# clean environment
+rm(coords, periods, trend, Season, Year, effort_cell, ndepl_cell, minjul_cell,
+   minjul_sq_cell, sampling_cov, effort_cols, start_period, end_period, indx, effort_df, 
+   juldat_ls, juldat, range_year)
+
+# Drivers TO FIX ---------------------------------------------------------
+
+## covs: static (dim: ncell) ---------------------------------------------------
+### all static
+stat.covs <- read.csv("site_level_covariates.csv") 
+head(stat.covs)
+
+static <- stat.covs %>% 
+  select(c("cellID", "road_dist", "elevation", "tri", "river_dist", "coeff_var", "wdpa", 
+           "cities_lg", "cities_md", "cities_sm")) %>% 
+  distinct()
+rm(stat.covs)
+
+## covs: primary occasion (dim: ncell x nperiods) ------------------------------
+#NOTE that dynamic covs are cropped to land surface 
+
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers")
+Sys.setenv(LIBARROW_MINIMAL = "false")
+install.packages("arrow")
+library(arrow)
+
+dynamic.covs <- read_parquet("dynamic_annual_covariates/dynamic_annual_covariates.parquet")
+dynamic.covs <- as.data.frame(dynamic.covs)
+
+### GPW -------
+dynamic.covs[dynamic.covs$covariate %in% c("GPW_1999_2004", "GPW_2005_2009", "GPW_2010_2014", "GPW_2015_2019", "GPW_2020_2024"),]$covariate <- "GPW"
+GPW <- dynamic.covs[dynamic.covs$covariate == GPW,]
+nrow(GPW) 
+unique(GPW$year)
+
+GPW <- dynamic.covs %>%
+  select(cellID, starts_with("GPW")) %>%
+  distinct() %>% 
+  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "GPW_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
+  mutate(model = map(data, ~lm(cov ~ year, data = .)), 
+         pred = map(model, ~custom_predict(.x))) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_GPW,
+         year = as.character(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods) %>% 
+  select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+
+GPW <- covs %>%
+  select(cell_ID, starts_with("GPW")) %>%
+  distinct() %>% 
+  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "GPW_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
+  mutate(model = map(data, ~lm(cov ~ year, data = .)), 
+         pred = map(model, ~custom_predict(.x))) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_GPW,
+         year = as.character(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods) %>% 
+  select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+
+### GFC --------
+GFC <- covs %>% 
+  select(cell_ID, starts_with("GFC")) %>% 
+  distinct() %>% 
+  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
+  mutate(year = str_remove(year, "GFC_v19_"),
+         year = str_remove(year, "_mn_1km")) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods) %>% 
+  select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+
+### Crop ------
+Crop <- covs %>% 
+  select(cell_ID, contains("Crop")) %>% 
+  distinct() %>% 
+  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
+  mutate(year = str_remove(year, "ESACCI_"),
+         year = str_remove(year, "_Crop_1km")) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods) %>% 
+  select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+### Urban -----
+Urban <- covs %>% 
+  select(cell_ID, contains("Urban")) %>% 
+  distinct() %>% 
+  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
+  mutate(year = str_remove(year, "ESACCI_"),
+         year = str_remove(year, "_Urban_1km")) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods) %>% 
+  select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>% 
+  select(-cell_ID) %>% 
+  as.matrix()
+
+
+### prec ------
+# Prec <- covs %>% 
+#   select(cell_ID, contains("prec")) %>% 
+#   distinct() %>% 
+#   pivot_longer(-c(cell_ID), names_to = "year_season", values_to = "cov") %>% 
+#   mutate(year_season = str_remove(year_season, "prec_"),
+#          year_season = str_remove(year_season, "_prec"),
+#          year_season = str_remove(year_season, "_12to2"),
+#          year_season = str_remove(year_season, "_9to11"),
+#          year_season = str_remove(year_season, "_3to5"),
+#          year_season = str_remove(year_season, "_6to8")) %>% 
+#   mutate(year = stringr::str_split_i(year_season, pattern = "_", i = 1),
+#          season = stringr::str_split_i(year_season, pattern = "_", i = 2)) %>% 
+#   filter(year %in% periods$year) %>% 
+#   left_join(periods) %>%
+#   drop_na(period_counter) %>% 
+#   select(cell_ID, period_counter, cov) %>% 
+#   arrange(period_counter) %>% 
+#   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>% 
+#   select(-cell_ID) %>% 
+#   as.matrix()
+
+
+### temp -------
+Temp <- covs %>%
+  select(cell_ID, contains("temp")) %>%
+  distinct() %>%
+  pivot_longer(-c(cell_ID), names_to = "year_season", values_to = "cov") %>%
+  mutate(year_season = str_remove(year_season, "_temp"),
+         year_season = str_remove(year_season, "_12to2"),
+         year_season = str_remove(year_season, "_9to11"),
+         year_season = str_remove(year_season, "_3to5"),
+         year_season = str_remove(year_season, "_6to8")) %>%
+  mutate(year = stringr::str_split_i(year_season, pattern = "_", i = 1),
+         season = stringr::str_split_i(year_season, pattern = "_", i = 2)) %>%
+  filter(year %in% periods$year) %>%
+  left_join(periods) %>%
+  drop_na(period_counter) %>% 
+  select(cell_ID, period_counter, cov) %>%
+  arrange(period_counter) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  select(-cell_ID) %>%
+  as.matrix()
+
+
+### EVI ------
+EVI <- covs %>%
+  select(cell_ID, contains("EVI")) %>%
+  distinct() %>%
+  pivot_longer(-c(cell_ID), names_to = "year_season", values_to = "cov") %>%
+  mutate(year_season = str_remove(year_season, "_EVI"),
+         year_season = str_remove(year_season, "_12to2"),
+         year_season = str_remove(year_season, "_9to11"),
+         year_season = str_remove(year_season, "_3to5"),
+         year_season = str_remove(year_season, "_6to8")) %>%
+  mutate(year = stringr::str_split_i(year_season, pattern = "_", i = 1),
+         season = stringr::str_split_i(year_season, pattern = "_", i = 2)) %>%
+  filter(year %in% periods$year) %>%
+  left_join(periods) %>%
+  drop_na(period_counter) %>% 
+  select(cell_ID, period_counter, cov) %>%
+  arrange(period_counter) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  select(-cell_ID) %>%
+  as.matrix()
+
+
+# Save files to run model on HPC
+filename <- paste("data/data_for_modeling/", species, "_complete_", Sys.Date(), ".RData", sep = "")
+save(species, yarray, coords, ndepl, Season, Year, trend, effort, minjul, minjul_sq, file = filename)
