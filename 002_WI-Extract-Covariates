@@ -1,0 +1,204 @@
+#################################################################################
+### Extract static and dynamic covariates #######################################
+#################################################################################
+
+# set workspace -----------------------------------------------------------------
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers")
+rm(list=ls()); gc()
+
+library(terra)
+library(stringr)
+library(raster)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(arrow)
+
+# Reference raster -------------------------------------------------------------
+reference <- rast("raster_100km2_with_cellID.tif")
+
+# Static layers ----------------------------------------------------------------
+
+# Read TIF files for static layers 
+static_layers <- list(
+  cellID    = reference,
+  road_dist = rast("roads_100km2.tif"),
+  elevation = rast("ele_100km2.tif"),
+  tri       = rast("tri_100km2.tif"),
+  river_dist= rast("riv_100km2.tif"),
+  coeff_var = rast("cv_100km2.tif"),
+  cities_lg = rast("humacc_large_100km2.tif"),
+  cities_md = rast("humacc_medium_100km2.tif"),
+  cities_sm = rast("humacc_small_100km2.tif")
+)
+r_c <- rast(static_layers)
+
+# Covert raster stack to data frame 
+head(grid_df <- as.data.frame(r_c, xy=T))
+
+# Add longitude and latitude from x/y coordiates 
+points_sf <- vect(grid_df[, c("x", "y")], geom = c("x", "y"), crs = crs(r_c))
+points_ll <- project(points_sf, "EPSG:4326")
+coords_latlon <- crds(points_ll, df = TRUE)
+names(coords_latlon) <- c("lon", "lat")
+grid_df <- cbind(grid_df, coords_latlon)
+
+# Save 
+write.csv(grid_df, "../site_level_covariates.csv", row.names = FALSE)
+
+# Extract values for each project site (proj_depl)
+setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/")
+
+site_coords <- read.csv("site_coords.csv") %>% 
+  mutate(latitude = as.numeric(latitude_fix)) %>% 
+  mutate(longitude = as.numeric(longitude_fix)) %>% 
+  drop_na(latitude, longitude) %>% #a header is included as row of data; remove 
+  select(-c(latitude_fix, longitude_fix))
+
+points_vect <- vect(site_coords, geom=c("longitude", "latitude"), crs=crs(points_ll))
+points_vect_proj <- project(points_vect, crs(r_c)) #reproject 
+values_at_points <- terra::extract(r_c, points_vect_proj)
+site_coords <- cbind(site_coords, values_at_points)
+
+write.csv(site_coords, "proj_depl_level_covariates.csv", row.names=F)
+
+# Dynamic layers ---------------------------------------------------------------
+
+# Create period template 
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
+head(periods)
+
+# Limit to terrestrial cellIDs 
+world <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  st_transform(crs(reference))
+cropped_ref <- crop(reference, vect(world))
+masked_ref <- mask(cropped_ref, vect(world))
+ref_df <- as.data.frame(masked_ref, xy=T)
+
+# Read TIF files for ANNUAL dynamic layers 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers")
+
+cov_rasters <- stack(c(
+  rast("annprec_2010_100km2.tif"),
+  rast("annprec_2040_100km2.tif"),
+  rast("anntemp_2010_100km2.tif"),
+  rast("anntemp_2040_100km2.tif"),
+  rast("precseas_2010_100km2.tif"),
+  rast("precseas_2040_100km2.tif"),
+  rast("precwarm_2010_100km2.tif"),
+  rast("precwarm_2040_100km2.tif"),
+  rast("GWP/gwp_2000_100km2.tif"),
+  rast("GWP/gwp_2005_100km2.tif"),
+  rast("GWP/gwp_2010_100km2.tif"),
+  rast("GWP/gwp_2015_100km2.tif"),
+  rast("GWP/gwp_2020_100km2.tif")
+))
+cov_df <- as.data.frame(cov_rasters, xy = TRUE)
+cov_df <- merge(ref_df, cov_df, by = c("x", "y"), all.x = TRUE)
+
+# Reshape and expand year range 
+
+df_long <- cov_df %>%
+  pivot_longer(-c(cell_ID, x, y), names_to = "covariate", values_to = "value") %>%
+  mutate(
+    start_year = as.numeric(str_extract(covariate, "(?<=_)[0-9]{4}(?=_)")),
+    end_year   = as.numeric(str_extract(covariate, "(?<=_[0-9]{4}_)\\d{4}$"))
+  )
+
+df_expanded <- df_long %>%
+  rowwise() %>%
+  mutate(year = list(seq(start_year, end_year))) %>%
+  unnest(year) %>%
+  select(-start_year, -end_year)
+
+cov_df_final <- periods %>%
+  left_join(df_expanded, by = "year")
+
+# Recode covariate names
+cov_df_final <- cov_df_final %>%
+  mutate(
+    covariate = case_when(
+      covariate %in% c("Bio12_1999_2010", "Bio12_2011_2024") ~ "precip",
+      covariate %in% c("Bio1_1999_2010",  "Bio1_2011_2024")  ~ "temp",
+      covariate %in% c("Bio15_1999_2010", "Bio15_2011_2024") ~ "seas_prec",
+      covariate %in% c("Bio18_1999_2010", "Bio18_2011_2024") ~ "warm_prec",
+      TRUE ~ covariate
+    )
+  )
+
+# Save 
+write_parquet(cov1_df_final, "dynamic_annual_covariates/dynamic_annual_covariates.parquet")
+write.csv(cov1_df_final, "dynamic_annual_covariates.csv", row.names = F)
+
+# clear workspace
+rm(df_expanded, df_long, cov_df, cov_rasters); gc()
+
+# read DYNAMIC covariates - EVI monthly -----------------------------------------
+evi_list_raster <- NULL 
+evi <- list.files("EVI")
+for(i in 1:length(evi)){
+  file.to.load <- paste0("EVI/",evi[i])
+  r <- rast(file.to.load)
+  evi_list_raster[[i]] <- r
+  rm(r)
+}
+
+# stack rasters 
+covs_2 <- rast(evi_list_raster)
+names(covs_2) <- gsub('.{11}$', '', evi)
+
+# tweak dynamic values 
+head(cov2_df <- as.data.frame(covs_2, xy=T)) 
+head(cov2_df <- merge(ref_df, cov2_df, by=c("x","y"), all.x=T))
+
+df_long <- cov2_df %>%
+  pivot_longer(cols = starts_with("evi_"),  
+               names_to = "covariate",
+               values_to = "cov_value") %>%
+  mutate(
+    year = as.numeric(sub("evi_(\\d{4})_(\\d{3})", "\\1", covariate)),  
+    day_of_year = as.numeric(sub("evi_\\d{4}_(\\d{3})", "\\1", covariate)),  
+    date = as.Date(paste(year, day_of_year), format = "%Y %j")  
+  )
+
+periods_replicated <- periods %>%
+  mutate(key = 1) %>%
+  left_join(cov2_df %>% select(cell_ID) %>% distinct() %>% mutate(key = 1), by = "key") %>%
+  select(-key)
+
+merged_df <- df_long %>%
+  left_join(periods_replicated, by = "cell_ID") %>%
+  filter(date >= start_period & date <= end_period)
+head(merged_df)
+
+write_parquet(merged_df, "../dynamic_monthly_covariates/dynamic_monthly_covariates.parquet")
+
+rm()
+
+# read DYNAMIC covariates - CCI annual ------------------------------------------
+#cci_list_raster <- NULL 
+#cci <- list.files("CCI")
+#for(i in 1:length(cci)){
+#  file.to.load <- paste0("CCI/",cci[i])
+#  r <- rast(file.to.load)
+#  cci_list_raster[[i]] <- r
+#  rm(r)
+#}
+#covs_2 <- rast(cci_list_raster)
