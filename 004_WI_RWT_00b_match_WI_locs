@@ -23,16 +23,30 @@ loc_seq <- overview_seq |>
   dplyr::select(project_id, deployment_location_id, longitude, latitude) |>
   distinct() |>
   collect()
+loc_seq <- as.data.frame(loc_seq) %>% 
+  mutate(longitude = round(as.numeric(longitude), 4),
+         latitude = round(as.numeric(latitude), 5))
+
 loc_images <- overview_images |>
   dplyr::select(project_id, deployment_location_id, longitude, latitude) |>
   distinct() |>
   collect()
-loc <- rbind(loc_seq, loc_images) %>% 
+loc_images <- as.data.frame(loc_images) %>% 
+  mutate(longitude = as.numeric(longitude)) %>% 
+  mutate(latitude = as.numeric(latitude))
+# NAs are fine - there is a row that is the header 
+loc_images <- loc_images[!is.na(loc_images$longitude),] %>% 
   mutate(longitude = round(as.numeric(longitude), 4),
-         latitude = round(as.numeric(latitude), 5)) %>% 
+         latitude = round(as.numeric(latitude), 5))
+
+loc <- rbind(loc_seq, loc_images) %>% 
   distinct() %>% 
-  drop_na()
-# there is a warning message, but the issue is solved
+  drop_na() %>% 
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep="_"))
+
+# missing = proj_depl not currently matched (from later code - don't worry for first run) 
+sum(missing %in% unique(loc$proj_depl)) / length(missing) 
+# this suggests they are in the data frame... 
 
 # convert to SpatVector and re-project
 loc_vect <- vect(loc, geom=c("longitude", "latitude"), crs="EPSG:4326", keepgeom=TRUE)
@@ -44,8 +58,11 @@ loc_cell_ID <- terra::extract(template, loc_vect)
 # add to loc info
 loc_cell_ID <- loc %>% 
   mutate(cell_ID = loc_cell_ID$cell_ID) %>% 
-  group_by(project_id, deployment_location_id) %>% 
+  group_by(proj_depl) %>% 
   slice(1) # to remove proj_depl falling in two different cells (e.g. when have two sets of coords)
+
+head(loc_cell_ID)
+sum(missing %in% unique(loc_cell_ID$proj_depl)) / length(missing) 
 
 # save
 write_csv(x = loc_cell_ID, file = "WI_loc_matching_cell_ID.csv")
