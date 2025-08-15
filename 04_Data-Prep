@@ -2,102 +2,111 @@
 
 # This file contains code to format the data to run species-level occupancy models.
 
+# Project: WI Occupancy Range Wide Trends
+
+# This file contains code to format the data to run species-level occupancy models.
+
 # Set working directory 
-rm(list=ls())
+rm(list=ls()); gc()
 setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024")
 set.seed(123)
 
 # Load libraries
 library(arrow)
-library(tidyverse) 
-library(sf)
+library(coda)
+library(dplyr)
+library(forcats)
 library(ggmap)
+library(gridExtra)
+library(hrbrthemes)
+library(lubridate)
+library(MCMCvis)
+library(purrr)
+library(reshape2)
+library(rlist)
+library(sf)
+library(spOccupancy)
+library(stringr)
+library(tibble)
+library(tictoc)
+library(tidyr)
+library(tidyverse) 
 library(tmap)
 library(tmaptools)
-library(lubridate)
-library(tictoc)
-library(reshape2)
-library(gridExtra)
 library(tsibble)
-library(rlist)
-library(hrbrthemes)
 library(viridis)
 
 # Prep detection matrix, effort, and julian date -------------------------------
 # Goal: Prep species-specific stacked detection matrices, by deployment-season-year and week
 
-# Specify species in the format "Genus species"
-species_name <- "Eira barbara"
-
 # Load data 
-overview_seq <- open_dataset("sequences")
-overview_images <- open_dataset("images")
+overview_seq <- open_dataset("sequences_updated_20240710_parquet")
+overview_images <- open_dataset("images_updated_20240714_parquet")
 
-# select data
+# Combine data
 dat_seq <- overview_seq |>
-  filter(Accepted_MOL == species_name) |> 
-  mutate(record_date = sequence_date_fix) |>
-  dplyr::select(-sequence_date_fix) |>
+  mutate(record_date = sequence_date) |>
+  dplyr::select(-c(sequence_date, sequence_datetime)) |>
   collect()
+
 dat_images <- overview_images |>
-  filter(Accepted_MOL == species_name) |>
   mutate(record_date = photo_date) |>
-  dplyr::select(-photo_date) |>
+  mutate(sp_binomial = Accepted_MOL) |>
+  dplyr::select(-c(photo_date, photo_datetime, Accepted_MOL)) |>
   collect()
+dat_images <- dat_images[!dat_images$sp_binomial == "Accepted_MOL",] |> #header added as row
+  mutate(latitude = as.numeric(latitude)) |>
+  mutate(longitude = as.numeric(longitude)) 
 
 all_dat <- rbind(dat_images, dat_seq) %>% 
   mutate(sensor_start_date = as.Date(sensor_start_date_and_time),
          sensor_end_date = as.Date(sensor_end_date_and_time),
-         latitude = as.numeric(latitude_fix),
-         longitude = as.numeric(longitude_fix),
          record_date = as.Date(record_date)) %>% 
-  dplyr::select(-c(sensor_start_date_and_time, sensor_end_date_and_time, latitude_fix, longitude_fix))
-nrow(all_dat)
+  dplyr::select(-c(sensor_start_date_and_time, sensor_end_date_and_time))
+
+all_dat <- all_dat[!is.na(all_dat$record_date),]
+
+rm(dat_seq, dat_images, overview_images, overview_seq)
+gc()
 
 # Create detection-non detection matrix ---------------------------------------
 
-# Sampling units are defined as project-deployment-season-year; occasions are defined 
-# as 1-week long for a total of 13 week for each season-year (i.e. 13 weeks x 7 days 
-# = 91 days). Sampling units sampled less than two weeks are removed from the matrices. 
+# Primary period = season-year 
+# Replicate period = week per season year (13 7-day long weeks; 13 x 7 = 91 days)
+# Sampling units (project-deployment-season-year) sampled less than two weeks are removed 
 # Seasons are defined as:
 # * Winter: Dec - Feb
 # * Spring: March - May
 # * Summer: June - Aug
 # * Fall: Sept - Nov
 
-# If spatial_aggreg = TRUE, data from single camera trap location are aggregated at 
-# grid level. 
+# Data from camera trap locations are aggregated at grid (10x10km2) level. 
 
-# @param target_species chr. Specify species in the format "Genus species". 
-# @param data_exploration logic. When TRUE, effort and detection will be plotted  
-data_exploration <- FALSE
-# @param spatial_aggreg logic. When TRUE, data are aggregated at grid level  
-spatial_aggreg <- TRUE
+# Add initial info ------------------------------------------------------------
 
-# Add initial info ------------------------------------------------------
-
-# store species name
-species <- target_species <- species_name
+# Target species name
+target_species <- "Eira barbara"
 
 # extract data for a species
-dat_sp <- all_dat %>% filter(Accepted_MOL == target_species)
-
-# Number of records
-message("Number of records: ", nrow(dat_sp))
+dat_sp <- all_dat %>% filter(sp_binomial == target_species)
 
 # retain all records of the projects in which the target species was detected
 dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
 
-# Data cleaning ----------------------------------------------------------
+# Data exploration & cleaning -------------------------------------------------
 
 if(data_exploration){
-  
   # Spatial and temporal checks ---------------------------------------------
   # Spatial coverage
   # Select unique locations
-  loc <- dat %>% select(latitude, longitude, project_id) %>% distinct()
-  loc <- loc %>% filter(longitude != max(longitude)) %>% #remove weird location
+  loc <- dat %>% 
+    select(latitude, longitude, project_id) %>% 
+    distinct() %>% 
     mutate(project_id = as.factor(project_id))
+  
+  # EXAMINE DATA -> manually update 
+  loc <- loc %>% filter(longitude != max(longitude)) #remove weird location
+  
   # Create spatial object and set CRS (WGS84)
   loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
   st_crs(loc_sp) = 4326
@@ -120,7 +129,7 @@ if(data_exploration){
     tm_layout(legend.outside = TRUE)       
   print(dat_map_range)
   
-  # Map locations
+  # Map locations --- NOT WORKING; HOW DIFFERENT FROM ABOVE? LOOK AT LATER 
   data("World")
   World <- st_transform(World, crs = 4326)
   #tmap_mode("view")
@@ -139,22 +148,25 @@ if(data_exploration){
                              year_week = as.numeric(paste(record_year, record_week, sep = "")),
                              proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
     select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
+  
   x_label <- (expand.grid(year = seq(year(min(dat$record_date)), year(max(dat$record_date)), by = 1),
                           week = sprintf("%02d", seq(01, 53, 1))) %>% 
                 mutate(x_label = paste(year, week, sep = "")) %>% 
                 arrange(x_label))$x_label
+  
   dat_sp_temp <- dat_sp %>% mutate(record_week = sprintf("%02d", week(record_date)),
                                    record_year = year(record_date),
                                    year_week = as.numeric(paste(record_year, record_week, sep = "")),
                                    proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
     select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
+  
   ggplot(dat_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id))) +
     geom_point(aes(color = as.factor(project_id))) +
     geom_point(data = dat_sp_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id)),
                color = "black", inherit.aes = FALSE) +
     scale_x_discrete("Year-week", breaks = as.factor(x_label[seq(1, length(x_label), by = 8)]), 
                      labels = as.factor(x_label[seq(1, length(x_label), by = 8)])) +
-    labs(y = "Deployments", title = species) +
+    labs(y = "Deployments", title = target_species) +
     theme_classic() +
     theme(axis.text.y = element_blank(),
           axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
@@ -162,13 +174,16 @@ if(data_exploration){
           legend.position = "none")
 }
 
-# Data formatting --------------------------------------------------------
+# After doing checks, clean original data for outliers 
+dat_sp <- dat_sp %>% filter(longitude != max(longitude)) #remove weird location
+dat <- dat %>% filter(longitude != max(longitude)) #remove weird location
 
-# Define periods --------------------------------------------------------
-# Format data for analysis in stacked occupancy model
+## Data formatting ------------------------------------------------------------
+
+# Define periods --------------------------------------------------------------
+
 # Define time in the year-week format 
-dat <- dat %>% 
-  mutate(record_yearweek = yearweek(record_date))
+dat <- dat %>% mutate(record_yearweek = yearweek(record_date))
 
 # Define seasonal periods
 #* Winter: Dec - Feb
@@ -177,35 +192,32 @@ dat <- dat %>%
 #* Fall: Sept - Nov
 
 # Define year-long periods
-#* year range 
-range_year <- year(range(dat$record_date))
+(range_year <- year(range(dat$record_date)))
 
-# range (+1 to accommodate last year records) 
+# Range (+1 to accommodate last year records) 
 min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
 max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-^ MAY NEED TO UPDATED THIS MONTH; why this particular date? 
-  
-  # build data.frame
-  start_period <-  seq.Date(min_date, max_date, by =  "3 month")
+
+# Build data.frame
+start_period <-  seq.Date(min_date, max_date, by = "3 month")
 end_period <-  c(start_period[-1] - 1, NA)
 periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
                       start_period = start_period, 
                       end_period = end_period) 
-# remove last row
-periods <- periods[-nrow(periods),]
+periods <- periods[-nrow(periods),] # remove last row
 
-# add info about season
+# Add seasons
 periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
 
-# add info about year
+# Add year
 periods$year <- year(periods$start_period)
 
-# add period counter (for autologistic process within occupancy model)
+# Add period counter (for autologistic process within occupancy model)
 periods$period_counter <- 1:nrow(periods)
 
-# Build  -------------------------------------------------------------------
-## Camera-operability matrix ----------------------------------------------- 
-# start and ending dates for each project_deployment
+## Build camera operability matrix (effort) -----------------------------------
+
+# Start and ending dates for each project_deployment
 proj_depl <- dat %>% 
   mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
   dplyr::select(proj_depl, sensor_start_date, sensor_end_date) %>% 
@@ -213,80 +225,85 @@ proj_depl <- dat %>%
   drop_na() %>% # to remove depl with NAs in start/end sampling
   filter(sensor_start_date >= min_date & sensor_end_date <= max_date)
 
-# list of project_deployments
+# List of project_deployments
 proj_depl_unique <- unique(proj_depl$proj_depl)
 
-# days from start to end project
-sampling_dates <- seq.Date(periods[1,2], periods[nrow(periods),3], by =  "1 days")
+# Days from start to end project
+sampling_dates <- seq.Date(periods[1,2], periods[nrow(periods),3], by = "1 days")
 
-# create empty matrix, add colummn and row names
+# Create empty matrix, add colummn and row names
 cam_op <- matrix(NA, nrow = length(proj_depl_unique), 
                  ncol = length(sampling_dates))
 colnames(cam_op) <- as.character(sampling_dates)
 rownames(cam_op) <- proj_depl_unique
 
-# fill matrix with 1 when cameras were active
+# Fill matrix with 1 when cameras were active
 for(i in 1:nrow(proj_depl)){
   cam_op[proj_depl$proj_depl[i], 
          as.character(seq.Date(as.Date(proj_depl$sensor_start_date[i]), 
                                as.Date(proj_depl$sensor_end_date[i]), 
                                by =  1))] <- 1
 } 
+sum(cam_op,na.rm=T) #check if working 
 
-if(data_exploration){
-  # Explore effort
+if(data_exploration){ 
   eff <- data.frame(active_depl = colSums(cam_op, na.rm = TRUE), sampl_date = as.Date(colnames(cam_op)))
   ggplot() +
     geom_col(data = eff, aes(x = sampl_date, y = active_depl), col = "royalblue") +
     geom_vline(xintercept = c(periods$start_period, periods$end_period[nrow(periods)]), linetype = "dashed",
                color = "grey56") +
-    labs(x = "Date", y = "Number of active deployments", title = species) +
+    labs(x = "Date", y = "Number of active deployments", title = target_species) +
     theme_bw()
-  #ggsave(filename = "figures/Effort.jpg", device = "jpeg", units = "cm", 
-  #       width = 50, height = 40, dpi = 300)
 }
 
-## Julian date matrix -----------------------------------------------------
-# create matrix containing julian dates
+## Build Julian date matrix ---------------------------------------------------
+
 juldat <- matrix(rep(yday(colnames(cam_op)), nrow(cam_op)), 
                  ncol = ncol(cam_op),
                  byrow = TRUE)
 colnames(juldat) <- colnames(cam_op)
 rownames(juldat) <- rownames(cam_op)
 
-## Detection/nondetection matrix --------------------------------------
-# prepare matrix
-det <- cam_op
+## Build detection/non-detection matrix ----------------------------------------
 
-# replace 1s with 0s (non-detections)
-det[det == 1] <- 0   
+# Prepare matrix
+det_mat <- cam_op
 
-# remove records without effort information
+# Replace 1s with 0s (camera on; set baselien as non-detections) 
+det_mat[det_mat == 1] <- 0   
+
+# Remove records without effort information
 dat_sp <- dat_sp %>% 
   filter(paste(project_id, deployment_location_id, sep = "_") %in% proj_depl_unique)
 
-# fill-in detection
+# Fill in detections 
+dat_sp$proj_depl <- paste(dat_sp$project_id, dat_sp$deployment_location_id, sep = "_")
 for(i in 1:nrow(dat_sp)){
-  det[paste(dat_sp$project_id[i], dat_sp$deployment_location_id[i], sep = "_"), 
-      as.character(dat_sp$record_date[i])] <- 1
-}
+  det_mat[dat_sp$proj_depl[i], as.character(dat_sp$record_date[i])] <- 1
+} 
 
-# Organize in periods -------------------------------------------------- 
-## Detection/non-detection ----------------------------------------------
-# prepare list to store detection matrix by period
+# Check 
+table(det_mat) 
+
+## Organize in periods -------------------------------------------------------- 
+
+# Detection/non-detection -----------------------------------------------------
+
+# Prepare list to store detection matrix by period
 det_ls <- vector("list", length = nrow(periods))
 
-# split detection/non-detection matrix by period
+# Split detection/non-detection matrix by period
 for (i in 1:nrow(periods)){
-  det_ls[[i]] <- det[, as.character(seq.Date(as.Date(periods$start_period[i]), 
+  det_ls[[i]] <- det_mat[, as.character(seq.Date(as.Date(periods$start_period[i]), 
                                              as.Date(periods$end_period[i]), 
-                                             by =  "1 days"))]
+                                             by = "1 days"))]
 }
 
 # Make ncol even across year-season by adding NAs columns
-# Make max.length 91 (= 13 x 7days)
-max.length <- 91
-# remove columns if more that max.length
+# Set max length to 13 weeks x 7 days = 91 
+max.length <- 91 
+
+# Remove columns if more that max.length
 for(i in 1:length(det_ls)){
   if(ncol(det_ls[[i]]) > max.length){
     det_ls[[i]] <- det_ls[[i]][, 1:max.length]
@@ -294,7 +311,7 @@ for(i in 1:length(det_ls)){
 }
 
 # Add NA columns to list elements
-det_ls <- lapply(det_ls, function(v) { cbind(v, matrix(NA, nrow = nrow(v), ncol = max.length-ncol(v)))})
+det_ls <- lapply(det_ls, function(v) {cbind(v, matrix(NA, nrow = nrow(v), ncol = max.length-ncol(v)))})
 
 # Check that all items in list have same dimensions
 unlist(sapply(det_ls, dim))
@@ -307,26 +324,26 @@ for(i in 1:length(det_ls)) {
   colnames(det_ls[[i]])[(max.length+1):(max.length+2)] <- c("season", "year")
 }
 
-# Unlist detection histories
-det <- list.rbind(det_ls)
+# Unlist detection histories 
+det_mat <- list.rbind(det_ls)  
 
+## Effort ---------------------------------------------------------------------
 
-## Effort ------------------------------------------------------------------
-# prepare list to store cam_op (i.e. effort) by period
+# Prepare list to store cam_op (i.e. effort) by period
 cam_op_ls <- vector("list", length = nrow(periods))
 
 # split cam_op matrix by period
 for (i in 1:nrow(periods)){
   cam_op_ls[[i]] <- cam_op[, as.character(seq.Date(as.Date(periods$start_period[i]), 
                                                    as.Date(periods$end_period[i]), 
-                                                   by =  "1 days"))]
+                                                   by = "1 days"))]
 }
 
 # Make ncol even across year-season by adding NAs columns
-# Make max.length 91 (= 13 x 7days)
+# Set max length to 13 weeks x 7 days = 91 
 max.length <- 91
 
-# remove columns if more that max.length
+# Remove columns if more that max.length
 for(i in 1:length(cam_op_ls)){
   if(ncol(cam_op_ls[[i]]) > max.length){
     cam_op_ls[[i]] <- cam_op_ls[[i]][, 1:max.length]
@@ -339,23 +356,23 @@ cam_op_ls <- lapply(cam_op_ls, function(v) { cbind(v, matrix(NA, nrow = nrow(v),
 # Check that all items in list have same dimensions
 unlist(sapply(cam_op_ls, dim))
 
-#' Add info about season, year
+# Add info about season, year
 for(i in 1:length(cam_op_ls)) {
   cam_op_ls[[i]] <- cbind(cam_op_ls[[i]], 
                           cbind(rep(periods$season[i], nrow(cam_op_ls[[i]])), 
                                 rep(year(periods$start_period[i]), nrow(cam_op_ls[[i]]))))
   colnames(cam_op_ls[[i]])[(max.length+1):(max.length+2)] <- c("season", "year")
-  
 }
 
 # Unlist detection histories
-cam_op <- list.rbind(cam_op_ls)
+cam_op <- list.rbind(cam_op_ls) 
 
-## Julian date -----------------------------------------------------------
-# prepare list to store juldat by period
+## Julian date ----------------------------------------------------------------
+
+# Prepare list to store juldat by period
 juldat_ls <- vector("list", length = nrow(periods))
 
-# split juldat matrix by period
+# Split juldat matrix by period
 for (i in 1:nrow(periods)){
   juldat_ls[[i]] <- juldat[, as.character(seq.Date(as.Date(periods$start_period[i]), 
                                                    as.Date(periods$end_period[i]), 
@@ -363,10 +380,10 @@ for (i in 1:nrow(periods)){
 }
 
 # Make ncol even across year-season by adding NAs columns
-# Make max.length 91 (= 13 x 7days)
+# Set max length to 13 weeks x 7 days = 91 
 max.length <- 91
 
-# remove columns if more that max.length
+# Remove columns if more that max.length
 for(i in 1:length(juldat_ls)){
   if(ncol(juldat_ls[[i]]) > max.length){
     juldat_ls[[i]] <- juldat_ls[[i]][, 1:max.length]
@@ -380,21 +397,21 @@ juldat_ls <- lapply(juldat_ls, function(v) { cbind(v, matrix(NA, nrow = nrow(v),
 unlist(sapply(juldat_ls, dim))
 
 # Unlist detection histories
-juldat <- list.rbind(juldat_ls)
+juldat <- list.rbind(juldat_ls)  
 
-# Remove deployment-season combinations with no effort
+## Remove deployment-season combinations with no effort -----------------------
 ind <- apply(cam_op[,1:max.length], 1, function(x) all(is.na(x)))
 cam_op <- cam_op[!ind, ]
-det <- det[!ind, ]
+det_mat <- det_mat[!ind, ]
 juldat <- juldat[!ind, ]
 
+## Aggregate in weekly occasions ----------------------------------------------
 
-## Aggregate in weekly occasions --------------------------------------------
-
-# Detection/non-detection --------------------------------------------------
-det_sub <- data.frame(apply(as.data.frame(det[, 1:(ncol(det)-2)]), 2, as.numeric))
+# Detection/non-detection -----------------------------------------------------
+det_sub <- data.frame(apply(as.data.frame(det_mat[, 1:(ncol(det_mat)-2)]), 2, as.numeric))
 indx <- seq(1, ceiling(ncol(det_sub)+1), 7)
 ystack <- matrix(NA, nrow = nrow(det_sub), ncol = length(indx)-1)
+
 for(i in 1:(length(indx)-1)) {
   temp <- det_sub[,indx[i]:(indx[i+1]-1)]
   ystack[,i] <- apply(temp, 1, function(x) ifelse(all(is.na(x)), NA, max(x, na.rm = TRUE)))
@@ -404,6 +421,7 @@ for(i in 1:(length(indx)-1)) {
 cam_op_sub <- data.frame(apply(as.data.frame(cam_op[, 1:(ncol(cam_op)-2)]), 2, as.numeric))
 indx <- seq(1, ceiling(ncol(cam_op_sub)+1), 7)
 effort <- matrix(NA, nrow = nrow(cam_op_sub), ncol = length(indx)-1)
+
 for(i in 1:(length(indx)-1)) {
   temp <- cam_op_sub[,indx[i]:(indx[i+1]-1)]
   effort[,i] <- apply(temp, 1, function(x) ifelse(all(is.na(x)), NA, sum(x, na.rm = TRUE)))
@@ -411,7 +429,7 @@ for(i in 1:(length(indx)-1)) {
 effort <- as.data.frame(effort)
 colnames(effort) <- paste("effort_w", seq(1, ncol(effort), 1), sep = "")
 
-# Minimum julian date ----------------------------------------------------- 
+# Minimum Julian date ----------------------------------------------------- 
 juldat_sub <- data.frame(apply(as.data.frame(juldat[, 1:(ncol(juldat))]), 2, as.numeric))
 indx <- seq(1, ceiling(ncol(juldat_sub)+1), 7)
 minjul <- matrix(NA, nrow = nrow(juldat_sub), ncol = length(indx)-1)
@@ -426,14 +444,16 @@ colnames(minjul) <- paste("minjul_w", seq(1, ncol(minjul), 1), sep = "")
 ind <- apply(effort[,1:13], 1, function(x) sum(!is.na(x)))
 effort <- effort[ind > 1, ]
 ystack <- ystack[ind > 1, ]
-det <- det[ind > 1, ]
+det_mat <- det_mat[ind > 1, ]
 minjul <- minjul[ind > 1, ]
 
-## Prepare covariates related to sampling ----------------------------------------
+## Prepare covariates related to sampling -------------------------------------
+
+# Add season/time covariates (?)
 covs <- cbind(effort, minjul) %>% 
-  mutate(proj_depl = rownames(det),
-         season = det[, ncol(det)-1],
-         year = det[, ncol(det)],
+  mutate(proj_depl = rownames(det_mat),
+         season = det_mat[, ncol(det_mat)-1],
+         year = det_mat[, ncol(det_mat)],
          proj = substr(proj_depl, 1, 7),
          depl = substr(proj_depl, 9, nchar(proj_depl)))
 
@@ -457,7 +477,6 @@ if(data_exploration){
     theme(axis.text.y = element_blank(),
           axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
   
-  
   # Visualize detection/nondetection matrices
   ystack_long <- as.data.frame(ystack) %>% 
     mutate(proj_depl_s_y = with(covs, paste(proj_depl, season, year, sep = "_")),
@@ -478,70 +497,38 @@ if(data_exploration){
     facet_wrap(~season_year)
 }
 
-## add period counter
+# Add period counter
 covs <- left_join(covs, periods %>% 
                     dplyr::select("season", "year", "period_counter") %>% 
                     mutate(year = as.character(year)))
 
-## add lat/long info -------------------------------------------------------
-# extract coords by project and deployment. In case of multiple lat/long for a 
-# proj_depl, only first set is retained
-coords <-  dat %>% 
-  dplyr::select(project_id, deployment_location_id, latitude, longitude) %>% 
-  distinct(project_id, deployment_location_id, .keep_all = TRUE) %>% 
-  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-  dplyr::select(-c(project_id, deployment_location_id))
+## Spatially aggregate to cell ID ---------------------------------------------
 
-nrow(coords) 
-length(unique(covs$proj_depl))
-
-# merge
+coords <- read.csv("WI_loc_matching_cell_ID.csv") %>% 
+  dplyr::select(-c(project_id, deployment_location_id)) %>% 
+  distinct()
 covs <- left_join(covs, coords, by = "proj_depl")
 
-if(spatial_aggreg){
-  
-  cell_ID <- read.csv("proj_depl_level_covariates.csv") %>% 
-    select(-c(latitude, longitude, project_id))
-  #these are static covs for each proj_depl, so join by proj_depl rather than long/lat 
-  
-  ystack2 <- as.data.frame(ystack) 
-  ystack2 <- cbind(ystack2, covs) %>% 
-    left_join(cell_ID, by = c("proj_depl"))
-  
-  ystack2_group <- ystack2 %>% 
-    drop_na(cellID) %>% 
-    group_by(cellID, season, `year`) %>% 
-    summarise(n_depl = n(),
-              across(starts_with("V"), function(x) ifelse(all(is.na(x)), NA, max(x, na.rm = TRUE))),
-              across(starts_with("effort_w"), function(x) ifelse(all(is.na(x)), NA, sum(x, na.rm = TRUE))),
-              across(minjul_w1:minjul_w13, min),
-              proj = unique(proj),
-              period_counter = unique(period_counter)) %>% 
-    ungroup() 
-  
-  # reorganize outputs for modeling
-  ystack <- ystack2_group %>% select(V1:V13)
-  covs <- ystack2_group %>% select(-(V1:V13))
-  
-  # attach preannotate variables 
-  static <- cell_ID 
-  #static <- readRDS("data/data_for_annotation/Covs_WI_cell_20221126_static.rds")
-  # annual <- readRDS("data/data_for_annotation/Covs_WI_cell_20221126_annual.rds") %>% 
-  #   mutate(year = as.character(year))
-  # seasonal <- readRDS("data/data_for_annotation/Covs_WI_cell_20221126_seasonal.rds")
-  
-  # merge environmental and anthropogenic information previously extracted
-  covs <- left_join(covs, cell_ID, by="cellID", rlationship="many-to-many") #warning is fine 
-  # covs <- left_join(covs, annual)
-  # covs <- left_join(covs, seasonal)
-  
-  # Save files to run model on HPC
-  filename <- paste("data_for_modelling/", species, "_", Sys.Date(), ".RData", sep = "")
-  save(ystack, covs, species, file = filename)
-  
-}else{
-  
-  #' Save files to run model on HPC
-  filename <- paste("data/data_for_modeling/", species, "_", Sys.Date(), ".RData", sep = "")
-  save(ystack, covs, species, file = filename)
-}
+# Quick check 
+sum(is.na(covs$cell_ID))
+
+ystack2 <- as.data.frame(ystack) 
+ystack2 <- cbind(ystack2, covs)
+
+ystack2_group <- ystack2 %>% 
+  drop_na(cell_ID) %>% 
+  group_by(cell_ID, season, `year`) %>% 
+  summarise(n_depl = n(),
+            across(starts_with("V"), function(x) ifelse(all(is.na(x)), NA, max(x, na.rm = TRUE))),
+            across(starts_with("effort_w"), function(x) ifelse(all(is.na(x)), NA, sum(x, na.rm = TRUE))),
+            across(minjul_w1:minjul_w13, min),
+            proj = unique(proj),
+            period_counter = unique(period_counter)) %>% 
+  ungroup() 
+
+# Reorganize outputs for modeling
+ystack <- ystack2_group %>% dplyr::select(V1:V13)
+covs <- ystack2_group %>% dplyr::select(-(V1:V13))
+
+filename <- paste("data_for_modelling/", species, "_", Sys.Date(), ".RData", sep = "")
+save(ystack, covs, species, file = filename)
