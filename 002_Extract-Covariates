@@ -2,6 +2,10 @@
 ### Extract static and dynamic covariates #######################################
 #################################################################################
 
+# Generates the cell- and period-level covariates
+# Run ONCE but note: this extracts values for cell_IDs present in the WI dataset;
+# if you add sites to the dataset, you will need to re-extract the covariates 
+
 # set workspace -----------------------------------------------------------------
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers")
 rm(list=ls()); gc()
@@ -16,15 +20,23 @@ library(rnaturalearth)
 library(rnaturalearthdata)
 library(sf)
 library(arrow)
+library(purrr)
 
-# Reference raster -------------------------------------------------------------
+# Set up reference raster -----------------------------------------------------
+
+# Load
 reference <- rast("raster_100km2_with_cellID.tif")
+
+# Limit to cell_IDs present in dataset 
+site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+
+# Mask reference raster 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
 
 # Static layers ----------------------------------------------------------------
 
 # Read TIF files for static layers 
 static_layers <- list(
-  cellID    = reference,
   road_dist = rast("roads_100km2.tif"),
   elevation = rast("ele_100km2.tif"),
   tri       = rast("tri_100km2.tif"),
@@ -36,34 +48,12 @@ static_layers <- list(
 )
 r_c <- rast(static_layers)
 
-# Covert raster stack to data frame 
-head(grid_df <- as.data.frame(r_c, xy=T))
-
-# Add longitude and latitude from x/y coordiates 
-points_sf <- vect(grid_df[, c("x", "y")], geom = c("x", "y"), crs = crs(r_c))
-points_ll <- project(points_sf, "EPSG:4326")
-coords_latlon <- crds(points_ll, df = TRUE)
-names(coords_latlon) <- c("lon", "lat")
-grid_df <- cbind(grid_df, coords_latlon)
+# Extract cell_IDs
+extracted <- terra::zonal(r_c, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
 
 # Save 
-write.csv(grid_df, "../site_level_covariates.csv", row.names = FALSE)
-
-# Extract values for each project site (proj_depl)
-setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/")
-
-site_coords <- read.csv("site_coords.csv") %>% 
-  mutate(latitude = as.numeric(latitude_fix)) %>% 
-  mutate(longitude = as.numeric(longitude_fix)) %>% 
-  drop_na(latitude, longitude) %>% #a header is included as row of data; remove 
-  select(-c(latitude_fix, longitude_fix))
-
-points_vect <- vect(site_coords, geom=c("longitude", "latitude"), crs=crs(points_ll))
-points_vect_proj <- project(points_vect, crs(r_c)) #reproject 
-values_at_points <- terra::extract(r_c, points_vect_proj)
-site_coords <- cbind(site_coords, values_at_points)
-
-write.csv(site_coords, "proj_depl_level_covariates.csv", row.names=F)
+write.csv(extracted, "site_level_covariates.csv", row.names = FALSE)
 
 # Dynamic layers ---------------------------------------------------------------
 
@@ -85,72 +75,258 @@ periods$year <- year(periods$start_period)
 periods$period_counter <- 1:nrow(periods)
 head(periods)
 
-# Limit to terrestrial cellIDs 
-world <- ne_countries(scale = "medium", returnclass = "sf") %>%
-  st_transform(crs(reference))
-cropped_ref <- crop(reference, vect(world))
-masked_ref <- mask(cropped_ref, vect(world))
-ref_df <- as.data.frame(masked_ref, xy=T)
 
-# Read TIF files for ANNUAL dynamic layers 
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers")
+## Annual dynamic layers ------------------------------------------------------
 
-cov_rasters <- stack(c(
-  rast("annprec_2010_100km2.tif"),
-  rast("annprec_2040_100km2.tif"),
-  rast("anntemp_2010_100km2.tif"),
-  rast("anntemp_2040_100km2.tif"),
-  rast("precseas_2010_100km2.tif"),
-  rast("precseas_2040_100km2.tif"),
-  rast("precwarm_2010_100km2.tif"),
-  rast("precwarm_2040_100km2.tif"),
-  rast("GWP/gwp_2000_100km2.tif"),
-  rast("GWP/gwp_2005_100km2.tif"),
-  rast("GWP/gwp_2010_100km2.tif"),
-  rast("GWP/gwp_2015_100km2.tif"),
-  rast("GWP/gwp_2020_100km2.tif")
-))
-cov_df <- as.data.frame(cov_rasters, xy = TRUE)
-cov_df <- merge(ref_df, cov_df, by = c("x", "y"), all.x = TRUE)
+# Function to predict CHELSA variables for years between those with values (1999-2010, 2011-2040) with 95% CI 
+custom_predict <- function(model, data) {
+  if (!inherits(model, "lm")) {
+    return(tibble(year = numeric(0),
+                  mean_cov = numeric(0),
+                  upp_95ci = numeric(0),
+                  low_95ci = numeric(0)))
+  }
+  
+  # Detect min and max year from the data used to fit the model
+  temp_range <- range(data$year, na.rm = TRUE)
+  newdat <- data.frame(year = seq(temp_range[1], temp_range[2], 1))
+  
+  # Predict with standard error
+  preds <- predict(model, newdat, se.fit = TRUE)
+  
+  newdat <- mutate(newdat,
+                   mean_cov = preds$fit,
+                   upp_95ci = preds$fit + 1.96 * preds$se.fit,
+                   low_95ci = preds$fit - 1.96 * preds$se.fit)
+  
+  newdat
+}
 
-# Reshape and expand year range 
+# Read TIF files for ANNUAL PRECIP ---    
+r_list <- list(
+  precip_1999 = rast("annprec_2010_100km2.tif"),
+  precip_2011 = rast("annprec_2040_100km2.tif")
+)
+r_stack <- rast(r_list)
 
-df_long <- cov_df %>%
-  pivot_longer(-c(cell_ID, x, y), names_to = "covariate", values_to = "value") %>%
+# Extract cell_IDs
+extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+
+# Model data for intervening years 
+cov_df <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "precip_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
   mutate(
-    start_year = as.numeric(str_extract(covariate, "(?<=_)[0-9]{4}(?=_)")),
-    end_year   = as.numeric(str_extract(covariate, "(?<=_[0-9]{4}_)\\d{4}$"))
-  )
-
-df_expanded <- df_long %>%
-  rowwise() %>%
-  mutate(year = list(seq(start_year, end_year))) %>%
-  unnest(year) %>%
-  select(-start_year, -end_year)
-
-cov_df_final <- periods %>%
-  left_join(df_expanded, by = "year")
-
-# Recode covariate names
-cov_df_final <- cov_df_final %>%
-  mutate(
-    covariate = case_when(
-      covariate %in% c("Bio12_1999_2010", "Bio12_2011_2024") ~ "precip",
-      covariate %in% c("Bio1_1999_2010",  "Bio1_2011_2024")  ~ "temp",
-      covariate %in% c("Bio15_1999_2010", "Bio15_2011_2024") ~ "seas_prec",
-      covariate %in% c("Bio18_1999_2010", "Bio18_2011_2024") ~ "warm_prec",
-      TRUE ~ covariate
-    )
-  )
+    model = map(data, ~{
+      df <- .x %>% filter(!is.na(cov))
+      if (nrow(df) > 1) lm(cov ~ year, data = df) else NA
+    }),
+    pred = map2(model, data, ~custom_predict(.x, .y))
+  ) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_cov,
+         year = as.numeric(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods, by = "year", relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
 
 # Save 
-write_parquet(cov1_df_final, "dynamic_annual_covariates/dynamic_annual_covariates.parquet")
-write.csv(cov1_df_final, "dynamic_annual_covariates.csv", row.names = F)
+write.csv(cov_df, "primary_occ_covariates_precip.csv", row.names = F)
 
-# clear workspace
-rm(df_expanded, df_long, cov_df, cov_rasters); gc()
 
-# read DYNAMIC covariates - EVI monthly -----------------------------------------
+# Read TIF files for ANNUAL TEMP ---    
+r_list <- list(
+  temp_1999 = rast("anntemp_2010_100km2.tif"),
+  temp_2011 = rast("anntemp_2040_100km2.tif")
+)
+r_stack <- rast(r_list)
+
+# Extract cell_IDs
+extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+
+# Model data for intervening years 
+cov_df <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "temp_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
+  mutate(
+    model = map(data, ~{
+      df <- .x %>% filter(!is.na(cov))
+      if (nrow(df) > 1) lm(cov ~ year, data = df) else NA
+    }),
+    pred = map2(model, data, ~custom_predict(.x, .y))
+  ) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_cov,
+         year = as.numeric(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods, by = "year", relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+# Save 
+write.csv(cov_df, "primary_occ_covariates_temp.csv", row.names = F)
+
+
+# Read TIF files for SEASONAL PRECIP ---    
+r_list <- list(
+  precseas_1999 = rast("precseas_2010_100km2.tif"),
+  precseas_2011 = rast("precseas_2040_100km2.tif")
+)
+r_stack <- rast(r_list)
+
+# Extract cell_IDs
+extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+
+# Model data for intervening years 
+cov_df <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "precseas_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
+  mutate(
+    model = map(data, ~{
+      df <- .x %>% filter(!is.na(cov))
+      if (nrow(df) > 1) lm(cov ~ year, data = df) else NA
+    }),
+    pred = map2(model, data, ~custom_predict(.x, .y))
+  ) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_cov,
+         year = as.numeric(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods, by = "year", relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+# Save 
+write.csv(cov_df, "primary_occ_covariates_precseas.csv", row.names = F)
+
+
+# Read TIF files for WARMEST SEASON PRECIP --    
+r_list <- list(
+  warmseas_1999 = rast("precwarm_2010_100km2.tif"),
+  warmseas_2011 = rast("precwarm_2040_100km2.tif")
+)
+r_stack <- rast(r_list)
+
+# Extract cell_IDs
+extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+
+# Model data for intervening years 
+cov_df <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "warmseas_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
+  mutate(
+    model = map(data, ~{
+      df <- .x %>% filter(!is.na(cov))
+      if (nrow(df) > 1) lm(cov ~ year, data = df) else NA
+    }),
+    pred = map2(model, data, ~custom_predict(.x, .y))
+  ) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_cov,
+         year = as.numeric(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods, by = "year", relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+# Save 
+write.csv(cov_df, "primary_occ_covariates_warmseas.csv", row.names = F)
+
+
+# Read TIF files for GWP --- 
+gwp_list_raster <- NULL 
+gwp <- list.files("GWP")
+for(i in 1:length(gwp)){
+  file.to.load <- paste0("GWP/",gwp[i]) 
+  r <- rast(file.to.load)
+  gwp_list_raster[[i]] <- r
+  rm(r)
+}
+gwp_stack <- rast(gwp_list_raster)
+
+# extract mean values for each cell_ID across all rasters in the stack
+extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+head(extracted)
+
+# to predict GPW for years between those with values (2000-2005-2010-2020) with 95% CI 
+custom_predict <- function(model, temp_range = c(min_year, max_year)) {
+  # 95% confidence interval is first calculated on the link scale and then back-transformed:
+  
+  # build new dataframe
+  newdat = data.frame(year = seq(temp_range[1], temp_range[2], 1))
+  
+  # extract the inverse link function from model
+  ilink <- family(model)$linkinv
+  # add fit and se.fit on the logit scale
+  newdat <- bind_cols(newdat, setNames(as_tibble(predict(model, newdat, se.fit = TRUE)[1:2]),
+                                       c('fit_link','se_link')))
+  # create the interval and backtransform
+  newdat <- mutate(newdat,
+                   mean_GPW  = ilink(fit_link),
+                   upp_95ci = ilink(fit_link + (1.96 * se_link)),
+                   low_95ci = ilink(fit_link - (1.96 * se_link)))
+  newdat
+}
+
+GPW <- extracted %>%
+  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
+  mutate(year = as.numeric(str_remove(year, "GPW_"))) %>% 
+  group_by(cell_ID) %>% 
+  nest() %>% 
+  mutate(
+    model = map(data, ~{df <- .x %>% filter(!is.na(cov))
+      if (nrow(df) > 1) {
+        lm(cov ~ year, data = df)
+      } else {NA} #returns NA if not enough data 
+    }),
+    pred = map(model, ~{
+      if (is.list(.x)) {
+        custom_predict(.x)
+      } else {NA} #returns NA if no model prediction 
+    })
+  ) %>%
+  unnest(pred) %>% 
+  ungroup() %>% 
+  mutate(cov = mean_GPW,
+         year = as.character(year)) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year %in% periods$year) %>% 
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+# Save 
+write.csv(GPW, "primary_occ_covariates_GPW.csv", row.names = F)
+
+
+# Read TIF files for EVI --- 
 evi_list_raster <- NULL 
 evi <- list.files("EVI")
 for(i in 1:length(evi)){
@@ -159,16 +335,15 @@ for(i in 1:length(evi)){
   evi_list_raster[[i]] <- r
   rm(r)
 }
+evi_stack <- rast(evi_list_raster)
+names(evi_stack) <- gsub('.{11}$', '', evi)
 
-# stack rasters 
-covs_2 <- rast(evi_list_raster)
-names(covs_2) <- gsub('.{11}$', '', evi)
+# extract mean values for each cell_ID across all rasters in the stack
+extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+head(extracted)
 
-# tweak dynamic values 
-head(cov2_df <- as.data.frame(covs_2, xy=T)) 
-head(cov2_df <- merge(ref_df, cov2_df, by=c("x","y"), all.x=T))
-
-df_long <- cov2_df %>%
+# format dataframe 
+EVI_long <- extracted %>%
   pivot_longer(cols = starts_with("evi_"),  
                names_to = "covariate",
                values_to = "cov_value") %>%
@@ -176,29 +351,108 @@ df_long <- cov2_df %>%
     year = as.numeric(sub("evi_(\\d{4})_(\\d{3})", "\\1", covariate)),  
     day_of_year = as.numeric(sub("evi_\\d{4}_(\\d{3})", "\\1", covariate)),  
     date = as.Date(paste(year, day_of_year), format = "%Y %j")  
+  ) %>% 
+  filter(year %in% periods$year) %>% 
+  select(c(cell_ID, cov_value, date))
+
+EVI_joined <- EVI_long %>%
+  left_join(periods %>% mutate(dummy = 1), by = character()) %>% 
+  filter(date >= start_period & date <= end_period) %>% 
+  group_by(cell_ID, period_counter) %>% #for when multiple values per cell per period 
+  summarise(
+    cov_value = mean(cov_value, na.rm = TRUE),
+    .groups = "drop"
   )
 
-periods_replicated <- periods %>%
-  mutate(key = 1) %>%
-  left_join(cov2_df %>% select(cell_ID) %>% distinct() %>% mutate(key = 1), by = "key") %>%
-  select(-key)
+EVI_mat <- EVI_joined %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
 
-merged_df <- df_long %>%
-  left_join(periods_replicated, by = "cell_ID") %>%
-  filter(date >= start_period & date <= end_period)
-head(merged_df)
+write.csv(EVI_mat, "primary_occ_covariates_EVI.csv")
 
-write_parquet(merged_df, "../dynamic_monthly_covariates/dynamic_monthly_covariates.parquet")
 
-rm()
+# Read TIF files for CROP ---     
+crop_list_raster <- NULL 
+crop <- list.files("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 CROP")
+for(i in 1:length(crop)){
+  file.to.load <- paste0("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 CROP/",crop[i])
+  r <- rast(file.to.load)
+  crop_list_raster[[i]] <- r
+  rm(r)
+}
+crop_stack <- rast(crop_list_raster)
 
-# read DYNAMIC covariates - CCI annual ------------------------------------------
-#cci_list_raster <- NULL 
-#cci <- list.files("CCI")
-#for(i in 1:length(cci)){
-#  file.to.load <- paste0("CCI/",cci[i])
-#  r <- rast(file.to.load)
-#  cci_list_raster[[i]] <- r
-#  rm(r)
-#}
-#covs_2 <- rast(cci_list_raster)
+# extract mean values for each cell_ID across all rasters in the stack
+extracted <- terra::zonal(crop_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+head(extracted)
+
+# format data 
+CROP_long <- extracted %>%
+  pivot_longer(cols = starts_with("CCI_"),  
+               names_to = "covariate",
+               values_to = "cov_value") %>%
+  mutate(year = as.numeric(sub("CCI_(\\d{4}).*", "\\1", covariate))) %>%
+  filter(year %in% periods$year) %>% 
+  select(c(cell_ID, cov_value, year)) %>% 
+  distinct()
+
+CROP_joined <- CROP_long %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+write.csv(CROP_joined, "primary_occ_covariates_crop.csv", row.names=F)
+
+
+# Read TIF files for URBAN ---    
+urban_list_raster <- NULL 
+urban <- list.files("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 URBAN")
+for(i in 1:length(urban)){
+  file.to.load <- paste0("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 URBAN/",urban[i])
+  r <- rast(file.to.load)
+  urban_list_raster[[i]] <- r
+  rm(r)
+}
+urban_stack <- rast(urban_list_raster)
+
+# extract mean values for each cell_ID across all rasters in the stack
+extracted <- terra::zonal(urban_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+head(extracted)
+
+# format data 
+URBAN_long <- extracted %>%
+  pivot_longer(cols = starts_with("CCI_"),  
+               names_to = "covariate",
+               values_to = "cov_value") %>%
+  mutate(year = as.numeric(sub("CCI_(\\d{4}).*", "\\1", covariate))) %>%
+  filter(year %in% periods$year) %>% 
+  select(c(cell_ID, cov_value, year)) %>% 
+  distinct()
+
+URBAN_joined <- URBAN_long %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+write.csv(df_joined, "primary_occ_covariates_urban.csv", row.names=F)
+
+
+# propWDPA --- 
+wdpa <- read.csv("wpdf_prop.csv")
+
+WDPA_joined <- wdpa %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, prop_inside) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_inside, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  as.matrix()
+
+write.csv(WDPA_joined, "primary_occ_covariates_wdpa.csv", row.names=F)
