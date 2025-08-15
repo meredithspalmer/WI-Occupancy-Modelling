@@ -1,0 +1,451 @@
+#################### Covariate download and pre-processing #####################
+
+# Some data downloaded manually, others through following code
+# Code also contains scripts for aggregating and summarizing values at 10x10km2 scale 
+
+# Run ONE TIME 
+
+################################################################################
+### Bulk Download EVI ##########################################################
+################################################################################
+
+# Downloads EVI files by continent from EOSDIS 
+
+# Set workspace
+rm(list=ls())
+setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers")
+
+# Load libraries 
+library(modisfast)
+library(sf)
+library(terra)
+library(spData)
+library(ggplot2)
+
+# Grab countries 
+data(world)
+countries <- world$name_long
+
+# Select data of interest -----------------------------------------------------
+
+# Login to EOSDIS Earthdata with your username and password --> UPDATE WITH YOUR OWN 
+log <- mf_login(credentials = c("USERNAME", "PASSWORD"))
+
+# Define MODIS collections and variables (bands) of interest
+collection <- "MOD13A3.061" # run mf_list_collections() for an exhaustive list of collections available
+variables <- c("_1_km_monthly_EVI") # run mf_list_variables("MOD13A3.061") for an exhaustive list of variables available for the collection "MOD13A3.061"
+
+# Run for each country for each year ------------------------------------------
+
+# Manually set (easier than looping)
+i <-1 
+
+# Set ROI of interest
+(where <- countries[i])
+country <- world[world$name_long == where,]
+roi <- st_as_sf(data.frame(id = where, geom = st_as_sfc(st_bbox(country))))
+ggplot() + geom_sf(data=roi) + geom_sf(data=country) #check
+
+
+# Loop through years 
+for(year in seq(2001,2024)){ 
+  
+  # set time frame of interest 
+  (start.date <- paste0(year,"-01-01"))
+  (end.date <- paste0(year,"-12-31"))
+  (time_range <- as.Date(c(start.date, end.date)))
+  
+  # get the URLs of the data
+  urls <- mf_get_url(
+    collection = collection,
+    variables = variables,
+    roi = roi,
+    time_range = time_range)
+  
+  # download the data
+  res_dl <- mf_download_data(urls, parallel = TRUE)
+  
+  # transform to raster 
+  r <- mf_import_data(
+    path = dirname(res_dl$destfile[1]),
+    collection = collection,
+    proj_epsg = 4326
+  )
+  
+  # check and save 
+  terra::plot(r, col = rev(terrain.colors(20)))
+  (filename <- paste0(where,"_",year,".tif"))
+  writeRaster(r, filename)
+}
+
+
+################################################################################
+### Aggregate 1km2 data to 100km2 ##############################################
+################################################################################
+
+# Downloads EVI files by continent from EOSDIS 
+
+# Set workspace 
+rm(list=ls())
+setwd("/Users/meredithspalmer/Desktop/Work/Yale/WI_Occupancy")
+
+# Load libraries 
+library(terra)
+library(stringr)
+
+# Create 10x10 km raster grid -------------------------------------------------
+ref_raster <- rast("Global_1km_CEA_reference_raster.tif")
+crs(ref_raster)
+nrow(ref_raster); ncol(ref_raster)
+
+raster_100km2 <- aggregate(ref_raster, fact=10) #10 units in each direction 
+crs(raster_100km2)
+nrow(raster_100km2); ncol(raster_100km2)
+
+# Load data layers ------------------------------------------------------------
+
+# Roads
+roads <- rast("Spatial layers/distance_to_GRIP_roads.tif")
+plot(roads)
+crs(roads) == crs(raster_100km2) #same projection? 
+origin(roads); origin(ref_raster) #align
+nrow(roads); ncol(roads)
+roads_100km2 <- aggregate(roads, fact=10, fun="mean")
+plot(roads_100km2)
+origin(roads_100km2); origin(raster_100km2) 
+rm(roads)
+writeRaster(roads_100km2, "Spatial layers/10x10km layers/roads_100km2.tif")
+
+# Elevation
+ele <- rast("Spatial layers/elevation_1KMmean_SRTM.tif")
+plot(ele)
+crs(ele) == crs(raster_100km2) #same projection? 
+origin(ele); origin(ref_raster) #align
+nrow(ele); ncol(ele)
+ele_100km2 <- aggregate(ele, fact=10, fun="mean")
+plot(ele_100km2)
+origin(ele_100km2); origin(raster_100km2) 
+rm(ele)
+writeRaster(ele_100km2, "Spatial layers/10x10km layers/ele_100km2.tif")
+
+# Terrain ruggedness index  
+tri <- rast("Spatial layers/tri_1KMmn_SRTM.tif")
+plot(tri)
+crs(tri) == crs(raster_100km2) #same projection? 
+origin(tri); origin(ref_raster) #align
+nrow(tri); ncol(tri)
+tri_100km2 <- aggregate(tri, fact=10, fun="mean")
+plot(tri_100km2)
+origin(tri_100km2); origin(raster_100km2) 
+rm(tri)
+writeRaster(tri_100km2, "Spatial layers/10x10km layers/tri_100km2.tif")
+
+# Distance to rivers
+riv <- rast("Spatial layers/distance_to_wwf_hydrosheds_v1_river.tif")
+plot(riv)
+crs(riv) == crs(raster_100km2) #same projection? 
+origin(riv); origin(ref_raster) #align
+nrow(riv); ncol(riv)
+riv_100km2 <- aggregate(riv, fact=10, fun="mean")
+plot(riv_100km2)
+origin(riv_100km2); origin(raster_100km2) 
+rm(riv)
+writeRaster(riv_100km2, "Spatial layers/10x10km layers/riv_100km2.tif")
+
+# Human population density THIS HAS 5 LAYERS 
+gwp <- rast("Spatial layers/gpw_v4_PopDensity_rev11.tif")
+plot(gwp)
+crs(gwp) == crs(raster_100km2) #same projection? 
+origin(gwp); origin(ref_raster) #align
+nrow(gwp); ncol(gwp)
+gwp_100km2 <- aggregate(gwp, fact=10, fun="mean")
+plot(gwp_100km2)
+origin(gwp_100km2); origin(raster_100km2) 
+rm(gwp)
+writeRaster(riv_100km2, "Spatial layers/10x10km layers/riv_100km2.tif")
+
+# Coefficient of variation 
+cv <- rast("Spatial layers/cv_01_05_1km_uint16.tif")
+plot(cv)
+crs(cv) == crs(raster_100km2) #same projection? 
+origin(cv); origin(ref_raster) #align
+nrow(cv); ncol(cv)
+cv_100km2 <- aggregate(cv, fact=10, fun="mean")
+plot(cv_100km2)
+origin(cv_100km2); origin(raster_100km2) 
+rm(cv)
+writeRaster(cv_100km2, "Spatial layers/10x10km layers/cv_100km2.tif")
+
+# For new CHELSA layers (2011-2040), note that using GFDL-ESM4 model 
+# --> National Oceanic and Atmospheric Administration, Geophysical Fluid Dynamics Laboratory, Princeton, NJ 08540, USA 
+# Reproject (using "nearest neighbour"), set extent and resolution of these layers in QGIS, making the extent/resolution of the reference layer 
+
+# Annual temp: bio1 - 1981 to 2010
+oldbio1 <- rast("Spatial layers/CHELSA_bio1_1981-2010_v2-1.tif") #HPC preprocessed 
+plot(oldbio1)
+crs(oldbio1) == crs(raster_100km2) #same projection? 
+origin(oldbio1); origin(ref_raster) #align
+nrow(oldbio1); ncol(oldbio1)
+ob1_100km2 <- aggregate(oldbio1, fact=10, fun="mean")
+plot(ob1_100km2)
+origin(ob1_100km2); origin(raster_100km2) 
+rm(cv)
+writeRaster(ob1_100km2, "Spatial layers/10x10km layers/anntemp_2010_100km2.tif")
+
+# Annual temp: bio1 - 2011 to 2024 (reprojected in QGIS)
+newbio1 <- rast("Spatial layers/Projected CHELSA/warped_CHELSA_bio1_2011-2040_v2-1.tif") 
+plot(newbio1)
+crs(newbio1) == crs(raster_100km2) #same projection? 
+ext(newbio1) == ext(ref_raster)
+origin(newbio1); origin(ref_raster) #align
+nrow(newbio1); ncol(newbio1)
+newbio1_100km2 <- aggregate(newbio1, fact=10, fun="mean")
+plot(newbio1_100km2)
+origin(newbio1_100km2); origin(raster_100km2) 
+rm(newbio1)
+writeRaster(newbio1_100km2, "Spatial layers/10x10km layers/anntemp_2040_100km2.tif")
+
+# Annual precipitation: bio12 - 1981 to 2010
+oldbio12 <- rast("Spatial layers/CHELSA_bio12_1981-2010_v2-1.tif") #HPC preprocessed 
+plot(oldbio12)
+crs(oldbio12) == crs(raster_100km2) #same projection? 
+origin(oldbio12); origin(ref_raster) #align
+nrow(oldbio12); ncol(oldbio12)
+ob12_100km2 <- aggregate(oldbio12, fact=10, fun="mean")
+plot(ob12_100km2)
+origin(ob12_100km2); origin(raster_100km2) 
+rm(oldbio12)
+writeRaster(ob12_100km2, "Spatial layers/10x10km layers/annprec_2010_100km2.tif")
+
+# Annual precipitation: bio12 - 2011 to 2040
+newbio12 <- rast("Spatial layers/Projected CHELSA/warped_CHELSA_bio12_2011-2040_v2-1.tif") 
+plot(newbio12)
+crs(newbio12) == crs(raster_100km2) #same projection? 
+ext(newbio12) == ext(ref_raster) #same extent
+origin(newbio12); origin(ref_raster) #align
+nrow(newbio12); ncol(newbio12)
+nb12_100km2 <- aggregate(newbio12, fact=10, fun="mean")
+plot(nb12_100km2)
+origin(nb12_100km2); origin(raster_100km2) 
+rm(newbio12)
+writeRaster(nb12_100km2, "Spatial layers/10x10km layers/annprec_2040_100km2.tif")
+
+# Seasonal precipitation: bio15 - 1981 to 2010
+# note: HPC layer threw errors, so redownloaded and processed original data 
+oldbio15 <- rast("Spatial layers/Projected CHELSA/warped_CHELSA_bio15_1981-2010_v2-1.tif")
+plot(oldbio15) 
+crs(oldbio15) == crs(raster_100km2) #same projection? 
+origin(oldbio15); origin(ref_raster) #align
+nrow(oldbio15); ncol(oldbio15)
+ob15_100km2 <- aggregate(oldbio15, fact=10, fun="mean")
+plot(ob15_100km2) 
+origin(ob15_100km2); origin(raster_100km2) 
+rm(oldbio15)
+writeRaster(ob15_100km2, "Spatial layers/10x10km layers/precseas_2010_100km2.tif")
+
+# Seasonal precipitation: bio15 - 2011 to 2040
+newbio15 <- rast("Spatial layers/Projected CHELSA/warped_CHELSA_bio15_2011-2040_v2-1.tif") 
+plot(newbio15)
+crs(newbio15) == crs(raster_100km2) #same projection? 
+ext(newbio15) == ext(ref_raster) #same extent
+origin(newbio15); origin(ref_raster) #align
+nrow(newbio15); ncol(newbio15)
+nb15_100km2 <- aggregate(newbio15, fact=10, fun="mean")
+plot(nb15_100km2)
+origin(nb15_100km2); origin(raster_100km2) 
+rm(newbio15)
+writeRaster(nb15_100km2, "Spatial layers/10x10km layers/precseas_2040_100km2.tif")
+
+# Precip warmest quarter: bio18 - 1981 to 2010
+# note: no HPC layer, so downloaded and processed 
+oldbio18 <- rast("Spatial layers/Projected CHELSA/warped_CHELSA_bio18_1981-2010_v2-1.tif")
+plot(oldbio18) 
+crs(oldbio18) == crs(raster_100km2) #same projection? 
+origin(oldbio18); origin(ref_raster) #align
+nrow(oldbio18); ncol(oldbio18)
+ob18_100km2 <- aggregate(oldbio18, fact=10, fun="mean")
+plot(ob18_100km2) 
+origin(ob18_100km2); origin(raster_100km2) 
+rm(oldbio18)
+writeRaster(ob18_100km2, "Spatial layers/10x10km layers/precwarm_2010_100km2.tif")
+
+# Seasonal precipitation: bio18 - 2011 to 2040
+newbio18 <- rast("Spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif") 
+plot(newbio18)
+crs(newbio18) == crs(raster_100km2) #same projection? 
+ext(newbio18) == ext(ref_raster) #same extent
+origin(newbio18); origin(ref_raster) #align
+nrow(newbio18); ncol(newbio18)
+nb18_100km2 <- aggregate(newbio18, fact=10, fun="mean")
+plot(nb18_100km2)
+origin(nb18_100km2); origin(raster_100km2) 
+rm(newbio18)
+writeRaster(nb18_100km2, "Spatial layers/10x10km layers/precwarm_2040_100km2.tif")
+
+
+################################################################################
+### Prop WDRA ##################################################################
+################################################################################
+
+# Calculates the proportion of each grid cell contained within a WDPA polygon
+
+# Set workspace
+library(terra)
+library(sf)
+library(dplyr)
+rm(list=ls())
+gc()
+
+# Set wd 
+setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/WDPA_Jan2025_Public_shp")
+
+# Load reference data 
+reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
+site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+
+# Subset to site cells 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+
+# Load and reproject WDPA files 
+shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
+shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
+shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+
+# Combine all parts
+wdpa_all <- rbind(shape1, shape2, shape3)
+
+# Convert to polygon 
+grid_sub <- as.polygons(reference_sub) %>% st_as_sf() 
+
+# Reproject to match grid (EPSG:6933)
+wdpa_all <- st_transform(wdpa_all, st_crs(grid_sub))
+
+# Compute proportion inside per year
+years <- 1999:2024
+results_list <- vector("list", length(years))
+
+# Precompute full cell area (all cells are the same size)
+cell_area <- as.numeric(st_area(grid_sub)[1])
+
+for (yr in years) {
+  
+  # filter polygons designated up to this year
+  wdpa_yr <- wdpa_all %>% filter(STATUS_YR <= yr)
+  
+  if (nrow(wdpa_yr) > 0) {
+    
+    # intersect grid cells with WDPA polygons
+    inter <- st_intersection(grid_sub, wdpa_yr)
+    
+    # compute proportion of each cell inside protected areas
+    prop_df <- inter %>%
+      mutate(intersect_area = st_area(.),
+             prop_inside = as.numeric(intersect_area) / cell_area) %>%
+      st_drop_geometry() %>%
+      group_by(cell_ID) %>%
+      summarise(prop_inside = sum(prop_inside, na.rm = TRUE)) %>%
+      ungroup()
+    
+    # join back to full grid (fill missing with 0)
+    out <- grid_sub %>%
+      st_drop_geometry() %>%
+      left_join(prop_df, by = "cell_ID") %>%
+      mutate(prop_inside = ifelse(is.na(prop_inside), 0, pmin(prop_inside, 1)),
+             year = yr)
+    
+  } else {
+    # no protected areas yet: prop_inside = 0
+    out <- grid_sub %>%
+      st_drop_geometry() %>%
+      transmute(cell_ID, prop_inside = 0, year = yr)
+  }
+  
+  results_list[[yr - min(years) + 1]] <- out
+}
+
+# Combine all years into one dataframe
+final_df <- bind_rows(results_list)
+write.csv(final_df, "prop_wdpa.csv", row.names=F)
+
+
+
+################################################################################
+### Prop Crop & Urban ##########################################################
+################################################################################
+
+# Calculates the proportion of each grid cell containing crop or urban landscape
+
+# Library
+library(terra)
+library(rnaturalearth)
+library(dplyr)
+library(stringr)
+
+# Set wd 
+setwd("/Users/meredithspalmer/Desktop/Work/Yale/WI_Occupancy/Spatial layers")
+rm(list = ls())
+gc()
+
+# Load reference data 
+reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
+site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+
+# Subset to site cells 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+
+# Define cropland and urban landcover classes 
+# "agriculture" and "settlement" classes defined based on Table 1-4
+# from https://dast.copernicus-climate.eu/documents/satellite-land-cover/WP2-FDDP-LC-2021-2022-SENTINEL3-300m-v2.1.1_PUGS_v1.1_final.pdf 
+crop_class <- c(10, 11, 12, #rainfed cropland
+                20, #irregated cropland
+                30, #mosaic cropland (>50%)
+                40) #mosaic natural veg (cropland <50%)
+urban_class <- 190 #urban                       # urban class
+
+# Function to calculate proportions
+calculate_proportion <- function(class_values, lc_raster, grid_raster) {
+  binary_raster <- lc_raster %in% class_values
+  proportion <- zonal(binary_raster, grid_raster, fun = "mean", na.rm = TRUE)
+  colnames(proportion) <- c("cell_ID", "proportion")
+  return(proportion)
+}
+
+# Get list of all landcover rasters in folder
+lc_files <- list.files("1x1km layers", pattern = "\\.tif$", full.names = TRUE)
+
+# Empty data frames to store results
+crop_all  <- data.frame()
+urban_all <- data.frame()
+
+# Loop through each raster and calculate proportions
+for (file in lc_files) {
+  
+  message("Processing: ", file)
+  
+  # Load raster
+  landcover <- rast(file)
+  
+  # Reproject if needed
+  if (!compareGeom(landcover, reference_sub, stopOnError = FALSE)) {
+    landcover <- project(landcover, reference_sub)
+  }
+  
+  # Extract year from filename (4 consecutive digits)
+  year <- str_extract(basename(file), "\\d{4}")
+  
+  # Calculate proportions
+  crop_prop  <- calculate_proportion(crop_class,  landcover, reference_sub)
+  urban_prop <- calculate_proportion(urban_class, landcover, reference_sub)
+  
+  # Add year column
+  crop_prop$year  <- as.numeric(year)
+  urban_prop$year <- as.numeric(year)
+  
+  # Append to master data frames
+  crop_all  <- bind_rows(crop_all, crop_prop)
+  urban_all <- bind_rows(urban_all, urban_prop)
+}
+
+# Save combined outputs
+write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names = FALSE)
+write.csv(urban_all, "urban_proportion_all_years.csv", row.names = FALSE)
