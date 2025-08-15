@@ -1,0 +1,328 @@
+##########################
+##### Running models ##### 
+##########################
+
+## User-defined functions -----------------------------------------------------
+
+# Function to create initial values for covariates with NAs
+prep_inits <- function(x = NULL){
+  # initial conditions. 1 should be NA, NA should be a 0 or 1
+  xinits <- x
+  xinits[!is.na(x)] <- NA
+  xinits[is.na(x)] <- sample(unique(c(x))[!is.na(unique(c(x)))], sum(is.na(x)), replace=TRUE)
+  return(xinits)
+}
+
+# Scaling functions
+scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
+scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
+
+## Reload data if saved -------------------------------------------------------
+
+(filenames <- list.files("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/data_for_modelling", full.names = TRUE))
+filename <- filenames[1]
+
+load(filename)
+print(target_species)
+print(nrow(ystack))
+print(nrow(covs))
+
+## Organize data and covariates -----------------------------------------------
+
+# Remove cases without cell_ID
+ystack <- cbind(ystack, covs %>% dplyr::select(cell_ID)) %>% drop_na(cell_ID)
+covs <- covs %>% drop_na(cell_ID)
+
+# Set dimensions
+(ncell <- length(unique(covs$cell_ID)))
+(nperiod <- length(seq(min(covs$period_counter), max(covs$period_counter), by = 1)))
+nweek <- 13
+(min_year <- min(covs$year))
+(max_year <- max(covs$year))
+cell_IDs <- unique(ystack2$cell_ID)
+
+periods <- data.frame(period_counter = seq(min(covs$period_counter), 
+                                           max(covs$period_counter), by = 1)) %>% 
+  left_join(covs %>% dplyr::select(period_counter, season, year) %>% distinct()) 
+
+# fill gaps
+for(i in 1:nrow(periods)){
+  if(is.na(periods$season[i])){
+    
+    # fix NAs in season
+    if(as.character(periods$season[i-1]) == "Spring") {
+      periods$season[i] <-  "Summer"
+    } else if(as.character(periods$season[i-1]) == "Summer") {
+      periods$season[i] <-  "Fall"
+    } else if(as.character(periods$season[i-1]) == "Fall") {
+      periods$season[i] <-  "Winter"
+    } else {
+      periods$season[i] <-  "Spring"
+    }
+    
+    # fix NAs in year
+    if(as.character(periods$season[i-1]) == "Winter") {
+      periods$year[i] = periods$year[i-1]+1
+    } else {
+      periods$year[i] = periods$year[i-1] 
+    }
+  }
+}
+
+## Observations ---------------------------------------------------------------
+ystack2 <- cbind(ystack, covs %>% dplyr::select(cell_ID, period_counter)) %>% 
+  pivot_longer(V1:V13, names_to = "week", values_to = "det", values_drop_na = TRUE) %>% 
+  mutate(week = as.numeric(str_remove(week, pattern = "V")),
+         period_counter = paste0("p", period_counter)) 
+ystack2 <- ystack2[order(ystack2$cell_ID),]
+
+yarray <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(yarray) <- unique(covs$cell_ID)
+colnames(yarray) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+
+for(i in 1:nrow(ystack2)){
+  yarray[as.character(ystack2$cell_ID[i]),
+         as.character(ystack2$period_counter[i]),
+         ystack2$week[i]] <- ystack2$det[i]
+}
+
+# WHAT IS THIS? 
+zobs <- apply(yarray, c(1,2), function(x) max(x, na.rm = TRUE))
+table(zobs)
+zobs <- na_if(zobs, -Inf)
+(psi.obs <- apply(zobs, 2, sum, na.rm = TRUE) / apply(zobs, 2, function(x) sum(!is.na(x))))
+
+
+## Coordinates ----------------------------------------------------------------
+coords <- as.data.frame(rast("raster_100km2_with_cellID.tif"), xy=T) %>% 
+  filter(cell_ID %in% cell_IDs) %>% 
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID)
+
+
+## Covariates: spatial (dim: ncell) ------------------------------------------- 
+csv_files <- list.files("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
+
+static <- read.csv(csv_files[[11]]) %>% 
+  filter(cell_ID %in% cell_IDs) %>% 
+  arrange(cell_ID)
+  
+  
+## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
+
+# Environmental 
+csv_files <- list.files("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
+
+crop <- read.csv(csv_files[[1]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+urban <- read.csv(csv_files[[7]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+evi <- read.csv(csv_files[[2]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+gpw <- read.csv(csv_files[[3]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+preci <- read.csv(csv_files[[4]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+temp <- read.csv(csv_files[[6]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+wdpa <- read.csv(csv_files[[9]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+
+NOTE -- some of these don not have first period: will have to reckon with (add NA column?) 
+
+# Ndepl 
+ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
+rownames(ndepl) <- unique(sort(covs$cell_ID))
+colnames(ndepl) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+for(i in 1:nrow(covs)){
+  ndepl[as.character(covs$cell_ID[i]),
+        as.character(paste0("p", covs$period_counter[i]))] <- covs$n_depl[i]
+}
+
+QUESTION: do we want 0s or NAs? 
+
+# Project_id 
+proj <- matrix(0, nrow = ncell, ncol = nperiod)
+rownames(proj) <- unique(sort(covs$cell_ID))
+colnames(proj) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+covs$proj_ft <- as.numeric(as.factor(covs$proj))
+for(i in seq_len(nrow(covs))){
+  r <- as.character(covs$cell_ID[i])
+  c <- paste0("p", covs$period_counter[i])
+  proj[r, c] <- covs$proj_ft[i]
+}
+
+QUESTION: do we want 0s or NAs? 
+
+# Season 
+Season <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
+  tidyr::crossing(periods[1:2]) %>% 
+  mutate(season_num = as.factor(season),
+         season_num = as.numeric(fct_relevel(season_num, "Winter", "Spring", "Summer", "Fall"))) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = season_num) %>% 
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+
+# Year 
+Year <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
+  tidyr::crossing(periods[, c(1,3)]) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = year) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+
+# Trend 
+trend <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
+  tidyr::crossing(periods[1:2]) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = period_counter) %>% 
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix() 
+
+
+## Covariates: observation-level (dim: ncell x nperiod x nweek) ---------------
+
+# Effort 
+effort_temp <- covs %>% 
+  dplyr::select(cell_ID, period_counter, effort_w1:effort_w13) %>% 
+  mutate_at(vars(matches("effort_w")), scale2) %>% 
+  pivot_longer(effort_w1:effort_w13, names_to = "week", values_to = "effort", 
+               values_drop_na = TRUE) %>% 
+  mutate(week = as.numeric(str_remove(week, "effort_w")),
+         period_counter = paste0("p", period_counter))
+
+effort <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(effort) <- unique(sort(covs$cell_ID))
+colnames(effort) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+for(i in 1:nrow(effort_temp)){
+  effort[as.character(effort_temp$cell_ID[i]),
+         as.character(effort_temp$period_counter[i]),
+         effort_temp$week[i]] <- effort_temp$effort[i]
+}
+
+QUESTION: how can effort be greater than 7? 
+
+# Minjul 
+minjul_temp <- covs %>% 
+  dplyr::select(cell_ID, period_counter, starts_with("minjul_w")) %>% 
+  mutate_at(vars(matches("minjul_w")), scale3)%>% 
+  pivot_longer(minjul_w1:minjul_w13, names_to = "week", values_to = "minjul", 
+               values_drop_na = TRUE) %>% 
+  mutate(week = as.numeric(str_remove(week, "minjul_w")),
+         period_counter = paste0("p", period_counter))
+
+minjul <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(minjul) <- unique(sort(covs$cell_ID))
+colnames(minjul) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+
+for(i in 1:nrow(minjul_temp)){
+  minjul[as.character(minjul_temp$cell_ID[i]),
+         as.character(minjul_temp$period_counter[i]),
+         minjul_temp$week[i]] <- minjul_temp$minjul[i]
+}
+
+QUESTION: why are some of these negative? 
+
+# Minjul Squared ------
+minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(minjul_sq) <- unique(covs$cell_ID)
+colnames(minjul_sq) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+for(i in 1:nrow(minjul_temp)){
+  
+  minjul_sq[as.character(minjul_temp$cell_ID[i]),
+            as.character(minjul_temp$period_counter[i]),
+            minjul_temp$week[i]] <- minjul_temp$minjul[i]^2
+  
+}
+
+
+# Subset data for testing -----------------------------------------------------
+# static <- static[1:200,]
+# GPW <- GPW[1:200,]
+# EVI <- EVI[1:200,]
+# trend <- trend[1:200,]
+# ncell = 200
+# yarray <- yarray[1:200,,]
+# effort <- effort[1:200,,]
+# minjul <- minjul[1:200,,]
+
+# prep inits -------------------------------------------------------------------
+z.init <- apply(yarray, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+inits.list <- list(beta = 0, alpha = 0, z = z.init, phi = 3 / .5, sigma.sq = 2, 
+                   w = rep(0, ncell), rho = 0, sigma.sq.t = 0.5)
+# Tuning
+tuning.list <- list(phi = 1, rho = 1)
+if(testing){
+  # Number of batches
+  n.batch <- 10
+  # Number burn-in
+  n.burn = 50
+  # Thinning rate
+  n.thin = 1
+  # reporting rate, as number of batches
+  n.report = 10 
+}else{
+  # Number of batches
+  n.batch <- 400
+  # Number burn-in
+  n.burn = 2000
+  # Thinning rate
+  n.thin = 10
+  # reporting rate, as number of batches
+  n.report = 40
+}
+# Batch length
+batch.length <- 25
+n.iter <- n.batch * batch.length
+
+# organize data for svcTPGOcc ----------------------------------------------------
+dat_ls <- list(y = yarray,
+               occ.covs = list(HumanAccess_small_cities = static$HumanAccess_small_cities, GPW = GPW, 
+                               EVI = EVI, trend = trend),
+               det.covs = list(effort = effort, minjul = minjul, ndepl = ndepl, proj = proj),
+               coords = coords)
+
+# run model --------------------------------------------------------------------
+out <- svcTPGOcc(occ.formula = ~ trend + GPW,  
+                 det.formula = ~ effort + minjul + I(minjul^2) + (1|proj), 
+                 svc.cols = c(1,2,3),
+                 data = dat_ls, 
+                 inits = inits.list, 
+                 cov.model = "exponential", 
+                 NNGP = TRUE, 
+                 ar1 = TRUE,
+                 n.neighbors = 5, 
+                 search.type = 'cb', 
+                 n.report = n.report, 
+                 n.burn = n.burn,
+                 n.thin = n.thin,
+                 n.chains = 3,  
+                 batch.length = batch.length, 
+                 n.batch = n.batch,
+                 verbose = TRUE)
+
+summary(out)
+
+# Save files -------------------------------------------------------------------
+filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
+save(yarray, covs, species, out, coords, file = filename)
+toc()
+
+
+# data exploration -------------------------------------------------------------
+## Raw occcupancy ------
+# raw.occ.prob <- apply(dat_ls$y, 2, mean, na.rm = TRUE)
+# plot(seq(min(dat_ls$occ.covs$trend), max(dat_ls$occ.covs$trend), by = 1), raw.occ.prob, pch = 16, 
+#      xlab = 'Year', ylab = 'Raw Occurrence Proportion', 
+#      cex = 1.5, frame = FALSE, ylim = c(0, 1))
+# 
+# ## WAIC --------
+# waicOcc(out)
+
+## Goodness of Fit --------
+# posterior predictive checks
+# (group 2 - by replicate - instead of by site, for spatial models)
+ppc.out <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 2)
+summary(ppc.out)
+
+# traceplots
+# plot(out$beta.samples, density = TRUE)
+# plot(out$alpha.samples, density = TRUE)
+# 
+# ## Predict -------
+# ?predict.stPGOcc()
