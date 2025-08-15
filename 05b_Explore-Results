@@ -1,0 +1,62 @@
+# CODE TO REVIEW!!! 2025-02-14 -------------------------------------------------
+
+
+# Map results one species
+
+
+library(terra)
+library(spOccupancy)
+library(coda)
+library(stringr)
+library(ggplot2)
+library(rasterVis)
+
+
+filenames <- list.files("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", full.names = TRUE) %>% 
+  str_subset(pattern = "23-01-27")
+task <- 5
+filename <- filenames[task]
+
+# Load preformatted data -------------------------------------------------------
+load(filename)
+print(species)
+
+species_full <- str_replace(species, pattern = " ", "_")
+
+
+# Load full reference grid ---------------------------------------------------------------
+grid_full <- rast("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/data/data_for_annotation/Global_1km_CEA_reference_raster_with_cellID.tif")
+
+# Load range map ---------------------------------------------------------------
+file_rangemap <- list.files("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", full.names = TRUE) %>% 
+  str_subset(pattern = species_full)
+#rangemap <- rast("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/Suncus_etruscus.tif")
+rangemap <- rast(file_rangemap)
+rangemap_bf <- buffer(rangemap, width = 100000) #500 km
+rangemap_bf <- as.numeric(rangemap_bf) # from true/false to 1/0
+rangemap_bf <- ifel(rangemap_bf == 0, NA, 1)
+
+
+
+# Subset grid based on range map -----------------------------------------------
+grid_sub <- terra::crop(grid_full, rangemap_bf) # to make extent match
+grid_sub <- terra::mask(grid_sub, rangemap_bf) # to mask 
+
+# plot(grid_sub, y = 2)
+# plot(rangemap_bf)
+# plot(rangemap, add = TRUE, col = "red")
+# plot(rangemap_bf, add = TRUE, col = "blue")
+# plot(world,  col=NULL, "l", add = TRUE)
+# points(coords, col = "blue")
+
+
+# Remove no-land ---------------------------------------------------------------
+land <- rast("/gpfs/gibbs/pi/jetz/data/regions_datasets/MOL_land_layer/v2/MOL_Land_Layer_Countries_Fixed_1km.tiff") %>% 
+  terra::project(crs(grid_sub))
+
+land_sub <- terra::crop(land, grid_sub) # to make extent match
+land_sub <- ifel(land_sub == 0, NA, 1)
+land_sub_rs <- resample(land_sub, grid_sub) # resample to align
+grid_land <- terra::mask(grid_sub, land_sub_rs) # to remove no-land 
+
+# Extract covariates -----------------------------------------------------------
