@@ -300,9 +300,9 @@ GPW <- extracted %>%
   nest() %>% 
   mutate(
     model = map(data, ~{df <- .x %>% filter(!is.na(cov))
-      if (nrow(df) > 1) {
-        lm(cov ~ year, data = df)
-      } else {NA} #returns NA if not enough data 
+    if (nrow(df) > 1) {
+      lm(cov ~ year, data = df)
+    } else {NA} #returns NA if not enough data 
     }),
     pred = map(model, ~{
       if (is.list(.x)) {
@@ -372,32 +372,13 @@ EVI_mat <- EVI_joined %>%
 write.csv(EVI_mat, "primary_occ_covariates_EVI.csv")
 
 
-# Read TIF files for CROP ---     
-crop_list_raster <- NULL 
-crop <- list.files("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 CROP")
-for(i in 1:length(crop)){
-  file.to.load <- paste0("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 CROP/",crop[i])
-  r <- rast(file.to.load)
-  crop_list_raster[[i]] <- r
-  rm(r)
-}
-crop_stack <- rast(crop_list_raster)
-
-# extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(crop_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-head(extracted)
-
-# format data 
-CROP_long <- extracted %>%
-  pivot_longer(cols = starts_with("CCI_"),  
-               names_to = "covariate",
-               values_to = "cov_value") %>%
-  mutate(year = as.numeric(sub("CCI_(\\d{4}).*", "\\1", covariate))) %>%
+# Read CROP proportions ---     
+crop <- read.csv("crop_proportion_all_years.csv") %>% 
   filter(year %in% periods$year) %>% 
-  select(c(cell_ID, cov_value, year)) %>% 
+  rename(cov_value = proportion) %>% 
   distinct()
 
-CROP_joined <- CROP_long %>%
+CROP_joined <- crop %>%
   left_join(periods, relationship = "many-to-many") %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -408,32 +389,13 @@ CROP_joined <- CROP_long %>%
 write.csv(CROP_joined, "primary_occ_covariates_crop.csv", row.names=F)
 
 
-# Read TIF files for URBAN ---    
-urban_list_raster <- NULL 
-urban <- list.files("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 URBAN")
-for(i in 1:length(urban)){
-  file.to.load <- paste0("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/CCI Landcover 100km2 URBAN/",urban[i])
-  r <- rast(file.to.load)
-  urban_list_raster[[i]] <- r
-  rm(r)
-}
-urban_stack <- rast(urban_list_raster)
-
-# extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(urban_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-head(extracted)
-
-# format data 
-URBAN_long <- extracted %>%
-  pivot_longer(cols = starts_with("CCI_"),  
-               names_to = "covariate",
-               values_to = "cov_value") %>%
-  mutate(year = as.numeric(sub("CCI_(\\d{4}).*", "\\1", covariate))) %>%
+# Read URBAN proportions ---     
+urban <- read.csv("urban_proportion_all_years.csv") %>% 
   filter(year %in% periods$year) %>% 
-  select(c(cell_ID, cov_value, year)) %>% 
+  rename(cov_value = proportion) %>% 
   distinct()
 
-URBAN_joined <- URBAN_long %>%
+URBAN_joined <- urban %>%
   left_join(periods, relationship = "many-to-many") %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -441,7 +403,7 @@ URBAN_joined <- URBAN_long %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-write.csv(df_joined, "primary_occ_covariates_urban.csv", row.names=F)
+write.csv(CROP_joined, "primary_occ_covariates_urban.csv", row.names=F)
 
 
 # propWDPA --- 
