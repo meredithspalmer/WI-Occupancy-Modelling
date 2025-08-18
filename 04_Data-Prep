@@ -8,7 +8,7 @@
 
 # Set working directory 
 rm(list=ls()); gc()
-setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024")
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 set.seed(123)
 
 # Load libraries
@@ -40,8 +40,8 @@ library(viridis)
 # Goal: Prep species-specific stacked detection matrices, by deployment-season-year and week
 
 # Load data 
-overview_seq <- open_dataset("sequences_updated_20240710_parquet")
-overview_images <- open_dataset("images_updated_20240714_parquet")
+overview_seq <- open_dataset("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/sequences_updated_20240710_parquet")
+overview_images <- open_dataset("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/images_updated_20240714_parquet")
 
 # Combine data
 dat_seq <- overview_seq |>
@@ -295,8 +295,8 @@ det_ls <- vector("list", length = nrow(periods))
 # Split detection/non-detection matrix by period
 for (i in 1:nrow(periods)){
   det_ls[[i]] <- det_mat[, as.character(seq.Date(as.Date(periods$start_period[i]), 
-                                             as.Date(periods$end_period[i]), 
-                                             by = "1 days"))]
+                                                 as.Date(periods$end_period[i]), 
+                                                 by = "1 days"))]
 }
 
 # Make ncol even across year-season by adding NAs columns
@@ -504,7 +504,8 @@ covs <- left_join(covs, periods %>%
 
 ## Spatially aggregate to cell ID ---------------------------------------------
 
-coords <- read.csv("WI_loc_matching_cell_ID.csv") %>% 
+coords <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv") %>% 
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep="_")) %>% 
   dplyr::select(-c(project_id, deployment_location_id)) %>% 
   distinct()
 covs <- left_join(covs, coords, by = "proj_depl")
@@ -514,6 +515,8 @@ sum(is.na(covs$cell_ID))
 
 ystack2 <- as.data.frame(ystack) 
 ystack2 <- cbind(ystack2, covs)
+
+test <- ystack2 #quick save - good through here; afterwards, things get weird 
 
 ystack2_group <- ystack2 %>% 
   drop_na(cell_ID) %>% 
