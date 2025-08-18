@@ -2,7 +2,14 @@
 ### Extract static and dynamic covariates #######################################
 #################################################################################
 
-# Generates the cell- and period-level covariates
+# This file contains code to create a preannotated version of the covariates for 
+# the occupancy models. The types of covariates are: 
+
+# * site-level covariates (static). Format: cells x 1 column per each covariate;
+# * primary period-level covariates (dynamic). Format: cells x periods per each covariate. 
+#       Some of these covariates (e.g. year) will have the repeated values in more than 
+#       one column
+
 # Run ONCE but note: this extracts values for cell_IDs present in the WI dataset;
 # if you add sites to the dataset, you will need to re-extract the covariates 
 
