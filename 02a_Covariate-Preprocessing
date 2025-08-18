@@ -375,77 +375,81 @@ write.csv(final_df, "prop_wdpa.csv", row.names=F)
 
 # Calculates the proportion of each grid cell containing crop or urban landscape
 
-# Library
+# Set wd 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers")
+rm(list = ls()); gc()
+
+# Load libraries 
 library(terra)
-library(rnaturalearth)
 library(dplyr)
 library(stringr)
-
-# Set wd 
-setwd("/Users/meredithspalmer/Desktop/Work/Yale/WI_Occupancy/Spatial layers")
-rm(list = ls())
-gc()
 
 # Load reference data 
 reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
 site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
 
-# Subset to site cells 
-reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+# Keep only site cells
+reference_sub <- reference
+reference_sub[!(reference[] %in% site_cells$cell_ID)] <- NA
+plot(reference_sub)
 
-# Define cropland and urban landcover classes 
-# "agriculture" and "settlement" classes defined based on Table 1-4
-# from https://dast.copernicus-climate.eu/documents/satellite-land-cover/WP2-FDDP-LC-2021-2022-SENTINEL3-300m-v2.1.1_PUGS_v1.1_final.pdf 
-crop_class <- c(10, 11, 12, #rainfed cropland
-                20, #irregated cropland
-                30, #mosaic cropland (>50%)
-                40) #mosaic natural veg (cropland <50%)
-urban_class <- 190 #urban                       # urban class
+# Classes
+crop_class <- c(10,11,12,20,30,40)
+urban_class <- 190
 
-# Function to calculate proportions
+# Function to calculate proportions using extract()
 calculate_proportion <- function(class_values, lc_raster, grid_raster) {
+  # Format rasters 
   binary_raster <- lc_raster %in% class_values
-  proportion <- zonal(binary_raster, grid_raster, fun = "mean", na.rm = TRUE)
-  colnames(proportion) <- c("cell_ID", "proportion")
-  return(proportion)
+  clipped_grid <- crop(grid_raster, binary_raster)
+  clipped_grid <- resample(clipped_grid, binary_raster, method="near")
+  
+  # Convert to data.frame
+  df <- cbind(cell_ID = values(clipped_grid), value = values(binary_raster)) %>%
+    as.data.frame() %>%
+    filter(!is.na(cell_ID))  # remove NA zones
+  
+  names(df)[2] <- "value"
+  
+  # Aggregate mean per zone
+  prop_df <- df %>%
+    group_by(cell_ID) %>%
+    summarise(proportion = mean(value, na.rm=TRUE))
+  
+  return(na.omit(prop_df))
 }
 
-# Get list of all landcover rasters in folder
-lc_files <- list.files("1x1km layers", pattern = "\\.tif$", full.names = TRUE)
+# Input files
+lc_files <- list.files("CCI landcover 1km2", pattern="\\.tif$", full.names=TRUE)
 
-# Empty data frames to store results
-crop_all  <- data.frame()
+crop_all <- data.frame()
 urban_all <- data.frame()
 
-# Loop through each raster and calculate proportions
 for (file in lc_files) {
   
-  message("Processing: ", file)
-  
-  # Load raster
+  message("\n--- Processing: ", file)
   landcover <- rast(file)
   
-  # Reproject if needed
-  if (!compareGeom(landcover, reference_sub, stopOnError = FALSE)) {
-    landcover <- project(landcover, reference_sub)
+  # Reproject CRS if needed but keep native resolution
+  if (crs(landcover) != crs(reference_sub)) {
+    landcover <- project(landcover, crs(reference_sub), method="near")
   }
   
-  # Extract year from filename (4 consecutive digits)
-  year <- str_extract(basename(file), "\\d{4}")
+  # Extract year
+  year <- as.numeric(str_extract(basename(file), "\\d{4}"))
   
-  # Calculate proportions
+  # Calculate proportions at native resolution
   crop_prop  <- calculate_proportion(crop_class,  landcover, reference_sub)
   urban_prop <- calculate_proportion(urban_class, landcover, reference_sub)
   
   # Add year column
-  crop_prop$year  <- as.numeric(year)
-  urban_prop$year <- as.numeric(year)
+  crop_prop$year  <- year
+  urban_prop$year <- year
   
-  # Append to master data frames
+  # Append
   crop_all  <- bind_rows(crop_all, crop_prop)
   urban_all <- bind_rows(urban_all, urban_prop)
 }
 
-# Save combined outputs
-write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names = FALSE)
-write.csv(urban_all, "urban_proportion_all_years.csv", row.names = FALSE)
+write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
+write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
