@@ -13,7 +13,7 @@
 
 # Set workspace
 rm(list=ls())
-setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers")
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 
 # Load libraries 
 library(modisfast)
@@ -87,14 +87,14 @@ for(year in seq(2001,2024)){
 
 # Set workspace 
 rm(list=ls())
-setwd("/Users/meredithspalmer/Desktop/Work/Yale/WI_Occupancy")
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 
 # Load libraries 
 library(terra)
 library(stringr)
 
 # Create 10x10 km raster grid -------------------------------------------------
-ref_raster <- rast("Global_1km_CEA_reference_raster.tif")
+ref_raster <- rast("Raw spatial layers/Global_1km_CEA_reference_raster.tif")
 crs(ref_raster)
 nrow(ref_raster); ncol(ref_raster)
 
@@ -175,6 +175,42 @@ plot(cv_100km2)
 origin(cv_100km2); origin(raster_100km2) 
 rm(cv)
 writeRaster(cv_100km2, "Spatial layers/10x10km layers/cv_100km2.tif")
+
+# Human access: small cities 
+ha_small <- rast("Raw spatial layers/Human access/Static_HumanAccess_travel_time_to_small_cities_7_to_9_1km_CEA.tif")
+plot(ha_small) #note that highest values are ocean
+crs(ha_small) == crs(raster_100km2)
+origin(ha_small); origin(ref_raster) #align
+nrow(ha_small); ncol(ha_small)
+ha_small_100km2 <- aggregate(ha_small, fact=10, fun="mean")
+plot(ha_small_100km2)
+origin(ha_small_100km2); origin(raster_100km2) 
+rm(ha_small)
+writeRaster(ha_small_100km2, "10x10 km spatial layers/humacc_small_100km2_REDONE.tif")
+
+# Human access: medium cities 
+ha_med <- rast("Raw spatial layers/Human access/Static_HumanAccess_travel_time_to_medium_cities_4_to_6_1km_CEA.tif")
+plot(ha_med) #note that highest values are ocean
+crs(ha_med) == crs(raster_100km2)
+origin(ha_med); origin(ref_raster) #align
+nrow(ha_med); ncol(ha_med)
+ha_med_100km2 <- aggregate(ha_med, fact=10, fun="mean")
+plot(ha_med_100km2)
+origin(ha_med_100km2); origin(raster_100km2) 
+rm(ha_med)
+writeRaster(ha_med_100km2, "10x10 km spatial layers/humacc_medium_100km2_REDONE.tif")
+
+# Human access: large cities 
+ha_large <- rast("Raw spatial layers/Human access/Static_HumanAccess_travel_time_to_large_cities_1_to_3_1km_CEA.tif")
+plot(ha_large) #note that highest values are ocean
+crs(ha_large) == crs(raster_100km2)
+origin(ha_large); origin(ref_raster) #align
+nrow(ha_large); ncol(ha_large)
+ha_large_100km2 <- aggregate(ha_large, fact=10, fun="mean")
+plot(ha_large_100km2)
+origin(ha_large_100km2); origin(raster_100km2) 
+rm(ha_large)
+writeRaster(ha_large_100km2, "10x10 km spatial layers/humacc_large_100km2_REDONE.tif")
 
 # For new CHELSA layers (2011-2040), note that using GFDL-ESM4 model 
 # --> National Oceanic and Atmospheric Administration, Geophysical Fluid Dynamics Laboratory, Princeton, NJ 08540, USA 
