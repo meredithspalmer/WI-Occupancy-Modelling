@@ -336,6 +336,17 @@ summary(extracted)
 sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
 write.csv(extracted, "gfc_2022.csv", row.names=F)
 
+# gfc 2023 
+hansen_files <- list.files("Raw spatial layers/hansen_data_2023", pattern = "\\.tif$", full.names = TRUE)
+vrt_raster <- vrt(hansen_files)
+vrt_raster #because file so large, immediately crop to reference raster rather than saving
+vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+test <- crop(vrt_reproj, reference_sub)
+extracted <- terra::zonal(test, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+summary(extracted)
+sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
+write.csv(extracted, "gfc_2023.csv", row.names=F)
 
 
 # GFC - 2001:2021 
