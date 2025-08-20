@@ -318,6 +318,40 @@ origin(nb18_100km2); origin(raster_100km2)
 rm(newbio18)
 writeRaster(nb18_100km2, "Spatial layers/10x10km layers/precwarm_2040_100km2.tif")
 
+# GFC - create 2022, 2023 rasters
+# because files so large, only merge files that fall within reference raster 
+reference <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+site_cells <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+
+# gfc 2022 
+hansen_files <- list.files("Raw spatial layers/hansen_data_2022", pattern = "\\.tif$", full.names = TRUE)
+vrt_raster <- vrt(hansen_files)
+vrt_raster #because file so large, immediately crop to reference raster rather than saving
+vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+test <- crop(vrt_reproj, reference_sub)
+extracted <- terra::zonal(test, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+summary(extracted)
+sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
+write.csv(extracted, "gfc_2022.csv", row.names=F)
+
+
+
+# GFC - 2001:2021 
+gfc_list_raster <- NULL 
+gfc <- list.files("Raw spatial layers/GFC")
+for(i in 1:length(gfc)){
+  file.to.load <- paste0("Raw spatial layers/GFC/",gfc[i])
+  r <- rast(file.to.load)
+  gfc_list_raster[[i]] <- r
+  rm(r)
+}
+gfc_stack <- rast(gfc_list_raster)
+length(gfc)
+
+plot(gfc_stack[[1]])
+
 
 ################################################################################
 ### Prop WDRA ##################################################################
