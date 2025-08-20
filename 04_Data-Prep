@@ -529,6 +529,9 @@ ystack2_group <- ystack2 %>%
             period_counter = unique(period_counter)) %>% 
   ungroup() 
 
+# -> more than 7 days effort because combining effort from multiple project-deployments within same 
+# cell_ID (e.g., if 6 projects each operating for full 7 days, effort is 42)
+
 # Reorganize outputs for modeling
 ystack <- ystack2_group %>% dplyr::select(V1:V13)
 covs <- ystack2_group %>% dplyr::select(-(V1:V13))
