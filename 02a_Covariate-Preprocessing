@@ -349,21 +349,6 @@ sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) 
 write.csv(extracted, "gfc_2023.csv", row.names=F)
 
 
-# GFC - 2001:2021 
-gfc_list_raster <- NULL 
-gfc <- list.files("Raw spatial layers/GFC")
-for(i in 1:length(gfc)){
-  file.to.load <- paste0("Raw spatial layers/GFC/",gfc[i])
-  r <- rast(file.to.load)
-  gfc_list_raster[[i]] <- r
-  rm(r)
-}
-gfc_stack <- rast(gfc_list_raster)
-length(gfc)
-
-plot(gfc_stack[[1]])
-
-
 ################################################################################
 ### Prop WDRA ##################################################################
 ################################################################################
