@@ -199,7 +199,7 @@ evi <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>% s
 
 # Correlation and skewness by group -------------------------------------------
 
-# Correlation among static covariates 
+# Correlation among static covariates ---
 correlation::correlation(static_covs[,c(2:length(static_covs))], 
                          include_factors = TRUE, method = "auto")
 rcorr(as.matrix(static_covs[,c(2:length(static_covs))])) 
@@ -216,10 +216,11 @@ inspect_num(static_covs %>% select(-cell_ID)) %>%
   inspectdf::show_plot(x = ., plot_layout = c(5, 5))
 
 # --> remove elevation, small and medium cities 
+static_covs <- static_covs %>% select(-c(elevation, cities_sm, cities_md))
 
-# Correlation among annually varying covariates 
+# Correlation among annually varying covariates ---
 # approach: sample random periods, look at correlated values 
-period <- 20 #UPDATE THIS
+period <- 40 #UPDATE THIS
 
 period.column <- paste("X", period, sep="")
 mat.list = list(crop, urban, gpw, gfc, precip, precseas, warmseas, temp, wdpa, evi)
@@ -256,7 +257,55 @@ corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1,
 cor_val %>% GGally::ggpairs(upper=list(continuous='points'), lower=list(continuous='cor'))
 
 # Skewess among annual covariates for period X
-inspect_num(df_covs %>% select(-c(cell_ID, period)) %>%  
+inspect_num(df_covs %>% select(-c(cell_ID, period))) %>%  
   inspectdf::show_plot(x = ., plot_layout = c(5, 5))
   
-# --> drop urban, precip 
+# --> drop urban, precip, warmseas precip? 
+mat.list = list(crop, gpw, gfc, precseas, temp, wdpa, evi)
+
+# Correlation between static and annual covariates --- 
+# approach: sample random periods, look at correlated values 
+period <- 40 #UPDATE THIS
+period.column <- paste("X", period, sep="")
+
+df_covs <- data.frame(
+  cell_ID = unique(static_covs$cell_ID),
+  period = period) 
+
+df_covs <- reduce(
+  seq_along(mat.list),
+  function(df, i) {
+    mat_sub <- mat.list[[i]] %>%
+      select(cell_ID, !!period.column) %>%
+      rename(!!paste0("cov", i) := !!period.column)
+    left_join(df, mat_sub, by = "cell_ID")
+  },
+  .init = df_covs
+)
+names(df_covs)[-(1:2)] <- c("crop", "gpw", "gfc", "precseas", "temp", "wdpa", "evi")
+df_covs <- merge(df_covs, static_covs, by="cell_ID")
+
+# Correlation among all covariates for period X
+correlation::correlation(df_covs[,c(3:length(df_covs))], 
+                         include_factors = TRUE, 
+                         method = "spearman",
+                         use = "pairwise.complete.obs")
+rcorr(as.matrix(df_covs[,c(3:length(df_covs))])) 
+
+pairs(df_covs[,c(3:length(df_covs))])
+
+cor_val <- cor(df_covs %>% select(-c(cell_ID, period)) %>% drop_na())
+corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
+
+cor_val %>% GGally::ggpairs(upper=list(continuous='points'), lower=list(continuous='cor'))
+
+# Skewess among annual covariates for period X
+inspect_num(df_covs %>% select(-c(cell_ID, period))) %>%  
+  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
+
+# --> evi correlated with a few, but seems important to include; drop temp instead? (more skewed) 
+# could also consider (down the road) dropping coeff_var, but for now, remove temp 
+
+## final covs for inclusion: 
+# static: road_dist, tri, river_dist, cities_lg, coeff_var
+# dynamic: crop, gpw, gfc, precseas, wdpa, evi
