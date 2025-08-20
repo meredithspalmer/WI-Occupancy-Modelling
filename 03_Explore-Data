@@ -3,18 +3,23 @@
 # This file contains code to explore both the species data (e.g. number of record per 
 # species) and the covariate data (e.g. correlation among covariates).
 
+# Set wd
+rm(list=ls()); gc()
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+
 # Load libraries
 library(tidyverse)
 library(lubridate)
 library(arrow)
 library(ggforce)
-
+library(Hmisc)
+library(purrr)
 
 # Load data
-overview_seq <- open_dataset("data/WI_data/sequences/parquet")
-overview_images <- open_dataset("data/WI_data/images/parquet")
+overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
+overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
 
-# Species sata exploration ---------------------------------------------------------------
+# Species data exploration ---------------------------------------------------------------
 # summarize data for sequence and image projects
 summ_seq <- overview_seq %>% 
   mutate(record_date = sequence_date_fix,
@@ -69,13 +74,13 @@ summ_all %>%
   mutate(n_projects_cut = cut(n_projects, breaks = c(1, 10, 20, 50, 100, 200, max(summ_all$n_projects)), 
                               include.lowest = TRUE),
          max_n_years_cut = cut(max_n_years, breaks = c(1, 5, 10, 20, max(summ_all$max_n_years)),
-                           include.lowest = TRUE)) %>% 
+                               include.lowest = TRUE)) %>% 
   group_by(class, n_projects_cut, max_n_years_cut) %>% 
   summarize(n_species = n()) %>% 
   ggplot(., aes(x = str_to_title(n_projects_cut), 
-                     y = str_to_title(max_n_years_cut), 
-                     colour = str_to_title(n_projects_cut),
-                     size = n_species)) +
+                y = str_to_title(max_n_years_cut), 
+                colour = str_to_title(n_projects_cut),
+                size = n_species)) +
   geom_point() +
   geom_text(aes(label = n_species), 
             colour = "white", 
@@ -93,7 +98,7 @@ summ_all %>%
 ggsave(filename = "figures/All_n_proj_vs_max_n_years.jpg",
        dpi = 600, units = "cm", height = 28, width = 19)
 
-### species by max_n_years -----------------------------------------------------
+### Species by max_n_years -----------------------------------------------------
 summ_mammals <- summ_all %>% 
   filter(class == "Mammalia")
 for (i in unique(summ_mammals$max_n_years)) {
@@ -114,10 +119,10 @@ for (i in unique(summ_mammals$max_n_years)) {
             strip.text.y.right = element_text(angle = 0),
             strip.background = element_blank(),
             panel.border = element_blank())
-    )
+  )
   filename_plot = paste0("figures/Species_by_max_n_years/Mammals_first_to_last_record_by_species_max_", i, "yrs.jpg")
-    ggsave(filename = filename_plot,
-           dpi = 600, units = "cm", height = 28, width = 19)
+  ggsave(filename = filename_plot,
+         dpi = 600, units = "cm", height = 28, width = 19)
 }
 
 summ_birds <- summ_all %>% 
@@ -146,180 +151,6 @@ for (i in unique(summ_birds$max_n_years)) {
          dpi = 600, units = "cm", height = 28, width = 19)
 }
 
-# Covariates data exploration ---------------------------------------------------
-# CODE TO REVIEW!!! 2025-02-14 -------------------------------------------------
-#' Values reported for each covariate were extracted at the 1 kmsq cells corresponding to the locations sampled in latest WI data freeze (20220530)
-#' 
-#' Load libraries
-library(tidyverse)
-library(corrplot)
-library(ezknitr)
-library(inspectdf)
-library(corrr)
-# plotting theme
-
-
-#' Load data 
-covs <- read.csv("output/Covs_WI_cell_20220530.csv") 
-
-names(covs)
-glimpse(covs)
-
-summary(covs)
-# _tri_ is terrain rugdness index
-
-#' # Correlation and skewness by group
-#+ r corr, include=TRUE
-#' #### Correlation among *static covariates*
-summary(covs %>% select(temp_annual:WDPA_IUCNcat))
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(temp_annual:WDPA_IUCNcat) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-
-#' Skewess
-inspect_num(covs %>% select(temp_annual:WDPA_IUCNcat)) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' #### Correlation in *impervious surface change (annual)*
-summary(covs %>% select(impervSurfPropChange_1999:impervSurfPropChange_2018))
-#' There are several NA's but those are cells in which there has never been change
-#' (e.g. within protected areas).
-
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(impervSurfPropChange_1999:impervSurfPropChange_2018) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-
-#' Skewess
-inspect_num(covs %>% select(impervSurfPropChange_1999:impervSurfPropChange_2018)) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' #### Correlation in *Global Forest Change (forest loss)*
-summary(covs %>% select(GFC_2001:GFC_2019))
-
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(GFC_2001:GFC_2019) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-#' Values among years are highly correlated , with slight decrease in correlation 
-#' as the years progress. **What about the chnage between one year and the previous?**
-
-#' Skewess
-inspect_num(covs %>% select(GFC_2001:GFC_2019)) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' #### Correlation in *spring EVI (annual)*
-summary(covs %>% select(springEVI_2000:springEVI_2022))
-#' For every year, there are always 30 cells that have NAs. **Are those always the same?**
-
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(springEVI_2000:springEVI_2022) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-#' Correlation always 1.
-#' 
-#' Skewess
-inspect_num(covs %>% select(springEVI_2000:springEVI_2022)) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' #### Correlation in *summer EVI (annual)*
-summary(covs %>% select(starts_with("SummerEVI")))
-
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(starts_with("SummerEVI")) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-#' Correlation very high (always > 75) but more heterogeneous than correlation in spring EVI values. 
-
-#' Skewess
-inspect_num(covs %>% select(starts_with("SummerEVI"))) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' #### Correlation in *fall EVI (annual)*
-summary(covs %>% select(starts_with("FallEVI")))
-
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(starts_with("FallEVI")) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-#' Correlation very high (always > 75) but more heterogeneous than correlation in spring EVI values. 
-
-#' Skewess
-inspect_num(covs %>% select(starts_with("FallEVI"))) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' #### Correlation in *winter EVI (annual)*
-summary(covs %>% select(starts_with("WinterEVI")))
-
-#' Including only complete cases (to remove NAs)
-cor_val <- cor(covs %>% select(starts_with("WinterEVI")) %>% drop_na())
-corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
-#' Correlation very high (always > 75) but more heterogeneous than correlation in spring EVI values. 
-
-#' Skewess
-inspect_num(covs %>% select(starts_with("WinterEVI"))) %>%  
-  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-
-#' # Correlation among all the covariates
-covs_corr <- covs[, -c(1:3)] %>% 
-  correlate(x = ., 
-            method = "spearman", 
-            quiet = TRUE) %>% 
-  rearrange(x = ., 
-            method = "MDS", 
-            absolute = FALSE)
-#head(covs_corr, 20)
-
-covs_corr %>% rplot(rdf = ., shape = 19,
-                    colors = c("yellow", 
-                               "purple"))
-
-# this code does not work - 
-# as they are all strongly correlated within a group
-# covs_corr_net <- covs[, -c(1:3)] %>%
-#   correlate(x = .,
-#             method = "spearman",
-#             quiet = TRUE) %>%
-#   network_plot(rdf = .,
-#                colors = c("firebrick", "white", "dodgerblue"),
-#                min_cor = .7)
-# covs_corr_net
-
-#' Let's retain only one covs for the annual/seasonal covs
-#' *Drawing links only among covariate pairs with absolute corr values higher than 0.5* 
-covs_corr_net <- covs %>%
-  select(temp_annual:GPW_2000, ghs_built:WDPA_IUCNcat, GFC_2001, impervSurfPropChange_2000,
-         springEVI_2000, SummerEVI_2000, FallEVI_2000, WinterEVI_2000) %>% 
-  correlate(x = .,
-            method = "spearman",
-            quiet = TRUE) %>%
-  network_plot(rdf = .,
-               colors = c("firebrick", "white", "dodgerblue"),
-               min_cor = .5)
-covs_corr_net
-
-covs %>%
-  select(temp_annual:GPW_2000, ghs_built:WDPA_IUCNcat, GFC_2001, impervSurfPropChange_2000,
-         springEVI_2000, SummerEVI_2000, FallEVI_2000, WinterEVI_2000) %>% 
-  correlate(x = ., 
-            method = "spearman", 
-            quiet = TRUE) %>% 
-  rearrange(x = ., 
-            method = "MDS", 
-            absolute = FALSE) %>% 
-  #shave(upper = FALSE) %>% 
-  gather(key = "variable", value = "value", -term) %>% 
-  filter(abs(value) >= 0.5) %>% 
-  ggplot(., aes(x = term, y = variable, fill = value)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(value, 1)), size = 3, color = "white") +
-  scale_fill_viridis(discrete=FALSE, limit = c(-1,1), 
-                     name="Spearman's\nCorrelation") +
-  labs(title = "Spearman's correlation",
-       subtitle = "Retained only one cov for the annual/seasonal covs",
-       caption = "*showing only pairs with absolute corr values >= 0.5 ") +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
-                                   size = 12, hjust = 1)) +
-  coord_fixed() +
-  theme_bw() +
-  theme(axis.title = element_blank(),
-        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
-
 
 # Explore effort
 eff <- data.frame(active_depl = colSums(cam_op, na.rm = TRUE), sampl_date = as.Date(colnames(cam_op)))
@@ -331,3 +162,101 @@ ggplot() +
   theme_bw()
 #ggsave(filename = "figures/Effort.jpg", device = "jpeg", units = "cm", 
 #       width = 50, height = 40, dpi = 300)
+
+
+# Covariates data exploration --------------------------------------------------
+
+# Values reported for each covariate were extracted at the 10x10 kmsq cells 
+# corresponding to the locations sampled in latest WI data freeze (24-Sep-2024)
+
+# Load libraries
+library(tidyverse)
+library(corrplot)
+library(ezknitr)
+library(inspectdf)
+library(corrr)
+library(correlation)
+
+# Load data -------------------------------------------------------------------
+(cov_files <- list.files("Covariates for modelling"))
+
+# Static covariates 
+static_covs <- read.csv("Covariates for modelling/site_level_covariates.csv")
+glimpse(static_covs)
+summary(static_covs)
+
+# Annual covariates 
+crop <- read.csv("Covariates for modelling/primary_occ_covariates_crop.csv")
+urban <- read.csv("Covariates for modelling/primary_occ_covariates_urban.csv")
+gpw <- read.csv("Covariates for modelling/primary_occ_covariates_GPW.csv")
+gfc <- read.csv("Covariates for modelling/primary_occ_covariates_GFC.csv") %>% select(-X)
+precip <- read.csv("Covariates for modelling/primary_occ_covariates_precip.csv")
+precseas <- read.csv("Covariates for modelling/primary_occ_covariates_precseas.csv")
+warmseas <- read.csv("Covariates for modelling/primary_occ_covariates_warmseas.csv")
+temp <- read.csv("Covariates for modelling/primary_occ_covariates_temp.csv")
+wdpa <- read.csv("Covariates for modelling/primary_occ_covariates_wdpa.csv")
+evi <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>% select(-X)
+
+# Correlation and skewness by group -------------------------------------------
+
+# Correlation among static covariates 
+correlation::correlation(static_covs[,c(2:length(static_covs))], 
+                         include_factors = TRUE, method = "auto")
+rcorr(as.matrix(static_covs[,c(2:length(static_covs))])) 
+
+pairs(static_covs[,c(2:length(static_covs))])
+
+cor_val <- cor(static_covs %>% select(-cell_ID) %>% drop_na())
+corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
+
+cor_val %>% GGally::ggpairs(upper=list(continuous='points'), lower=list(continuous='cor'))
+
+# Skewess among static covariates 
+inspect_num(static_covs %>% select(-cell_ID)) %>%  
+  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
+
+# --> remove elevation, small and medium cities 
+
+# Correlation among annually varying covariates 
+# approach: sample random periods, look at correlated values 
+period <- 20 #UPDATE THIS
+
+period.column <- paste("X", period, sep="")
+mat.list = list(crop, urban, gpw, gfc, precip, precseas, warmseas, temp, wdpa, evi)
+
+df_covs <- data.frame(
+  cell_ID = unique(static_covs$cell_ID),
+  period = period) 
+
+df_covs <- reduce(
+  seq_along(mat.list),
+  function(df, i) {
+    mat_sub <- mat.list[[i]] %>%
+      select(cell_ID, !!period.column) %>%
+      rename(!!paste0("cov", i) := !!period.column)
+    left_join(df, mat_sub, by = "cell_ID")
+  },
+  .init = df_covs
+)
+names(df_covs)[-(1:2)] <- c("crop", "urban", "gpw", "gfc", "precip", "precseas", "warmseas", "temp", "wdpa", "evi")
+head(df_covs)
+
+# Correlation among annual covariates for period X
+correlation::correlation(df_covs[,c(3:length(df_covs))], 
+                         include_factors = TRUE, 
+                         method = "spearman",
+                         use = "pairwise.complete.obs")
+rcorr(as.matrix(df_covs[,c(3:length(df_covs))])) 
+
+pairs(df_covs[,c(3:length(df_covs))])
+
+cor_val <- cor(df_covs %>% select(-c(cell_ID, period)) %>% drop_na())
+corrplot(cor_val, method = "number", type = "upper", diag = FALSE, mar = c(1, 1, 1, 1))
+
+cor_val %>% GGally::ggpairs(upper=list(continuous='points'), lower=list(continuous='cor'))
+
+# Skewess among annual covariates for period X
+inspect_num(df_covs %>% select(-c(cell_ID, period)) %>%  
+  inspectdf::show_plot(x = ., plot_layout = c(5, 5))
+  
+# --> drop urban, precip 
