@@ -18,6 +18,7 @@ library(sf)
 library(rworldmap)
 library(countrycode)
 library(taxize)
+library(rgbif)
 
 # Load data
 overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
@@ -88,19 +89,15 @@ length(unique_continents) #6
 
 # ... want number of orders, families, genera: 
 species <- unique(paper_summ$sp_binomial)
-classifications <- classification(species, db = "itis")
-result <- lapply(classifications, function(x) {
-  data.frame(
-    order  = x$name[x$rank == "order"],
-    family = x$name[x$rank == "family"],
-    genus  = x$name[x$rank == "genus"]
-  )
-})
-do.call(rbind, result)
-head(result)
-print(length(unique(result$order)))
-print(length(unique(result$family)))
-print(length(unique(result$genus)))
+df_taxonomy <- species %>%
+  map(~ name_backbone(name = .x)) %>%
+  map_df(~ as_tibble(.x)) %>%
+  select(scientificName = species, order, family, genus) %>%
+  distinct() %>%
+  drop_na(order, family, genus)
+length(unique(df_taxonomy$order))
+length(unique(df_taxonomy$family))
+length(unique(df_taxonomy$genus))
 
 
 ## Summary visualization -------------------------------------------------------
