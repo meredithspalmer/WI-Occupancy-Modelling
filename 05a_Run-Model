@@ -2,6 +2,13 @@
 ##### Running models ##### 
 ##########################
 
+# Set working directory
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+#rm(list=ls()); gc()
+
+# Load libraries 
+library(spOccupancy)
+
 ## User-defined functions -----------------------------------------------------
 
 # Function to create initial values for covariates with NAs
@@ -94,34 +101,42 @@ zobs <- na_if(zobs, -Inf)
 
 
 ## Coordinates ----------------------------------------------------------------
-coords <- as.data.frame(rast("raster_100km2_with_cellID.tif"), xy=T) %>% 
+coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) %>% 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID) %>% 
   dplyr::select(-cell_ID)
 
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
-csv_files <- list.files("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
+csv_files <- list.files("Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
 
-static <- read.csv(csv_files[[11]]) %>% 
+static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>% 
+  select(-c(elevation, cities_md, cities_sm)) %>% #from Data-Explore code 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
-  
-  
+
+
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
 # Environmental 
+# retain: crop, gpw, gfc, precseas, wdpa, evi; from Data-Explore code 
+
 csv_files <- list.files("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
 
-crop <- read.csv(csv_files[[1]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-urban <- read.csv(csv_files[[7]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-evi <- read.csv(csv_files[[2]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-gpw <- read.csv(csv_files[[3]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-preci <- read.csv(csv_files[[4]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-temp <- read.csv(csv_files[[6]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-wdpa <- read.csv(csv_files[[9]]) %>% filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+crop <- read.csv("Covariates for modelling/primary_occ_covariates_crop.csv") %>% 
+  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+gpw <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>% 
+  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+gfc <- read.csv("Covariates for modelling/primary_occ_covariates_GFC.csv") %>% 
+  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+precseas <- read.csv("Covariates for modelling/primary_occ_covariates_precseas.csv") %>% 
+  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+wdpa <- read.csv("Covariates for modelling/primary_occ_covariates_wdpa.csv") %>% 
+  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+evi <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>%
+  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
 
-NOTE -- some of these don not have first period: will have to reckon with (add NA column?) 
+#NOTE -- some of these don not have first period: will have to reckon with (add NA column?) 
 
 # Ndepl 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
@@ -132,8 +147,8 @@ for(i in 1:nrow(covs)){
         as.character(paste0("p", covs$period_counter[i]))] <- covs$n_depl[i]
 }
 
-QUESTION: do we want 0s or NAs? 
-
+#QUESTION: do we want 0s or NAs? 
+  
 # Project_id 
 proj <- matrix(0, nrow = ncell, ncol = nperiod)
 rownames(proj) <- unique(sort(covs$cell_ID))
@@ -145,8 +160,8 @@ for(i in seq_len(nrow(covs))){
   proj[r, c] <- covs$proj_ft[i]
 }
 
-QUESTION: do we want 0s or NAs? 
-
+#QUESTION: do we want 0s or NAs? 
+  
 # Season 
 Season <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
   tidyr::crossing(periods[1:2]) %>% 
@@ -194,9 +209,7 @@ for(i in 1:nrow(effort_temp)){
          as.character(effort_temp$period_counter[i]),
          effort_temp$week[i]] <- effort_temp$effort[i]
 }
-
-QUESTION: how can effort be greater than 7? 
-
+  
 # Minjul 
 minjul_temp <- covs %>% 
   dplyr::select(cell_ID, period_counter, starts_with("minjul_w")) %>% 
@@ -217,8 +230,8 @@ for(i in 1:nrow(minjul_temp)){
 }
 
 QUESTION: why are some of these negative? 
-
-# Minjul Squared ------
+  
+  # Minjul Squared ------
 minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(minjul_sq) <- unique(covs$cell_ID)
 colnames(minjul_sq) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
