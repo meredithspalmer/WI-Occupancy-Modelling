@@ -14,6 +14,10 @@ library(arrow)
 library(ggforce)
 library(Hmisc)
 library(purrr)
+library(sf)
+library(rworldmap)
+library(countrycode)
+library(taxize)
 
 # Load data
 overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
@@ -60,6 +64,43 @@ summ_all <- rbind(summ_seq, summ_images) %>%
   mutate(min_record_date = as.Date(min_record_date),
          max_record_date = as.Date(max_record_date))
 write.csv(summ_all, file = "output/Data_exploration/Species/Summary_data_all_species.csv")
+
+## For paper: 
+summ_seq_2 <- overview_seq %>% select(latitude, longitude, class, sp_binomial) %>% distinct() %>% as.data.frame()
+summ_img_2 <- overview_images %>% select(latitude, longitude, class, Accepted_MOL) %>% rename(sp_binomial = Accepted_MOL) %>% distinct() %>% as.data.frame()
+paper_summ <- rbind(summ_seq_2, summ_img_2) %>% 
+  mutate(latitude = as.numeric(latitude), 
+         longitude = as.numeric(longitude))
+paper_summ <- na.omit(paper_summ)
+
+# ... want number of countries, continents:  
+coords <- paper_summ[, c("longitude", "latitude")]
+coords <- as.data.frame(lapply(coords, as.numeric))
+coords <- na.omit(coords) #one row
+sp_points <- SpatialPoints(coords, proj4string = CRS("+proj=longlat +datum=WGS84"))
+world_map <- getMap(resolution = "low")
+countries <- over(sp_points, world_map)$ADMIN
+continents <- countrycode(countries, origin = "country.name", destination = "continent")
+unique_countries <- unique(na.omit(countries))
+unique_continents <- unique(na.omit(continents))
+length(unique_countries) #111
+length(unique_continents) #6
+
+# ... want number of orders, families, genera: 
+species <- unique(paper_summ$sp_binomial)
+classifications <- classification(species, db = "itis")
+result <- lapply(classifications, function(x) {
+  data.frame(
+    order  = x$name[x$rank == "order"],
+    family = x$name[x$rank == "family"],
+    genus  = x$name[x$rank == "genus"]
+  )
+})
+do.call(rbind, result)
+head(result)
+print(length(unique(result$order)))
+print(length(unique(result$family)))
+print(length(unique(result$genus)))
 
 
 ## Summary visualization -------------------------------------------------------
