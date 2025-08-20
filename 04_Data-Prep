@@ -536,5 +536,5 @@ ystack2_group <- ystack2 %>%
 ystack <- ystack2_group %>% dplyr::select(V1:V13)
 covs <- ystack2_group %>% dplyr::select(-(V1:V13))
 
-filename <- paste("data_for_modelling/", species, "_", Sys.Date(), ".RData", sep = "")
-save(ystack, covs, species, file = filename)
+filename <- paste("Data for modelling/", target_species, "_", Sys.Date(), ".RData", sep = "")
+save(ystack, covs, target_species, file = filename)
