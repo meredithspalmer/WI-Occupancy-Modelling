@@ -204,6 +204,7 @@ effort_temp <- covs %>%
 effort <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(effort) <- unique(sort(covs$cell_ID))
 colnames(effort) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+
 for(i in 1:nrow(effort_temp)){
   effort[as.character(effort_temp$cell_ID[i]),
          as.character(effort_temp$period_counter[i]),
@@ -213,7 +214,7 @@ for(i in 1:nrow(effort_temp)){
 # Minjul 
 minjul_temp <- covs %>% 
   dplyr::select(cell_ID, period_counter, starts_with("minjul_w")) %>% 
-  mutate_at(vars(matches("minjul_w")), scale3)%>% 
+  mutate_at(vars(matches("minjul_w")), scale3) %>% 
   pivot_longer(minjul_w1:minjul_w13, names_to = "week", values_to = "minjul", 
                values_drop_na = TRUE) %>% 
   mutate(week = as.numeric(str_remove(week, "minjul_w")),
@@ -229,9 +230,9 @@ for(i in 1:nrow(minjul_temp)){
          minjul_temp$week[i]] <- minjul_temp$minjul[i]
 }
 
-QUESTION: why are some of these negative? 
+# note: some of these values are negative because have ALREADY BEEN SCALED (scale3())
   
-  # Minjul Squared ------
+# Minjul Squared ------
 minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(minjul_sq) <- unique(covs$cell_ID)
 colnames(minjul_sq) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
@@ -245,19 +246,32 @@ for(i in 1:nrow(minjul_temp)){
 
 
 # Subset data for testing -----------------------------------------------------
-# static <- static[1:200,]
-# GPW <- GPW[1:200,]
-# EVI <- EVI[1:200,]
-# trend <- trend[1:200,]
-# ncell = 200
-# yarray <- yarray[1:200,,]
-# effort <- effort[1:200,,]
-# minjul <- minjul[1:200,,]
+ncell = 200
 
-# prep inits -------------------------------------------------------------------
-z.init <- apply(yarray, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+static_test <- static[1:ncell,]
+gpw_test <- gpw[1:ncell,]
+evi_test <- evi[1:ncell,]
+crop_test <- crop[1:ncell,]
+gfc_test <- gfc[1:ncell,]
+precseas_test <- precseas[1:ncell,]
+wdpa_test <- wdpa[1:ncell,]
+
+ndepl_test <- ndepl[1:ncell,]
+proj_test <- proj[1:ncell,]
+season_test <- Season[1:ncell,]
+year_test <- Year[1:ncell,]
+trend_test <- trend[1:ncell,]
+
+yarray_test <- yarray[1:ncell,,]
+effort_test <- effort[1:ncell,,] #effort not effort_temp? 
+minjul_test <- minjul[1:ncell,,] #minjul not minjul_temp or minjul_sq?
+
+## TESTING 
+# Prep inits -------------------------------------------------------------------
+z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 inits.list <- list(beta = 0, alpha = 0, z = z.init, phi = 3 / .5, sigma.sq = 2, 
                    w = rep(0, ncell), rho = 0, sigma.sq.t = 0.5)
+
 # Tuning
 tuning.list <- list(phi = 1, rho = 1)
 if(testing){
@@ -285,10 +299,18 @@ n.iter <- n.batch * batch.length
 
 # organize data for svcTPGOcc ----------------------------------------------------
 dat_ls <- list(y = yarray,
-               occ.covs = list(HumanAccess_small_cities = static$HumanAccess_small_cities, GPW = GPW, 
-                               EVI = EVI, trend = trend),
-               det.covs = list(effort = effort, minjul = minjul, ndepl = ndepl, proj = proj),
-               coords = coords)
+               occ.covs = list(crop = crop_test, 
+                               gpw = gpw_test,
+                               gfc = gfc_test, 
+                               precseas = precseas_test,
+                               wdpa = wdpa_test,
+                               evi = evi_test, 
+                               trend = trend_test),
+               det.covs = list(effort = effort_test, 
+                               minjul = minjul_test, 
+                               ndepl = ndepl_test, 
+                               proj = proj_test),
+               coords = coords[c(1:ncell),])
 
 # run model --------------------------------------------------------------------
 out <- svcTPGOcc(occ.formula = ~ trend + GPW,  
