@@ -573,3 +573,107 @@ for (file in lc_files) {
 
 write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
 write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
+
+
+############################################################################
+#######  GFC  ##############################################################
+############################################################################
+
+library(terra)
+
+## Create reference raster ----------------------------------------------------
+# Load
+reference <- rast("raster_100km2_with_cellID.tif")
+
+# Limit to cell_IDs present in dataset 
+site_cells <- read.csv("WI_loc_matching_cell_ID.csv") 
+
+# Mask reference raster 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+
+## Load Hansen tile URLS ------------------------------------------------------
+
+# Extract filenames 
+tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
+tile_names <- basename(tile_urls)
+
+# -> if lots of missing data, use the 2023 version (https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/lossyear.txt)
+
+# Download tiles with error handling 
+tmp_dir <- tempdir()
+local_files <- file.path(tmp_dir, tile_names)
+
+download_status <- data.frame(
+  url = tile_urls,
+  destfile = local_files,
+  success = NA,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(tile_urls)) {
+  if (!file.exists(local_files[i])) {
+    result <- tryCatch({
+      download.file(tile_urls[i], destfile = local_files[i], mode = "wb", quiet = TRUE)
+      TRUE
+    }, error = function(e) {
+      warning(paste("Failed to download:", tile_urls[i]))
+      FALSE
+    })
+    download_status$success[i] <- result
+  } else {
+    download_status$success[i] <- TRUE
+  }
+}
+
+# Keep only successfully downloaded tiles
+successful_files <- download_status$destfile[download_status$success]
+
+# Create VRT 
+vrt_file <- file.path(tmp_dir, "lossyear.vrt")
+loss_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
+
+# Crop and mask to reference raster
+loss_raster_proj <- project(loss_raster, crs(reference_sub))
+#vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+
+loss_raster_crop <- crop(loss_raster_proj, reference_sub)
+#vrt_crop <- crop(vrt_reproj, reference_sub)
+loss_raster_mask <- mask(loss_raster_crop, reference_sub)
+
+## Compute annual forest loss -------------------------------------------------
+
+# Hansen lossyear values: 1-23 (or 1:23 for 2001-2023)
+years <- 1:23
+yearly_loss <- list()
+
+for (y in years) {
+  # 1 if loss occurred in year y, 0 otherwise
+  r_y <- classify(loss_raster_mask, cbind(-Inf, y-1, 0,
+                                          y, y, 1,
+                                          y+1, Inf, 0))
+  yearly_loss[[y]] <- r_y
+}
+names(yearly_loss) <- paste0("year_", years)
+
+# Summarize loss per year
+annual_loss_count <- sapply(yearly_loss, function(r) {
+  global(r, fun = "sum", na.rm = TRUE)
+})
+
+# Convert pixel counts to area in hectares
+# Assuming raster resolution in meters CHECK!! 
+res_m <- res(loss_raster_mask)[1]  # x and y should be same
+pixel_area_ha <- (res_m^2) / 10000
+annual_loss_area_ha <- annual_loss_count * pixel_area_ha
+
+# Results
+loss_summary <- data.frame(
+  year = 2000 + years,  # adjust according to Hansen version
+  pixels_lost = annual_loss_count,
+  area_ha = annual_loss_area_ha
+)
+print(loss_summary)
+
+# Save masked raster 
+writeRaster(loss_raster_mask, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
+cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
