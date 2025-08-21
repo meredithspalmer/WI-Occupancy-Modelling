@@ -119,7 +119,8 @@ zobs <- na_if(zobs, -Inf)
 coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) %>% 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID) %>% 
-  dplyr::select(-cell_ID)
+  select(-cell_ID) %>% 
+  as.matrix()
 
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
@@ -129,26 +130,28 @@ static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>%
   select(-c(elevation, cities_md, cities_sm)) %>% #from Data-Explore code 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
-
+nrow(static) #select out each column want as a vector 
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
-# Environmental 
-# retain: crop, gpw, gfc, precseas, wdpa, evi; from Data-Explore code 
-crop <- read.csv("Covariates for modelling/primary_occ_covariates_crop.csv") %>% 
-  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-gpw <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>% 
-  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-gfc <- read.csv("Covariates for modelling/primary_occ_covariates_GFC.csv") %>% 
-  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-precseas <- read.csv("Covariates for modelling/primary_occ_covariates_precseas.csv") %>% 
-  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-wdpa <- read.csv("Covariates for modelling/primary_occ_covariates_wdpa.csv") %>% 
-  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
-evi <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>%
-  filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
+cov_subset <- function(cov_dataframe_name, period_data){
+  covariate <- read.csv(cov_dataframe_name) %>% 
+    filter(cell_ID %in% cell_IDs) %>% 
+    arrange(cell_ID) 
+  keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
+  df_subset <- covariate[, keep_cols] %>% 
+    as.matrix()
+  return(df_subset)
+}
 
-#NOTE -- some of these don not have first period: will have to reckon with (add NA column?) 
+# Environmental ---
+# retain: crop, gpw, gfc, precseas, wdpa, evi; from Data-Explore code 
+crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop.csv", periods)
+gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
+gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
+precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas.csv", periods)
+wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
+evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods)
 
 # Ndepl 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
@@ -581,7 +584,7 @@ summary(ppc.out)
 # ?predict.stPGOcc()
 
 REVISIT: 
-https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+  https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
 
 
 # Number of prediction sites.
