@@ -256,7 +256,9 @@ for(i in 1:nrow(minjul_temp)){
   
 }
 
+## Modelling ------------------------------------------------------------------
 
+https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
 
 ## Look at raw occupancy data -------------------------------------------------
 
@@ -264,6 +266,36 @@ raw.occ.prob <- apply(revi.data$y, 2, mean, na.rm = TRUE)
 plot(2010:2018, raw.occ.prob, pch = 16, 
      xlab = 'Year', ylab = 'Raw Occurrence Proportion', 
      cex = 1.5, frame = FALSE, ylim = c(0, 1))
+
+# Plot average occupancy probability
+plot(apply(dat$psi, 2, mean), pch = 19, xlab = 'Time Period',
+     ylab = 'Average Occupancy Probability',
+     cex = 1.5, frame = FALSE, ylim = c(0, 1))
+
+# Below we extract the data we need to fit the model and create a plot of the spatially varying trend across the study region
+# Detection-nondetection data
+y <- dat$y
+# Occurrence design matrix for fixed effects
+X <- dat$X
+# Detection design matrix for fixed effets
+X.p <- dat$X.p
+# Occurrence values
+psi <- dat$psi
+# Spatial coordinates
+coords <- dat$coords
+# Spatially varying intercept and covariate effects
+w <- dat$w
+
+cov.effect <- beta[2] + w[, 2]
+plot.dat <- data.frame(x = coords[, 1], 
+                       y = coords[, 2], 
+                       cov.effect = cov.effect)
+ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
+  geom_raster() + 
+  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
+                       high = '#2166AC', na.value = NA) + 
+  theme_bw() 
+# (decrease in occurrence = red, increase in occurrence = blue)
 
 # plots Raw Occurrence Proportion by year -- how how adequate a linear temporal trend is for our analysis?
 
@@ -358,6 +390,78 @@ dat_ls <- list(y = yarray_test,
                coords = coords[c(1:ncell),])
 
 # run model --------------------------------------------------------------------
+
+We finally package up the data into the data list format for multi-season occupancy models. As before, we will fit the model with 75% of the spatial locations and then predict at the remaining 25% of the locations. With multi-season occupancy models, the occurrence covariates can now vary across both space and time, and so we specify occ.covs as a list rather than as a matrix/data frame as we saw with svcPGOcc(). See the multi-season occupancy model vignette for additional details. (https://www.doserlab.com/files/spoccupancy-web/articles/spacetimemodelshtml)
+
+# Subset data for prediction. 
+# Split into fitting and prediction data set
+pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
+y.fit <- y[-pred.indx, , ]
+y.pred <- y[pred.indx, , ]
+X.fit <- X[-pred.indx, , ]
+X.pred <- X[pred.indx, , ]
+X.p.fit <- X.p[-pred.indx, , , ]
+X.p.pred <- X.p[pred.indx, , , ]
+coords.fit <- coords[-pred.indx, ]
+coords.pred <- coords[pred.indx, ]
+psi.fit <- psi[-pred.indx, ]
+psi.pred <- psi[pred.indx, ]
+w.fit <- w[-pred.indx, ]
+w.pred <- w[pred.indx, ]
+
+# Package all data into a list
+# Occurrence covariates
+occ.covs <- list(trend = X.fit[, , 2])
+# Detection covariates
+det.covs <- list(det.cov.1 = X.p.fit[, , , 2])
+# Package into a list for spOccupancy
+data.list <- list(y = y.fit,
+                  occ.covs = occ.covs,
+                  det.covs = det.covs,
+                  coords = coords.fit)
+# Take a look at the data structure.
+str(data.list)
+
+
+svcTPGOcc(occ.formula, det.formula, data, inits, priors, 
+          tuning, svc.cols = 1, cov.model = 'exponential', NNGP = TRUE, 
+          n.neighbors = 15, search.type = 'cb', n.batch, 
+          batch.length, accept.rate = 0.43, n.omp.threads = 1, 
+          verbose = TRUE, ar1 = FALSE, n.report = 100, 
+          n.burn = round(.10 * n.batch * batch.length), 
+          n.thin = 1, n.chains = 1, k.fold, k.fold.threads = 1, 
+          k.fold.seed = 100, k.fold.only = FALSE, ...)
+
+#Next, we extract the full SVC values using the getSVCSamples() function and then compare the estimated values to those used to generate the model.
+# Intercept ---------------------------------------------------------------
+svc.samples <- getSVCSamples(out.svc.trend)
+int.quants <- apply(svc.samples[["(Intercept)"]], 2, quantile, 
+                    probs = c(0.025, 0.5, 0.975))
+svc.true.fit <- beta + w.fit
+plot(svc.true.fit[, 1], int.quants[2, ], pch = 19, 
+     ylim = c(min(int.quants[1, ]), max(int.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Intercept')
+abline(0, 1)
+arrows(svc.true.fit[, 1], int.quants[2, ], svc.true.fit[, 1], col = 'gray', 
+       int.quants[1, ], length = 0.02, angle = 90)
+arrows(svc.true.fit[, 1], int.quants[1, ], svc.true.fit[, 1], col = 'gray', 
+       int.quants[3, ], length = 0.02, angle = 90)
+points(svc.true.fit[, 1], int.quants[2, ], pch = 19)
+
+# Trend -------------------------------------------------------------------
+trend.quants <- apply(svc.samples[["trend"]], 2, quantile, 
+                      probs = c(0.025, 0.5, 0.975))
+plot(svc.true.fit[, 2], trend.quants[2, ], pch = 19, 
+     ylim = c(min(trend.quants[1, ]), max(trend.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Spatially-Varying Trends')
+abline(0, 1)
+arrows(svc.true.fit[, 2], trend.quants[2, ], svc.true.fit[, 2], col = 'gray', 
+       trend.quants[1, ], length = 0.02, angle = 90)
+arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray', 
+       trend.quants[3, ], length = 0.02, angle = 90)
+points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
+
+
 out <- svcTPGOcc(occ.formula = ~ trend,   #SCALE covariates 
                  det.formula = ~ effort + minjul + I(minjul^2) + (1|proj), 
                  svc.cols = c(1,2,3),
@@ -396,6 +500,64 @@ toc()
 
 
 # data exploration -------------------------------------------------------------
+
+# posterior predictive checks
+ppc.out <- ppcOcc(out.svc.trend, fit.stat = 'freeman-tukey', group = 1)
+summary(ppc.out)
+
+# model comparison
+priors.stPGOcc <- list(beta.normal = priors$beta.normal, 
+                       alpha.normal = priors$alpha.normal, 
+                       sigma.sq.t.ig = priors$sigma.sq.t.ig,
+                       rho.unif = priors$rho.unif,
+                       phi.unif = c(3 / 1, 3 / 0.1), 
+                       sigma.sq.ig = c(2, 1))
+out.stPGOcc <- stPGOcc(occ.formula = occ.formula,
+                       det.formula = det.formula,
+                       data = data,
+                       inits = inits,
+                       priors = priors.stPGOcc,
+                       cov.model = cov.model,
+                       n.neighbors = n.neighbors,
+                       n.batch = n.batch,
+                       batch.length = batch.length,
+                       verbose = TRUE,
+                       ar1 = ar1,
+                       n.report = 200,
+                       n.burn = n.burn,
+                       n.thin = n.thin,
+                       n.chains = 1)
+# SVC multi-season occupancy model
+waicOcc(out.svc.trend)
+# Spatial multi-season occupancy model
+waicOcc(out.stPGOcc)
+
+## prediction
+# Predict occupancy at the 400 new sites
+out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
+
+# Use the getSVCSamples() function to extract the SVC values
+# at the prediction locations
+svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred) 
+# True covariate effect values at new locations
+trend.pred <- beta[2] + w.pred[, 2]
+# Get meian and 95% CIs of the SVC for the trendariate effect
+trend.pred.quants <- apply(svc.pred.samples[["trend"]], 2, quantile, 
+                           probs = c(0.025, 0.5, 0.975))
+plot(trend.pred, trend.pred.quants[2, ], pch = 19, 
+     ylim = c(min(trend.pred.quants[1, ]), max(trend.pred.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Spatially varying trend')
+abline(0, 1)
+arrows(trend.pred, trend.pred.quants[2, ], trend.pred, col = 'gray', 
+       trend.pred.quants[1, ], length = 0.02, angle = 90)
+arrows(trend.pred, trend.pred.quants[1, ], trend.pred, col = 'gray', 
+       trend.pred.quants[3, ], length = 0.02, angle = 90)
+points(trend.pred, trend.pred.quants[2, ], pch = 19)
+
+
+
+
+
 ## Raw occcupancy ------
 # raw.occ.prob <- apply(dat_ls$y, 2, mean, na.rm = TRUE)
 # plot(seq(min(dat_ls$occ.covs$trend), max(dat_ls$occ.covs$trend), by = 1), raw.occ.prob, pch = 16, 
