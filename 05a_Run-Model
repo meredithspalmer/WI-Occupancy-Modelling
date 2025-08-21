@@ -153,7 +153,7 @@ precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas
 wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
 evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods)
 
-# Ndepl 
+# Number of deployments ---  
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
 rownames(ndepl) <- unique(sort(covs$cell_ID))
 colnames(ndepl) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
@@ -162,9 +162,7 @@ for(i in 1:nrow(covs)){
         as.character(paste0("p", covs$period_counter[i]))] <- covs$n_depl[i]
 }
 
-#QUESTION: do we want 0s or NAs? 
-
-# Project_id 
+# Project IDs ---
 proj <- matrix(0, nrow = ncell, ncol = nperiod)
 rownames(proj) <- unique(sort(covs$cell_ID))
 colnames(proj) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
@@ -175,9 +173,7 @@ for(i in seq_len(nrow(covs))){
   proj[r, c] <- covs$proj_ft[i]
 }
 
-#QUESTION: do we want 0s or NAs? 
-
-# Season 
+# Season ---
 Season <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
   tidyr::crossing(periods[1:2]) %>% 
   mutate(season_num = as.factor(season),
@@ -206,6 +202,8 @@ trend <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
 
 
 ## Covariates: observation-level (dim: ncell x nperiod x nweek) ---------------
+
+FIGURE THESE OUT 
 
 # Effort 
 effort_temp <- covs %>% 
