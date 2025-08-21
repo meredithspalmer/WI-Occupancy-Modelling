@@ -298,7 +298,7 @@ batch.length <- 25
 n.iter <- n.batch * batch.length
 
 # organize data for svcTPGOcc ----------------------------------------------------
-dat_ls <- list(y = yarray,
+dat_ls <- list(y = yarray_test,
                occ.covs = list(crop = crop_test, 
                                gpw = gpw_test,
                                gfc = gfc_test, 
