@@ -348,6 +348,60 @@ summary(extracted)
 sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
 write.csv(extracted, "gfc_2023.csv", row.names=F)
 
+# gfc 2024 -- downloading direct from URL 
+tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
+tile_names <- basename(tile_urls)
+
+# Download files
+# Note: some produced HTTP status 404 errors - skip and record these 
+tmp_dir <- tempdir()
+local_files <- file.path(tmp_dir, tile_names)
+
+# Data frame to track download status
+download_status <- data.frame(
+  url = tile_urls,
+  destfile = local_files,
+  success = NA,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(tile_urls)) {
+  if (!file.exists(local_files[i])) {
+    result <- tryCatch({
+      download.file(tile_urls[i], destfile = local_files[i], mode="wb", quiet=TRUE)
+      TRUE
+    }, error = function(e) {
+      warning(paste("Failed to download:", tile_urls[i]))
+      FALSE
+    })
+    download_status$success[i] <- result
+  } else {
+    download_status$success[i] <- TRUE
+  }
+}
+
+# Filter to only successfully downloaded files
+successful_files <- download_status$destfile[download_status$success]
+failed_files <- download_status[!download_status$success, ]
+nrow(failed_files) / length(tile_names) * 100 
+# -> almost 50% of urls do not have data associated with them... could be ocean files? see how much matches up with reference raster before panicking 
+
+# Create VRT from successfully downloaded tiles
+vrt_file <- file.path(tmp_dir, "lossyear.vrt")
+vrt_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
+
+# Reproject 
+vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+vrt_crop <- crop(vrt_reproj, reference_sub)
+extracted <- terra::zonal(vrt_crop, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+
+# Check 
+head(extracted)
+summary(extracted)
+sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
+
+# Save
+write.csv(extracted, "gfc_2024.csv", row.names=F)
 
 ################################################################################
 ### Prop WDRA ##################################################################
