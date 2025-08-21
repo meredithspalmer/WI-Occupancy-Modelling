@@ -4,10 +4,25 @@
 
 # Set working directory
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
-#rm(list=ls()); gc()
+rm(list=ls()); gc()
+set.seed(123)
 
 # Load libraries 
+library(dplyr)
+library(forcats)
+library(lubridate)
+library(purrr)
+library(reshape2)
+library(sf)
 library(spOccupancy)
+library(stringr)
+library(terra)
+library(tibble)
+library(tidyr)
+library(tidyverse) 
+library(coda)
+library(stars)
+library(ggplot2)
 
 ## User-defined functions -----------------------------------------------------
 
@@ -26,7 +41,7 @@ scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
 ## Reload data if saved -------------------------------------------------------
 
-(filenames <- list.files("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/data_for_modelling", full.names = TRUE))
+(filenames <- list.files("Data for modelling", full.names = TRUE))
 filename <- filenames[1]
 
 load(filename)
@@ -46,7 +61,7 @@ covs <- covs %>% drop_na(cell_ID)
 nweek <- 13
 (min_year <- min(covs$year))
 (max_year <- max(covs$year))
-cell_IDs <- unique(ystack2$cell_ID)
+cell_IDs <- unique(ystack$cell_ID)
 
 periods <- data.frame(period_counter = seq(min(covs$period_counter), 
                                            max(covs$period_counter), by = 1)) %>% 
@@ -120,9 +135,6 @@ static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>%
 
 # Environmental 
 # retain: crop, gpw, gfc, precseas, wdpa, evi; from Data-Explore code 
-
-csv_files <- list.files("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
-
 crop <- read.csv("Covariates for modelling/primary_occ_covariates_crop.csv") %>% 
   filter(cell_ID %in% cell_IDs) %>% arrange(cell_ID) %>% select(-cell_ID)
 gpw <- read.csv("Covariates for modelling/primary_occ_covariates_EVI.csv") %>% 
@@ -148,7 +160,7 @@ for(i in 1:nrow(covs)){
 }
 
 #QUESTION: do we want 0s or NAs? 
-  
+
 # Project_id 
 proj <- matrix(0, nrow = ncell, ncol = nperiod)
 rownames(proj) <- unique(sort(covs$cell_ID))
@@ -161,7 +173,7 @@ for(i in seq_len(nrow(covs))){
 }
 
 #QUESTION: do we want 0s or NAs? 
-  
+
 # Season 
 Season <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
   tidyr::crossing(periods[1:2]) %>% 
@@ -210,7 +222,7 @@ for(i in 1:nrow(effort_temp)){
          as.character(effort_temp$period_counter[i]),
          effort_temp$week[i]] <- effort_temp$effort[i]
 }
-  
+
 # Minjul 
 minjul_temp <- covs %>% 
   dplyr::select(cell_ID, period_counter, starts_with("minjul_w")) %>% 
@@ -231,7 +243,7 @@ for(i in 1:nrow(minjul_temp)){
 }
 
 # note: some of these values are negative because have ALREADY BEEN SCALED (scale3())
-  
+
 # Minjul Squared ------
 minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(minjul_sq) <- unique(covs$cell_ID)
@@ -244,6 +256,16 @@ for(i in 1:nrow(minjul_temp)){
   
 }
 
+
+
+## Look at raw occupancy data -------------------------------------------------
+
+raw.occ.prob <- apply(revi.data$y, 2, mean, na.rm = TRUE)
+plot(2010:2018, raw.occ.prob, pch = 16, 
+     xlab = 'Year', ylab = 'Raw Occurrence Proportion', 
+     cex = 1.5, frame = FALSE, ylim = c(0, 1))
+
+# plots Raw Occurrence Proportion by year -- how how adequate a linear temporal trend is for our analysis?
 
 # Subset data for testing -----------------------------------------------------
 ncell = 200
@@ -271,6 +293,29 @@ minjul_test <- minjul[1:ncell,,] #minjul not minjul_temp or minjul_sq?
 z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 inits.list <- list(beta = 0, alpha = 0, z = z.init, phi = 3 / .5, sigma.sq = 2, 
                    w = rep(0, ncell), rho = 0, sigma.sq.t = 0.5)
+
+# from vignette: 
+#z.inits <- apply(revi.data$y, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+#revi.inits <- list(beta = 0,         # occurrence coefficients
+#                   alpha = 0,        # detection coefficients
+#                   sigma.sq.psi = 1, # occurrence random effect variances
+#                   z = z.inits)      # latent occurrence values
+#revi.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
+#    alpha.normal = list(mean = 0, var = 2.72), 
+#    sigma.sq.psi.ig = list(a = 0.1, b = 0.1))
+
+z.inits <- apply(revi.data$y, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+# Pair-wise distance between all sites
+dist.hbef <- dist(revi.data$coords)
+revi.sp.inits <- list(beta = 0, alpha = 0, z = z.inits,
+                      sigma.sq = 1, phi = 3 / mean(dist.hbef), 
+                      sigma.sq.t = 1.5, rho = 0.2)
+revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
+                       alpha.normal = list(mean = 0, var = 2.72), 
+                       sigma.sq.t.ig = c(2, 0.5), 
+                       rho.unif = c(-1, 1),
+                       sigma.sq.ig = c(2, 1), 
+                       phi.unif = c(3 / max(dist.hbef), 3 / min(dist.hbef)))
 
 # Tuning
 tuning.list <- list(phi = 1, rho = 1)
@@ -313,7 +358,7 @@ dat_ls <- list(y = yarray_test,
                coords = coords[c(1:ncell),])
 
 # run model --------------------------------------------------------------------
-out <- svcTPGOcc(occ.formula = ~ trend + crop + gpw + gfc + precease + ,  
+out <- svcTPGOcc(occ.formula = ~ trend,   #SCALE covariates 
                  det.formula = ~ effort + minjul + I(minjul^2) + (1|proj), 
                  svc.cols = c(1,2,3),
                  data = dat_ls, 
@@ -332,6 +377,17 @@ out <- svcTPGOcc(occ.formula = ~ trend + crop + gpw + gfc + precease + ,
                  verbose = TRUE)
 
 summary(out)
+
+#convert logit values to probability scale
+plogis(2.13)
+
+#evaluate convergence
+ESS = effective sample size, can be used to assess convergence 
+(how to evaluate whether indicates adequate mizing of MCMC chain?)
+rhat < 1.1
+plot(model, 'beta', density = FALSE) #occupancy convergence
+plot(model, 'alpha', density = FALSE) #detection convergence
+
 
 # Save files -------------------------------------------------------------------
 filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
@@ -361,3 +417,100 @@ summary(ppc.out)
 # 
 # ## Predict -------
 # ?predict.stPGOcc()
+
+REVISIT: 
+https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+
+
+# Number of prediction sites.
+J.pred <- nrow(hbefElev)
+# Number of prediction years.
+n.years.pred <- 2
+# Number of predictors (including intercept)
+p.occ <- ncol(out.ar1$beta.samples)
+# Get covariates and standardize them using values used to fit the model
+elev.pred <- (hbefElev$val - mean(revi.data$occ.covs$elev)) / sd(revi.data$occ.covs$elev)
+year.pred <- matrix(rep((c(2010, 2018) - mean(revi.data$occ.covs$years)) / 
+                          sd(revi.data$occ.covs$years), 
+                        length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
+# Create three-dimensional array
+X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
+# Fill in the array
+# Years
+X.0[, , 2] <- year.pred
+# Elevation
+X.0[, , 3] <- elev.pred
+# Elevation^2
+X.0[, , 4] <- elev.pred^2
+# Check out the structure
+str(X.0)
+
+# Indicate which primary time periods (years) we are predicting for
+t.cols <- c(1, 9)
+# Approx. run time: < 30 sec
+out.pred <- predict(out.ar1, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
+# Check out the structure
+str(out.pred)
+
+#we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
+plot.dat <- data.frame(x = hbefElev$Easting, 
+                       y = hbefElev$Northing, 
+                       mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
+                       mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
+                       sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
+                       sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
+                       stringsAsFactors = FALSE)
+# Make a species distribution map showing the point estimates,
+# or predictions (posterior means)
+dat.stars <- st_as_stars(plot.dat, dims = c('x', 'y'))
+# 2009
+ggplot() + 
+  geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi)) +
+  scale_fill_viridis_c(na.value = 'transparent') +
+  labs(x = 'Easting', y = 'Northing', fill = '', 
+       title = 'Mean REVI occurrence probability 2009') +
+  theme_bw()
+
+
+## kfold cross validation
+# Non-spatial (Approx. run time: ~ 2.5 min)
+k.fold.non.sp <- tPGOcc(occ.formula = ~ scale(years) + scale(elev) + I(scale(elev)^2) + 
+                          (1 | site.effect), 
+                        det.formula = revi.det.formula, 
+                        data = revi.data, 
+                        n.batch = 200, 
+                        batch.length = 25,
+                        inits = revi.inits,
+                        priors = revi.priors,
+                        ar1 = TRUE,
+                        verbose = FALSE,
+                        n.burn = 2000, 
+                        n.thin = 12, 
+                        n.chains = n.chains, 
+                        n.report = 50, 
+                        k.fold = 4,
+                        k.fold.threads = 4,
+                        k.fold.only = TRUE)
+# Spatial (Approx run time: ~ 2.5 min)
+k.fold.sp <- stPGOcc(occ.formula = revi.sp.occ.formula, 
+                     det.formula = revi.sp.det.formula, 
+                     data = revi.data, 
+                     inits = revi.sp.inits, 
+                     priors = revi.sp.priors, 
+                     cov.model = cov.model, 
+                     n.neighbors = n.neighbors,
+                     n.batch = n.batch, 
+                     batch.length = batch.length, 
+                     verbose = FALSE, 
+                     ar1 = TRUE,
+                     n.report = 50,
+                     n.burn = n.burn, 
+                     n.thin = n.thin, 
+                     n.chains = 3, 
+                     k.fold = 4, 
+                     k.fold.threads = 4,
+                     k.fold.only = TRUE) 
+str(k.fold.sp)
+k.fold.non.sp$k.fold.deviance
+k.fold.sp$k.fold.deviance
+# want lower values 
