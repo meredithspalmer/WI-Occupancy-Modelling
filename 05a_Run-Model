@@ -313,7 +313,7 @@ dat_ls <- list(y = yarray,
                coords = coords[c(1:ncell),])
 
 # run model --------------------------------------------------------------------
-out <- svcTPGOcc(occ.formula = ~ trend + GPW,  
+out <- svcTPGOcc(occ.formula = ~ trend + crop + gpw + gfc + precease + ,  
                  det.formula = ~ effort + minjul + I(minjul^2) + (1|proj), 
                  svc.cols = c(1,2,3),
                  data = dat_ls, 
