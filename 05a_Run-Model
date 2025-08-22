@@ -278,7 +278,7 @@ ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() +
 # Plot spatially varying trend across study region ---------------------------
 
 **FIX THIS**
-
+  
 y <- yarray            #detection-nondetection data
 X <- dat$X             #occurrence design matrix for fixed effects
 X.p <- dat$X.p         #detection design matrix for fixed effets  
@@ -300,6 +300,9 @@ ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) +
 # [IF TESTING] Subset data for testing ----------------------------------------
 ncell = 200
 
+yarray_test <- yarray[1:ncell,,]
+coords_test <- coords[1:ncell,]
+
 static_test <- static[1:ncell,]
 gpw_test <- gpw[1:ncell,]
 evi_test <- evi[1:ncell,]
@@ -313,11 +316,52 @@ proj_test <- proj[1:ncell,]
 season_test <- Season[1:ncell,]
 year_test <- Year[1:ncell,]
 trend_test <- trend[1:ncell,]
-
-yarray_test <- yarray[1:ncell,,]
 effort_test <- effort[1:ncell,,]  
 minjul_test <- minjul[1:ncell,,]  
 minjul_sq_test <- minjul_sq[1:ncell,,]
+
+
+# [IF SPLITTING] Split into fitting and prediction data sets ------------------
+# Fit model with 75% of locations to train, predict at remaining 25% of locations 
+J <- length(unique(covs$cell_ID)) #1102 sites
+pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
+
+y.fit <- yarray[-pred.indx, , ]
+y.pred <- yarray[pred.indx, , ]
+coords.fit <- coords[-pred.indx, ]
+coords.pred <- coords[pred.indx, ]
+
+static.fit <- static[-pred.indx,]
+static.pred <- static[pred.indx,]
+gpw.fit <- gpw[-pred.indx,]
+gpw.pred <- gpw[pred.indx,]
+evi.fit <- evi[-pred.indx,]
+evi.pred <- evi[pred.indx,]
+crop.fit <- crop[-pred.indx,]
+crop.pred <- crop[pred.indx,]
+gfc.fit <- gfc[-pred.indx,]
+gfc.pred <- gfc[pred.indx,]
+precseas.fit <- precseas[-pred.indx,]
+precseas.pred <- precseas[pred.indx,]
+wdpa.fit <- wdpa[-pred.indx,]
+wdpa.pred <- wdpa[pred.indx,]
+ndepl.fit <- ndepl[-pred.indx,]
+ndepl.pred <- ndepl[pred.indx,]
+proj.fit <- proj[-pred.indx,]
+proj.pred <- proj[pred.indx,]
+season.fit <- Season[-pred.indx,]
+season.pred <- Season[pred.indx,]
+year.fit <- Year[-pred.indx,]
+year.pred <- Year[pred.indx,]
+trend.fit <- trend[-pred.indx,]
+trend.pred <- trend[pred.indx,]
+effort.fit <- effort[-pred.indx,,] 
+effort.pred <- effort[pred.indx,,] 
+minjul.fit <- minjul[-pred.indx,,]  
+minjul.pred <- minjul[pred.indx,,]  
+minjul_sq.fit <- minjul_sq[-pred.indx,,]
+minjul_sq.pred <- minjul_sq[pred.indx,,]
+
 
 # Prep inits -------------------------------------------------------------------
 z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
@@ -331,20 +375,20 @@ inits.list <- list(beta = 0,            #occurrence coefficients
                    sigma.sq.t = 0.5)    #occurrence random effect variances
 
 CHECK THAT THIS IS NOT SOMETHING NEED FOR OUR MODEL? 
-#revi.sp.inits <- list(beta = 0, alpha = 0, z = z.inits,
-#                      sigma.sq = 1, phi = 3 / mean(dist.hbef), 
-#                      sigma.sq.t = 1.5, rho = 0.2)
-
-ADD THIS IN SOMEWHERE
+  #revi.sp.inits <- list(beta = 0, alpha = 0, z = z.inits,
+  #                      sigma.sq = 1, phi = 3 / mean(dist.hbef), 
+  #                      sigma.sq.t = 1.5, rho = 0.2)
+  
+  ADD THIS IN SOMEWHERE
 dist.hbef <- dist(revi.data$coords)     #pair-wise distance between all sites 
 
 DO WE HAVE PRIORS? WHAT IS APPROPRIATE FOR OUR MODEL? 
-revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
-                       alpha.normal = list(mean = 0, var = 2.72), 
-                       sigma.sq.t.ig = c(2, 0.5), 
-                       rho.unif = c(-1, 1),
-                       sigma.sq.ig = c(2, 1), 
-                       phi.unif = c(3 / max(dist.hbef), 3 / min(dist.hbef)))
+  revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
+                         alpha.normal = list(mean = 0, var = 2.72), 
+                         sigma.sq.t.ig = c(2, 0.5), 
+                         rho.unif = c(-1, 1),
+                         sigma.sq.ig = c(2, 1), 
+                         phi.unif = c(3 / max(dist.hbef), 3 / min(dist.hbef)))
 
 #revi.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
 #                    alpha.normal = list(mean = 0, var = 2.72), 
@@ -372,22 +416,48 @@ n.iter <- n.batch * batch.length
 # Organize data for svcTPGOcc -------------------------------------------------
 
 # if TEST 
-dat_ls <- list(y = yarray_test,
+dat_ls_test <- list(y = yarray_test,
                occ.covs = list(crop = crop_test, 
                                gpw = gpw_test,
                                gfc = gfc_test, 
                                precseas = precseas_test,
                                wdpa = wdpa_test,
                                evi = evi_test, 
+                               road.dist = static_test$road_dist,
+                               tri = static_test$tri,
+                               river_dist = static_test$river_dist,
+                               coeff_var = static_test$coeff_var,
+                               cities_lg = static_test$cities_lg,
                                trend = trend_test),
                det.covs = list(effort = effort_test, #already scaled! 
                                minjul = minjul_test, #already scaled! 
                                minjul_sq = minjul_sq_test, #already scaled! 
                                ndepl = ndepl_test, 
                                proj = proj_test),
-               coords = coords[c(1:ncell),])
+               coords = coords_test,])
 
-# if NOT TEST 
+# if SPLITTNG 
+dat_ls_split <- list(y = y.fit,
+                     occ.covs = list(crop = crop.fit, 
+                                     gpw = gpw.fit,
+                                     gfc = gfc.fit, 
+                                     precseas = precseas.fit,
+                                     wdpa = wdpa.fit,
+                                     evi = evi.fit,
+                                     road.dist = static.fit$road_dist,
+                                     tri = static.fit$tri,
+                                     river_dist = static.fit$river_dist,
+                                     coeff_var = static.fit$coeff_var,
+                                     cities_lg = static.fit$cities_lg,
+                                     trend = trend.fit),
+                     det.covs = list(effort = effort.fit, #already scaled! 
+                                     minjul = minjul.fit, #already scaled! 
+                                     minjul_sq = minjul_sq.fit, #already scaled! 
+                                     ndepl = ndepl.fit, 
+                                     proj = proj.fit),
+                     coords = coords.fit,])
+
+# if NOT TEST NOR SPLITTING 
 dat_ls <- list(y = yarray,
                occ.covs = list(crop = crop, 
                                gpw = gpw,
@@ -395,6 +465,11 @@ dat_ls <- list(y = yarray,
                                precseas = precseas,
                                wdpa = wdpa,
                                evi = evi, 
+                               road.dist = static$road_dist,
+                               tri = static$tri,
+                               river_dist = static$river_dist,
+                               coeff_var = static$coeff_var,
+                               cities_lg = static$cities_lg,
                                trend = trend),
                det.covs = list(effort = effort, #already scaled! 
                                minjul = minjul, #already scaled! 
@@ -403,38 +478,8 @@ dat_ls <- list(y = yarray,
                                proj = proj),
                coords = coords)
 
-# run model --------------------------------------------------------------------
+# Run model --------------------------------------------------------------------
 
-We finally package up the data into the data list format for multi-season occupancy models. As before, we will fit the model with 75% of the spatial locations and then predict at the remaining 25% of the locations. With multi-season occupancy models, the occurrence covariates can now vary across both space and time, and so we specify occ.covs as a list rather than as a matrix/data frame as we saw with svcPGOcc(). See the multi-season occupancy model vignette for additional details. (https://www.doserlab.com/files/spoccupancy-web/articles/spacetimemodelshtml)
-
-# Subset data for prediction. 
-# Split into fitting and prediction data set
-pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
-y.fit <- y[-pred.indx, , ]
-y.pred <- y[pred.indx, , ]
-X.fit <- X[-pred.indx, , ]
-X.pred <- X[pred.indx, , ]
-X.p.fit <- X.p[-pred.indx, , , ]
-X.p.pred <- X.p[pred.indx, , , ]
-coords.fit <- coords[-pred.indx, ]
-coords.pred <- coords[pred.indx, ]
-psi.fit <- psi[-pred.indx, ]
-psi.pred <- psi[pred.indx, ]
-w.fit <- w[-pred.indx, ]
-w.pred <- w[pred.indx, ]
-
-# Package all data into a list
-# Occurrence covariates
-occ.covs <- list(trend = X.fit[, , 2])
-# Detection covariates
-det.covs <- list(det.cov.1 = X.p.fit[, , , 2])
-# Package into a list for spOccupancy
-data.list <- list(y = y.fit,
-                  occ.covs = occ.covs,
-                  det.covs = det.covs,
-                  coords = coords.fit)
-# Take a look at the data structure.
-str(data.list)
 
 
 svcTPGOcc(occ.formula, det.formula, data, inits, priors, 
