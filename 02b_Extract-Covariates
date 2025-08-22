@@ -1,4 +1,3 @@
-
 #################################################################################
 ### Extract static and dynamic covariates #######################################
 #################################################################################
@@ -29,6 +28,7 @@ library(rnaturalearthdata)
 library(sf)
 library(arrow)
 library(purrr)
+library(parallel)
 
 # Set up reference raster -----------------------------------------------------
 
@@ -57,11 +57,77 @@ static_layers <- list(
 r_c <- rast(static_layers)
 
 # Extract cell_IDs
-extracted <- terra::zonal(r_c, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
-head(extracted)
+extracted <- terra::zonal(r_c, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+coords <- as.data.frame(reference, xy=T)
+extracted <- merge(extracted, coords, all.x=T) %>% distinct()
+
+# Extrapolate missing values (using linear models; fills in mean when unable to model)
+extracted[] <- lapply(extracted, function(z) { 
+  if (is.numeric(z)) { z[is.nan(z)] <- NA_real_ }
+  z
+})
+
+covariate_cols <- setdiff(names(extracted),  c("cell_ID", "x", "y"))
+covariate_cols <- covariate_cols[sapply(extracted[covariate_cols], is.numeric)]
+
+for (cov in covariate_cols) {
+  miss <- which(is.na(extracted[[cov]]))
+  if (!length(miss)) next  # nothing to fill for this covariate
+  
+  # training rows (response present and coords present)
+  train_rows <- which(!is.na(extracted[[cov]]) & 
+                        !is.na(extracted$x) & !is.na(extracted$y))
+  if (!length(train_rows)) next  # can't train anything; skip
+  
+  # candidate numeric predictors (besides the target)
+  preds_all <- setdiff(covariate_cols, cov)
+  
+  # keep predictors that have at least some non-NA and non-zero variance on training data
+  good_preds <- preds_all[sapply(preds_all, function(p) {
+    v <- extracted[[p]][train_rows]
+    any(!is.na(v)) && (is.numeric(v)) && (var(v, na.rm = TRUE) > 0)
+  })]
+  
+  # ---------- Full model: cov ~ x + y + good_preds ----------
+  full_predictors <- c("x", "y", good_preds)
+  fit_dat_full <- extracted[train_rows, c(cov, full_predictors)]
+  fit_dat_full <- fit_dat_full[complete.cases(fit_dat_full), ]
+  
+  if (nrow(fit_dat_full) >= 5) {
+    fit_full <- lm(reformulate(full_predictors, response = cov), data = fit_dat_full)
+    
+    # predict where all required predictors are present
+    can_pred_full <- miss[complete.cases(extracted[miss, full_predictors])]
+    if (length(can_pred_full)) {
+      extracted[can_pred_full, cov] <- predict(fit_full, newdata = extracted[can_pred_full, ])
+      miss <- setdiff(miss, can_pred_full)
+    }
+  }
+  
+  # ---------- Fallback: cov ~ x + y ----------
+  if (length(miss)) {
+    fit_dat_xy <- extracted[train_rows, c(cov, "x", "y")]
+    fit_dat_xy <- fit_dat_xy[complete.cases(fit_dat_xy), ]
+    if (nrow(fit_dat_xy) >= 3) {
+      fit_xy <- lm(as.formula(paste(cov, "~ x + y")), data = fit_dat_xy)
+      can_pred_xy <- miss[complete.cases(extracted[miss, c("x","y")])]
+      if (length(can_pred_xy)) {
+        extracted[can_pred_xy, cov] <- predict(fit_xy, newdata = extracted[can_pred_xy, ])
+        miss <- setdiff(miss, can_pred_xy)
+      }
+    }
+  }
+  
+  # ---------- Last resort: fill with column mean ----------
+  if (length(miss)) {
+    mu <- mean(extracted[[cov]], na.rm = TRUE)
+    extracted[miss, cov] <- mu
+  }
+}
 
 # Save 
-write.csv(extracted, "site_level_covariates.csv", row.names = FALSE)
+write.csv(extracted, "../Covariates for modelling/site_level_covariates.csv", row.names = FALSE)
+
 
 # Dynamic layers ---------------------------------------------------------------
 
