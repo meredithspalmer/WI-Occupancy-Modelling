@@ -27,20 +27,22 @@ library(gtools)
 
 ## User-defined functions -----------------------------------------------------
 
-# Function to create initial values for covariates with NAs
-prep_inits <- function(x = NULL){
-  # initial conditions. 1 should be NA, NA should be a 0 or 1
-  xinits <- x
-  xinits[!is.na(x)] <- NA
-  xinits[is.na(x)] <- sample(unique(c(x))[!is.na(unique(c(x)))], sum(is.na(x)), replace=TRUE)
-  return(xinits)
-}
-
 # Scaling functions
 scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
 scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
-## Reload data if saved -------------------------------------------------------
+# Covariate formatting function 
+cov_subset <- function(cov_dataframe_name, period_data){
+  covariate <- read.csv(cov_dataframe_name) %>% 
+    filter(cell_ID %in% cell_IDs) %>% 
+    arrange(cell_ID) 
+  keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
+  df_subset <- covariate[, keep_cols] %>% 
+    as.matrix()
+  return(df_subset)
+}
+
+## Load prepped data ----------------------------------------------------------
 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
 filename <- filenames[1]
@@ -109,12 +111,6 @@ for(i in 1:nrow(ystack2)){
          ystack2$week[i]] <- ystack2$det[i]
 }
 
-# WHAT IS THIS? 
-zobs <- apply(yarray, c(1,2), function(x) max(x, na.rm = TRUE))
-table(zobs)
-zobs <- na_if(zobs, -Inf)
-(psi.obs <- apply(zobs, 2, sum, na.rm = TRUE) / apply(zobs, 2, function(x) sum(!is.na(x))))
-
 
 ## Coordinates ----------------------------------------------------------------
 coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) %>% 
@@ -133,21 +129,10 @@ static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>%
   arrange(cell_ID)
 nrow(static) #select out each column want as a vector 
 
+
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
-# Formatting function 
-cov_subset <- function(cov_dataframe_name, period_data){
-  covariate <- read.csv(cov_dataframe_name) %>% 
-    filter(cell_ID %in% cell_IDs) %>% 
-    arrange(cell_ID) 
-  keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
-  df_subset <- covariate[, keep_cols] %>% 
-    as.matrix()
-  return(df_subset)
-}
-
-# Environmental ---
-# retain: crop, gpw, gfc, precseas, wdpa, evi; from Data-Explore code 
+# Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop.csv", periods)
 gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
@@ -155,7 +140,7 @@ precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas
 wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
 evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods)
 
-# Number of deployments ---  
+# Number of deployments 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
 rownames(ndepl) <- unique(sort(covs$cell_ID))
 colnames(ndepl) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
@@ -164,7 +149,7 @@ for(i in 1:nrow(covs)){
         as.character(paste0("p", covs$period_counter[i]))] <- covs$n_depl[i]
 }
 
-# Project IDs ---
+# Project IDs  
 proj <- matrix(0, nrow = ncell, ncol = nperiod)
 rownames(proj) <- unique(sort(covs$cell_ID))
 colnames(proj) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
@@ -174,25 +159,6 @@ for(i in seq_len(nrow(covs))){
   c <- paste0("p", covs$period_counter[i])
   proj[r, c] <- covs$proj_ft[i]
 }
-
-# Season ---
-Season <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
-  tidyr::crossing(periods[1:2]) %>% 
-  mutate(season_num = as.factor(season),
-         season_num = as.numeric(fct_relevel(season_num, "Winter", "Spring", "Summer", "Fall"))) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = season_num) %>% 
-  arrange(cell_ID) %>% 
-  dplyr::select(-cell_ID) %>% 
-  as.matrix()
-
-# Year 
-Year <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
-  tidyr::crossing(periods[, c(1,3)]) %>% 
-  mutate(year = as.numeric(year)) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = year) %>%
-  arrange(cell_ID) %>% 
-  dplyr::select(-cell_ID) %>% 
-  as.matrix()
 
 # Trend 
 trend <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
@@ -208,7 +174,7 @@ trend <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
 # Effort 
 effort_temp <- covs %>% 
   dplyr::select(cell_ID, period_counter, effort_w1:effort_w13) %>% 
-  mutate_at(vars(matches("effort_w")), scale2) %>%  ## WHY ARE WE RESCALING HERE 
+  mutate_at(vars(matches("effort_w")), scale2) %>%   
   pivot_longer(effort_w1:effort_w13, names_to = "week", values_to = "effort", 
                values_drop_na = TRUE) %>% 
   mutate(week = as.numeric(str_remove(week, "effort_w")),
@@ -224,8 +190,8 @@ for(i in 1:nrow(effort_temp)){
          effort_temp$week[i]] <- effort_temp$effort[i]
 }
 
-str(effort) #this is the df to use 
-hist(effort[,,3]) #data is pre-scaled? no need to scale further? 
+str(effort)  
+hist(effort[,,3]) #data is pre-scaled: no need to scale further
 
 # Minjul 
 minjul_temp <- covs %>% 
@@ -246,27 +212,30 @@ for(i in 1:nrow(minjul_temp)){
          minjul_temp$week[i]] <- minjul_temp$minjul[i]
 }
 
-str(minjul) #this is the df to use 
-hist(minjul[,,3]) #data is pre-scaled? no need to scale further 
+str(minjul) 
+hist(minjul[,,3]) #data is pre-scaled: no need to scale further
 
 # Minjul Squared ------
 minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(minjul_sq) <- unique(covs$cell_ID)
 colnames(minjul_sq) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+
 for(i in 1:nrow(minjul_temp)){
-  
   minjul_sq[as.character(minjul_temp$cell_ID[i]),
             as.character(minjul_temp$period_counter[i]),
             minjul_temp$week[i]] <- minjul_temp$minjul[i]^2
-  
 }
+
+str(minjul_sq)
+hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
+
 
 ## Modelling ------------------------------------------------------------------
 
 # Following vignette found at: 
 # https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
 
-# Look at raw occupancy data -------------------------------------------------
+## Look at raw occupancy data -------------------------------------------------
 
 # how adequate is a linear trend for our analysis?
 raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
@@ -275,7 +244,7 @@ raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ
 ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
   xlab("Year") + ylab("Raw Occurrence Proportion")
 
-# Plot spatially varying trend across study region ---------------------------
+# Plot spatially varying trend across study region  
 
 **FIX THIS**
   
@@ -297,7 +266,9 @@ ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) +
   theme_bw() 
 # (decrease in occurrence = red, increase in occurrence = blue)
 
-# [IF TESTING] Subset data for testing ----------------------------------------
+## Subset data if appropriate -------------------------------------------------
+
+# IF TESTING: for speed  
 ncell = 200
 
 yarray_test <- yarray[1:ncell,,]
@@ -313,23 +284,19 @@ wdpa_test <- wdpa[1:ncell,]
 
 ndepl_test <- ndepl[1:ncell,]
 proj_test <- proj[1:ncell,]
-season_test <- Season[1:ncell,]
-year_test <- Year[1:ncell,]
 trend_test <- trend[1:ncell,]
 effort_test <- effort[1:ncell,,]  
 minjul_test <- minjul[1:ncell,,]  
 minjul_sq_test <- minjul_sq[1:ncell,,]
 
-
-# [IF SPLITTING] Split into fitting and prediction data sets ------------------
-# Fit model with 75% of locations to train, predict at remaining 25% of locations 
+# If SPLITTING: fit model with 75% of locations to train, remaining 25% to predict 
 J <- length(unique(covs$cell_ID)) #1102 sites
 pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
 
-y.fit <- yarray[-pred.indx, , ]
-y.pred <- yarray[pred.indx, , ]
-coords.fit <- coords[-pred.indx, ]
-coords.pred <- coords[pred.indx, ]
+y.fit <- yarray[-pred.indx,,]
+y.pred <- yarray[pred.indx,,]
+coords.fit <- coords[-pred.indx,]
+coords.pred <- coords[pred.indx,]
 
 static.fit <- static[-pred.indx,]
 static.pred <- static[pred.indx,]
@@ -349,10 +316,6 @@ ndepl.fit <- ndepl[-pred.indx,]
 ndepl.pred <- ndepl[pred.indx,]
 proj.fit <- proj[-pred.indx,]
 proj.pred <- proj[pred.indx,]
-season.fit <- Season[-pred.indx,]
-season.pred <- Season[pred.indx,]
-year.fit <- Year[-pred.indx,]
-year.pred <- Year[pred.indx,]
 trend.fit <- trend[-pred.indx,]
 trend.pred <- trend[pred.indx,]
 effort.fit <- effort[-pred.indx,,] 
@@ -363,21 +326,110 @@ minjul_sq.fit <- minjul_sq[-pred.indx,,]
 minjul_sq.pred <- minjul_sq[pred.indx,,]
 
 
+# Organize data for svcTPGOcc -------------------------------------------------
+
+# if TEST 
+dat_ls_test <- list(y = yarray_test,
+               occ.covs = list(crop = crop_test, 
+                               gpw = gpw_test,
+                               gfc = gfc_test, 
+                               precseas = precseas_test,
+                               wdpa = wdpa_test,
+                               evi = evi_test, 
+                               road.dist = static_test$road_dist,
+                               tri = static_test$tri,
+                               river_dist = static_test$river_dist,
+                               coeff_var = static_test$coeff_var,
+                               cities_lg = static_test$cities_lg,
+                               trend = trend_test),
+               det.covs = list(effort = effort_test, #already scaled! 
+                               minjul = minjul_test, #already scaled! 
+                               minjul_sq = minjul_sq_test, #already scaled! 
+                               ndepl = ndepl_test, 
+                               proj = proj_test),
+               coords = coords_test)
+
+# if SPLITTNG 
+dat_ls_split <- list(y = y.fit,
+                     occ.covs = list(crop = crop.fit, 
+                                     gpw = gpw.fit,
+                                     gfc = gfc.fit, 
+                                     precseas = precseas.fit,
+                                     wdpa = wdpa.fit,
+                                     evi = evi.fit,
+                                     road.dist = static.fit$road_dist,
+                                     tri = static.fit$tri,
+                                     river_dist = static.fit$river_dist,
+                                     coeff_var = static.fit$coeff_var,
+                                     cities_lg = static.fit$cities_lg,
+                                     trend = trend.fit),
+                     det.covs = list(effort = effort.fit, #already scaled! 
+                                     minjul = minjul.fit, #already scaled! 
+                                     minjul_sq = minjul_sq.fit, #already scaled! 
+                                     ndepl = ndepl.fit, 
+                                     proj = proj.fit),
+                     coords = coords.fit)
+
+# if NOT TEST NOR SPLITTING 
+dat_ls <- list(y = yarray,
+               occ.covs = list(crop = crop, 
+                               gpw = gpw,
+                               gfc = gfc, 
+                               precseas = precseas,
+                               wdpa = wdpa,
+                               evi = evi, 
+                               road.dist = static$road_dist,
+                               tri = static$tri,
+                               river_dist = static$river_dist,
+                               coeff_var = static$coeff_var,
+                               cities_lg = static$cities_lg,
+                               trend = trend),
+               det.covs = list(effort = effort, #already scaled! 
+                               minjul = minjul, #already scaled! 
+                               minjul_sq = minjul_sq, #already scaled! 
+                               ndepl = ndepl, 
+                               proj = proj),
+               coords = coords)
+
+## Formulas -------------------------------------------------------------------
+
+ADD MORE IN LATER, JUST TESTING FOR NOW 
+DO NOT FORGET TO SCALE COVARIATES 
+
+# [IF TESTING]
+occ.formula = ~ scale(trend_test)
+det.formula = ~ effort_test + minjul_test + I(minjul_test^2) + (1|proj_test)
+  
+# [IF SPLITTING]
+occ.formula = ~ scale(trend.fit)
+det.formula = ~ effort.fit + minjul.fit + I(minjul.fit^2) + (1|proj.fit)
+
+# [REGULAR]
+occ.formula = ~ scale(trend) 
+det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
+  
+svc.cols = c(1,2,3), #update with NAMES (see below)
+#if so, need to include c('(Intercept)', 'occ.cov.1') INTERCEPT  
+The svc.cols argument is used to specify the covariates whose effects are estimated as SVCs. svc.cols can either be a numeric indexing vector with integer numbers corresponding to the order in which you specified covariates in the occ.formula argument, or can be a character vector with the names of the covariates specified in occ.formula.  
+
+
 # Prep inits -------------------------------------------------------------------
 
-# UPDATE yarray as yarray, yarray_test, or y.fit; coords, etc. 
+y_dat <- yarray_test #as yarray, yarray_test, or y.fit 
+coord_dat <- coords_test #as coords, coords_test, or coord.fit 
 
-z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+z.init <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 #z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
 
-dist.data <- dist(coords_test)          #pairwise distance between all sites 
+dist.data <- dist(coord_dat)           #pairwise distance between all sites 
+
 inits.list <- list(beta = 0,            #occurrence coefficients
                    alpha = 0,           #detection coefficients
                    z = z.init,          #latent occurrence values
                    phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
                    sigma.sq = 0.5, #fabiola had as 2... 
-                   w = matrix(0, length(svc.cols), nrow(yarray_test))),  #fabiola had rep(0, ncell) 
-                   rho = 0, #not in tutorial? 
+                   w = matrix(0, length(svc.cols), nrow(yarray_test)),  #fabiola had rep(0, ncell) 
+                   #rho = 0, #not in tutorial? 
                    sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
 
 # Note: don't have to specify priors, can use svcPGOcc() defaults 
@@ -407,90 +459,6 @@ if(testing){
 batch.length <- 25
 n.iter <- n.batch * batch.length #not in tutorial? 
 
-
-# Organize data for svcTPGOcc -------------------------------------------------
-
-# if TEST 
-dat_ls_test <- list(y = yarray_test,
-               occ.covs = list(crop = crop_test, 
-                               gpw = gpw_test,
-                               gfc = gfc_test, 
-                               precseas = precseas_test,
-                               wdpa = wdpa_test,
-                               evi = evi_test, 
-                               road.dist = static_test$road_dist,
-                               tri = static_test$tri,
-                               river_dist = static_test$river_dist,
-                               coeff_var = static_test$coeff_var,
-                               cities_lg = static_test$cities_lg,
-                               trend = trend_test),
-               det.covs = list(effort = effort_test, #already scaled! 
-                               minjul = minjul_test, #already scaled! 
-                               minjul_sq = minjul_sq_test, #already scaled! 
-                               ndepl = ndepl_test, 
-                               proj = proj_test),
-               coords = coords_test,])
-
-# if SPLITTNG 
-dat_ls_split <- list(y = y.fit,
-                     occ.covs = list(crop = crop.fit, 
-                                     gpw = gpw.fit,
-                                     gfc = gfc.fit, 
-                                     precseas = precseas.fit,
-                                     wdpa = wdpa.fit,
-                                     evi = evi.fit,
-                                     road.dist = static.fit$road_dist,
-                                     tri = static.fit$tri,
-                                     river_dist = static.fit$river_dist,
-                                     coeff_var = static.fit$coeff_var,
-                                     cities_lg = static.fit$cities_lg,
-                                     trend = trend.fit),
-                     det.covs = list(effort = effort.fit, #already scaled! 
-                                     minjul = minjul.fit, #already scaled! 
-                                     minjul_sq = minjul_sq.fit, #already scaled! 
-                                     ndepl = ndepl.fit, 
-                                     proj = proj.fit),
-                     coords = coords.fit,])
-
-# if NOT TEST NOR SPLITTING 
-dat_ls <- list(y = yarray,
-               occ.covs = list(crop = crop, 
-                               gpw = gpw,
-                               gfc = gfc, 
-                               precseas = precseas,
-                               wdpa = wdpa,
-                               evi = evi, 
-                               road.dist = static$road_dist,
-                               tri = static$tri,
-                               river_dist = static$river_dist,
-                               coeff_var = static$coeff_var,
-                               cities_lg = static$cities_lg,
-                               trend = trend),
-               det.covs = list(effort = effort, #already scaled! 
-                               minjul = minjul, #already scaled! 
-                               minjul_sq = minjul_sq, #already scaled! 
-                               ndepl = ndepl, 
-                               proj = proj),
-               coords = coords)
-
-## Formulas -------------------------------------------------------------------
-
-# [IF TESTING]
-occ.formula = ~ 
-det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
-  
-# [IF SPLITTING]
-  occ.formula = ~ trend 
-det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
-
-# [REGULAR]
-occ.formula = ~ trend 
-det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
-  SCALE COVARIATES 
-
-svc.cols = c(1,2,3), #update with NAMES (see below)
-#if so, need to include c('(Intercept)', 'occ.cov.1') INTERCEPT  
-The svc.cols argument is used to specify the covariates whose effects are estimated as SVCs. svc.cols can either be a numeric indexing vector with integer numbers corresponding to the order in which you specified covariates in the occ.formula argument, or can be a character vector with the names of the covariates specified in occ.formula.  
 
 ## Run model ------------------------------------------------------------------
 
