@@ -297,7 +297,7 @@ ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) +
   theme_bw() 
 # (decrease in occurrence = red, increase in occurrence = blue)
 
-# Subset data for testing -----------------------------------------------------
+# [IF TESTING] Subset data for testing ----------------------------------------
 ncell = 200
 
 static_test <- static[1:ncell,]
@@ -315,31 +315,30 @@ year_test <- Year[1:ncell,]
 trend_test <- trend[1:ncell,]
 
 yarray_test <- yarray[1:ncell,,]
-effort_test <- effort[1:ncell,,] #effort not effort_temp? 
-minjul_test <- minjul[1:ncell,,] #minjul not minjul_temp or minjul_sq?
+effort_test <- effort[1:ncell,,]  
+minjul_test <- minjul[1:ncell,,]  
+minjul_sq_test <- minjul_sq[1:ncell,,]
 
-## TESTING 
 # Prep inits -------------------------------------------------------------------
 z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
-inits.list <- list(beta = 0, alpha = 0, z = z.init, phi = 3 / .5, sigma.sq = 2, 
-                   w = rep(0, ncell), rho = 0, sigma.sq.t = 0.5)
+inits.list <- list(beta = 0,            #occurrence coefficients
+                   alpha = 0,           #detection coefficients
+                   z = z.init,          #latent occurrence values
+                   phi = 3 / .5, 
+                   sigma.sq = 2, 
+                   w = rep(0, ncell), 
+                   rho = 0, 
+                   sigma.sq.t = 0.5)    #occurrence random effect variances
 
-# from vignette: 
-#z.inits <- apply(revi.data$y, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
-#revi.inits <- list(beta = 0,         # occurrence coefficients
-#                   alpha = 0,        # detection coefficients
-#                   sigma.sq.psi = 1, # occurrence random effect variances
-#                   z = z.inits)      # latent occurrence values
-#revi.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
-#    alpha.normal = list(mean = 0, var = 2.72), 
-#    sigma.sq.psi.ig = list(a = 0.1, b = 0.1))
+CHECK THAT THIS IS NOT SOMETHING NEED FOR OUR MODEL? 
+#revi.sp.inits <- list(beta = 0, alpha = 0, z = z.inits,
+#                      sigma.sq = 1, phi = 3 / mean(dist.hbef), 
+#                      sigma.sq.t = 1.5, rho = 0.2)
 
-z.inits <- apply(revi.data$y, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
-# Pair-wise distance between all sites
-dist.hbef <- dist(revi.data$coords)
-revi.sp.inits <- list(beta = 0, alpha = 0, z = z.inits,
-                      sigma.sq = 1, phi = 3 / mean(dist.hbef), 
-                      sigma.sq.t = 1.5, rho = 0.2)
+ADD THIS IN SOMEWHERE
+dist.hbef <- dist(revi.data$coords)     #pair-wise distance between all sites 
+
+DO WE HAVE PRIORS? WHAT IS APPROPRIATE FOR OUR MODEL? 
 revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
                        alpha.normal = list(mean = 0, var = 2.72), 
                        sigma.sq.t.ig = c(2, 0.5), 
@@ -347,32 +346,32 @@ revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72),
                        sigma.sq.ig = c(2, 1), 
                        phi.unif = c(3 / max(dist.hbef), 3 / min(dist.hbef)))
 
-# Tuning
+#revi.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
+#                    alpha.normal = list(mean = 0, var = 2.72), 
+#                    sigma.sq.psi.ig = list(a = 0.1, b = 0.1))
+
+
+# Tuning ----------------------------------------------------------------------
 tuning.list <- list(phi = 1, rho = 1)
+
 if(testing){
-  # Number of batches
   n.batch <- 10
-  # Number burn-in
   n.burn = 50
-  # Thinning rate
   n.thin = 1
-  # reporting rate, as number of batches
   n.report = 10 
 }else{
-  # Number of batches
   n.batch <- 400
-  # Number burn-in
   n.burn = 2000
-  # Thinning rate
   n.thin = 10
-  # reporting rate, as number of batches
   n.report = 40
 }
-# Batch length
+
 batch.length <- 25
 n.iter <- n.batch * batch.length
 
-# organize data for svcTPGOcc ----------------------------------------------------
+# Organize data for svcTPGOcc -------------------------------------------------
+
+# if TEST 
 dat_ls <- list(y = yarray_test,
                occ.covs = list(crop = crop_test, 
                                gpw = gpw_test,
@@ -381,11 +380,28 @@ dat_ls <- list(y = yarray_test,
                                wdpa = wdpa_test,
                                evi = evi_test, 
                                trend = trend_test),
-               det.covs = list(effort = effort_test, 
-                               minjul = minjul_test, 
+               det.covs = list(effort = effort_test, #already scaled! 
+                               minjul = minjul_test, #already scaled! 
+                               minjul_sq = minjul_sq_test, #already scaled! 
                                ndepl = ndepl_test, 
                                proj = proj_test),
                coords = coords[c(1:ncell),])
+
+# if NOT TEST 
+dat_ls <- list(y = yarray,
+               occ.covs = list(crop = crop, 
+                               gpw = gpw,
+                               gfc = gfc, 
+                               precseas = precseas,
+                               wdpa = wdpa,
+                               evi = evi, 
+                               trend = trend),
+               det.covs = list(effort = effort, #already scaled! 
+                               minjul = minjul, #already scaled! 
+                               minjul_sq = minjul_sq, #already scaled! 
+                               ndepl = ndepl, 
+                               proj = proj),
+               coords = coords)
 
 # run model --------------------------------------------------------------------
 
