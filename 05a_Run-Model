@@ -478,6 +478,27 @@ out <- svcTPGOcc(occ.formula = occ.formula,
 summary(out)
 plogis(2.13) #convert logit values to probability scale
 
+## sandbox --- 
+# where are the NA values in covs? 
+str(dat_ls_test)
+sum(is.na(dat_ls_test$occ.covs$crop))
+sum(is.na(dat_ls_test$occ.covs$gpw))
+sum(is.na(dat_ls_test$occ.covs$gfc))
+sum(is.na(dat_ls_test$occ.covs$precseas))
+sum(is.na(dat_ls_test$occ.covs$wdpa))
+sum(is.na(dat_ls_test$occ.covs$evi)) #NA VALUES 
+sum(is.na(dat_ls_test$occ.covs$road_dist))
+sum(is.na(dat_ls_test$occ.covs$coeff_var)) #NA VALUES 
+sum(is.na(dat_ls_test$occ.covs$cities_lg))
+
+
+
+
+
+
+
+
+
 
 #To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
 
