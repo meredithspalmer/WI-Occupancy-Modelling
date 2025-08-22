@@ -677,3 +677,45 @@ print(loss_summary)
 # Save masked raster 
 writeRaster(loss_raster_mask, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
 cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
+
+
+## trying 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+library(terra)
+
+## Reference raster ---------------------------------------------------------
+reference <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+site_cells <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv")
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues = FALSE)
+
+## Hansen data --------------------------------------------------------------
+tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
+vrt_file <- file.path(tempdir(), "lossyear.vrt")
+loss_raster <- vrt(tile_urls, filename = vrt_file, overwrite = TRUE)
+
+# Project → crop → mask in one clean pass
+loss_raster <- project(loss_raster, reference_sub, method = "near")
+loss_raster <- crop(loss_raster, reference_sub)
+loss_raster <- mask(loss_raster, reference_sub)
+
+# Optional sanity check
+compareGeom(loss_raster, reference_sub, crs = TRUE, res = TRUE, orig = TRUE)
+
+## Summarize forest loss ----------------------------------------------------
+loss_freq <- freq(loss_raster, digits = 0, value = TRUE)
+pixel_area_ha <- (res(loss_raster)[1]^2) / 10000
+
+# Filter to valid Hansen lossyear values (1:23)
+loss_freq <- loss_freq[loss_freq$value %in% 1:23, ]
+
+loss_summary <- data.frame(
+  year = 2000 + loss_freq$value,
+  pixels_lost = loss_freq$count,
+  area_ha = loss_freq$count * pixel_area_ha
+)
+print(loss_summary)
+write.csv(loss_summary, "loss_summary.csv", row.names = FALSE)
+
+## Save masked raster -------------------------------------------------------
+writeRaster(loss_raster, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
+cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
