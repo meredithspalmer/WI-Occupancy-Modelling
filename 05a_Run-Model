@@ -447,7 +447,7 @@ occ.formula = ~ scale(trend) + scale(crop)
 det.formula = ~ effort + minjul + minjul_sq + (1|proj)
 
 svc.cols = c('(Intercept', 'crop') #update based on formulae 
-svc.cols = c(1,2)
+svc.cols = c(1,2) # THIS IS WRONG BECAUSE ASSUMING TREND IS SVC...
 #svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
@@ -501,6 +501,7 @@ n.iter <- n.batch * batch.length #not in tutorial?
 
 dat <- dat_ls_test #CHANGE FOR EACH training, split, regular 
 
+start_time <- Sys.time()
 out <- svcTPGOcc(occ.formula = occ.formula, 
                  det.formula = det.formula,
                  data = dat, 
@@ -521,6 +522,13 @@ out <- svcTPGOcc(occ.formula = occ.formula,
                  verbose = TRUE,
                  ar1 = TRUE) 
 # would add k-fold parameters to this model if using k-fold cross validation ... 
+#k.fold = 4, 
+#k.fold.threads = 4,
+#k.fold.only = TRUE) 
+#str(k.fold.sp)
+
+end_time <- Sys.time()
+end_time - start_time #model run time 
 
 ## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
@@ -536,19 +544,44 @@ sum(!is.na(yarray_test) & is.na(effort_test))  # should be 0
 # now, rerun code from line 378 ('organize data') 
 
 
+## Examine outputs ------------------------------------------------------------
 summary(out)
 plogis(2.13) #convert logit values to probability scale
 
+# Evaluate convergence
+# -> ESS = effective sample size, can be used to assess convergence 
+QUESTION: how to evaluate whether indicates adequate mizing of MCMC chain?)
+# -> want rhat < 1.1
+plot(out, 'beta', density = FALSE) #occupancy convergence
+plot(out, 'alpha', density = FALSE) #detection convergence
+
+# Widely Applicable Information Criterion (WAIC)
+waicOcc(out)
+
+# Goodness of Fit: posterior predictive checks
+# Note: Fabiola suggests group 2 - by replicate - instead of by site, for spatial models
+ppc.out <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 2)
+summary(ppc.out)
+# -> if Bayesian p-values close to 0.5, indicates adequate model fit; values >0.1 indicate no lack of fit; values close to 1 require further investigation 
+
+# K-fold cross validation:
+k.fold.non.sp$k.fold.deviance
+k.fold.sp$k.fold.deviance
+# want lower values 
+
+## Model comparison -----------------------------------------------------------
+
+may want to try running with and without AR1=T vs F 
+could try cov.model = "exponential" vs 'spherical'
+
+## Extracting and plotting estimates ------------------------------------------
 
 #To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
 
-svc.samples <- getSVCSamples(out.svc) 
+svc.samples <- getSVCSamples(out) 
 str(svc.samples)
 
 #The resulting object, here called svc.samples, is a list with each component corresponding to a matrix of the MCMC samples of each spatially varying coefficient estimated in the model, with rows corresponding to MCMC sample and column corresponding to site.
-
-
-#Next, we extract the full SVC values using the getSVCSamples() function and then compare the estimated values to those used to generate the model.
 
 # Intercept ---------------------------------------------------------------
 svc.samples <- getSVCSamples(out.svc.trend)
@@ -580,52 +613,14 @@ points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
 
 
 
-#evaluate convergence
-ESS = effective sample size, can be used to assess convergence 
-(how to evaluate whether indicates adequate mizing of MCMC chain?)
-rhat < 1.1
-plot(model, 'beta', density = FALSE) #occupancy convergence
-plot(model, 'alpha', density = FALSE) #detection convergence
 
 
-# Save files -------------------------------------------------------------------
-filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
-save(yarray, covs, species, out, coords, file = filename)
-toc()
+
 
 
 # data exploration -------------------------------------------------------------
 
-# posterior predictive checks
-ppc.out <- ppcOcc(out.svc.trend, fit.stat = 'freeman-tukey', group = 1)
-summary(ppc.out)
 
-# model comparison
-priors.stPGOcc <- list(beta.normal = priors$beta.normal, 
-                       alpha.normal = priors$alpha.normal, 
-                       sigma.sq.t.ig = priors$sigma.sq.t.ig,
-                       rho.unif = priors$rho.unif,
-                       phi.unif = c(3 / 1, 3 / 0.1), 
-                       sigma.sq.ig = c(2, 1))
-out.stPGOcc <- stPGOcc(occ.formula = occ.formula,
-                       det.formula = det.formula,
-                       data = data,
-                       inits = inits,
-                       priors = priors.stPGOcc,
-                       cov.model = cov.model,
-                       n.neighbors = n.neighbors,
-                       n.batch = n.batch,
-                       batch.length = batch.length,
-                       verbose = TRUE,
-                       ar1 = ar1,
-                       n.report = 200,
-                       n.burn = n.burn,
-                       n.thin = n.thin,
-                       n.chains = 1)
-# SVC multi-season occupancy model
-waicOcc(out.svc.trend)
-# Spatial multi-season occupancy model
-waicOcc(out.stPGOcc)
 
 ## prediction
 # Predict occupancy at the 400 new sites
@@ -652,26 +647,9 @@ points(trend.pred, trend.pred.quants[2, ], pch = 19)
 
 
 
+ 
 
-## Raw occcupancy ------
-# raw.occ.prob <- apply(dat_ls$y, 2, mean, na.rm = TRUE)
-# plot(seq(min(dat_ls$occ.covs$trend), max(dat_ls$occ.covs$trend), by = 1), raw.occ.prob, pch = 16, 
-#      xlab = 'Year', ylab = 'Raw Occurrence Proportion', 
-#      cex = 1.5, frame = FALSE, ylim = c(0, 1))
-# 
-# ## WAIC --------
-# waicOcc(out)
 
-## Goodness of Fit --------
-# posterior predictive checks
-# (group 2 - by replicate - instead of by site, for spatial models)
-ppc.out <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 2)
-summary(ppc.out)
-
-# traceplots
-# plot(out$beta.samples, density = TRUE)
-# plot(out$alpha.samples, density = TRUE)
-# 
 # ## Predict -------
 # ?predict.stPGOcc()
 
@@ -729,45 +707,9 @@ ggplot() +
   theme_bw()
 
 
-## kfold cross validation
-# Non-spatial (Approx. run time: ~ 2.5 min)
-k.fold.non.sp <- tPGOcc(occ.formula = ~ scale(years) + scale(elev) + I(scale(elev)^2) + 
-                          (1 | site.effect), 
-                        det.formula = revi.det.formula, 
-                        data = revi.data, 
-                        n.batch = 200, 
-                        batch.length = 25,
-                        inits = revi.inits,
-                        priors = revi.priors,
-                        ar1 = TRUE,
-                        verbose = FALSE,
-                        n.burn = 2000, 
-                        n.thin = 12, 
-                        n.chains = n.chains, 
-                        n.report = 50, 
-                        k.fold = 4,
-                        k.fold.threads = 4,
-                        k.fold.only = TRUE)
-# Spatial (Approx run time: ~ 2.5 min)
-k.fold.sp <- stPGOcc(occ.formula = revi.sp.occ.formula, 
-                     det.formula = revi.sp.det.formula, 
-                     data = revi.data, 
-                     inits = revi.sp.inits, 
-                     priors = revi.sp.priors, 
-                     cov.model = cov.model, 
-                     n.neighbors = n.neighbors,
-                     n.batch = n.batch, 
-                     batch.length = batch.length, 
-                     verbose = FALSE, 
-                     ar1 = TRUE,
-                     n.report = 50,
-                     n.burn = n.burn, 
-                     n.thin = n.thin, 
-                     n.chains = 3, 
-                     k.fold = 4, 
-                     k.fold.threads = 4,
-                     k.fold.only = TRUE) 
-str(k.fold.sp)
-k.fold.non.sp$k.fold.deviance
-k.fold.sp$k.fold.deviance
-# want lower values 
+
+
+# Save files -------------------------------------------------------------------
+filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
+save(yarray, covs, species, out, coords, file = filename)
+toc()
