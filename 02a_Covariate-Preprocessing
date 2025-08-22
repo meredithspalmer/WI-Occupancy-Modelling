@@ -690,8 +690,40 @@ reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues =
 
 ## Hansen data --------------------------------------------------------------
 tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
-vrt_file <- file.path(tempdir(), "lossyear.vrt")
-loss_raster <- vrt(tile_urls, filename = vrt_file, overwrite = TRUE)
+tile_names <- basename(tile_urls)
+
+# Download tiles with error handling 
+tmp_dir <- tempdir()
+local_files <- file.path(tmp_dir, tile_names)
+
+download_status <- data.frame(
+  url = tile_urls,
+  destfile = local_files,
+  success = NA,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(tile_urls)) {
+  if (!file.exists(local_files[i])) {
+    result <- tryCatch({
+      download.file(tile_urls[i], destfile = local_files[i], mode = "wb", quiet = TRUE)
+      TRUE
+    }, error = function(e) {
+      warning(paste("Failed to download:", tile_urls[i]))
+      FALSE
+    })
+    download_status$success[i] <- result
+  } else {
+    download_status$success[i] <- TRUE
+  }
+}
+
+# Keep only successfully downloaded tiles
+successful_files <- download_status$destfile[download_status$success]
+
+# Create VRT 
+vrt_file <- file.path(tmp_dir, "lossyear.vrt")
+loss_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
 
 # Project → crop → mask in one clean pass
 loss_raster <- project(loss_raster, reference_sub, method = "near")
