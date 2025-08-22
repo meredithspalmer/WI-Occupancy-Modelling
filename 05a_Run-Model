@@ -369,27 +369,28 @@ minjul_sq.pred <- minjul_sq[pred.indx,,]
 
 z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 #z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
+
 dist.data <- dist(coords_test)          #pairwise distance between all sites 
 inits.list <- list(beta = 0,            #occurrence coefficients
                    alpha = 0,           #detection coefficients
                    z = z.init,          #latent occurrence values
                    phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
                    sigma.sq = 0.5, #fabiola had as 2... 
-                   w =matrix(0, length(svc.cols), nrow(yarray_test))),  #fabiola had rep(0, ncell) 
+                   w = matrix(0, length(svc.cols), nrow(yarray_test))),  #fabiola had rep(0, ncell) 
                    rho = 0, #not in tutorial? 
                    sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
 
-# Don't have to specify priors, can use svcPGOcc() defaults 
-# revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
-#                        alpha.normal = list(mean = 0, var = 2.72), 
-#                        sigma.sq.t.ig = c(2, 0.5), 
-#                        rho.unif = c(-1, 1),
-#                        sigma.sq.ig = c(2, 1), 
-#                        phi.unif = c(3 / max(dist.data), 3 / min(dist.data)))
+# Note: don't have to specify priors, can use svcPGOcc() defaults 
+priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
+                    beta.normal = list(mean = 0, var = 2.72),
+                    sigma.sq.ig = list(a = 2, b = 0.5),
+                    phi.unif = list(a = 3 / max(dist.data), 
+                                    b = 3 / min(dist.data)))
 
 
 # Tuning ----------------------------------------------------------------------
-tuning.list <- list(phi = 1, rho = 1)
+n.chains <- 3
+tuning.list <- list(phi = 0.2) #fabiola has tuning.list <- list(phi = 1, rho = 1)
 
 if(testing){
   n.batch <- 10
@@ -397,14 +398,15 @@ if(testing){
   n.thin = 1
   n.report = 10 
 }else{
-  n.batch <- 400
-  n.burn = 2000
-  n.thin = 10
-  n.report = 40
+  n.batch <- 400 #tutorial has 800
+  n.burn = 2000 #tutorial has 10000
+  n.thin = 10 
+  n.report = 40 #tutorial has 100
 }
 
 batch.length <- 25
-n.iter <- n.batch * batch.length
+n.iter <- n.batch * batch.length #not in tutorial? 
+
 
 # Organize data for svcTPGOcc -------------------------------------------------
 
@@ -486,38 +488,47 @@ occ.formula = ~ trend
 det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
   SCALE COVARIATES 
 
+svc.cols = c(1,2,3), #update with NAMES (see below)
+#if so, need to include c('(Intercept)', 'occ.cov.1') INTERCEPT  
+The svc.cols argument is used to specify the covariates whose effects are estimated as SVCs. svc.cols can either be a numeric indexing vector with integer numbers corresponding to the order in which you specified covariates in the occ.formula argument, or can be a character vector with the names of the covariates specified in occ.formula.  
+
 ## Run model ------------------------------------------------------------------
 
 out <- svcTPGOcc(occ.formula = occ.formula, 
                  det.formula = det.formula,
                  data = dat_ls, #CHANGE FOR EACH training, split, regular 
                  inits = inits.list,
-                 #prior (in tutorial, not in fabiola's code)
-                 svc.cols = c(1,2,3), #update with NAMES (see below)
-                    #if so, need to include c('(Intercept)', 'occ.cov.1') INTERCEPT
-                 cov.model = "exponential",  #alternative to test could be 'spherical'
-                 NNGP = TRUE, 
-                 n.neighbors = 5, #tutorial has as 15 - why? 
-                 search.type = 'cb', 
                  n.batch = n.batch,
                  batch.length = batch.length, 
-                 #accept.rate = 0.43,
-                 #n.omp.threads = 1,
-                 verbose = TRUE,
-                 ar1 = TRUE,
+                 priors = priors.list, #in tutorial, not in fabiola's code
+                 svc.cols = svc.cols,
+                 cov.model = "exponential",  #alternative to test could be 'spherical'
+                 NNGP = TRUE, 
+                 n.neighbors = 5,  
+                 tuning = tuning.list, #not in fabiola's code...         
                  n.report = n.report, 
                  n.burn = n.burn,
                  n.thin = n.thin,
-                 n.chains = 3) 
+                 n.chains = nchains,
+                 #search.type = 'cb', #in fabiola's code, not in tutorial? 
+                 verbose = TRUE,
+                 ar1 = TRUE) 
 # would add k-fold parameters to this model if using k-fold cross validation ... 
 
-The svc.cols argument is used to specify the covariates whose effects are estimated as SVCs. svc.cols can either be a numeric indexing vector with integer numbers corresponding to the order in which you specified covariates in the occ.formula argument, or can be a character vector with the names of the covariates specified in occ.formula.  
-  
 summary(out)
 plogis(2.13) #convert logit values to probability scale
 
 
+#To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
+
+svc.samples <- getSVCSamples(out.svc) 
+str(svc.samples)
+
+#The resulting object, here called svc.samples, is a list with each component corresponding to a matrix of the MCMC samples of each spatially varying coefficient estimated in the model, with rows corresponding to MCMC sample and column corresponding to site.
+
+
 #Next, we extract the full SVC values using the getSVCSamples() function and then compare the estimated values to those used to generate the model.
+
 # Intercept ---------------------------------------------------------------
 svc.samples <- getSVCSamples(out.svc.trend)
 int.quants <- apply(svc.samples[["(Intercept)"]], 2, quantile, 
