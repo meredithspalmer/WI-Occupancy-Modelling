@@ -23,6 +23,7 @@ library(tidyverse)
 library(coda)
 library(stars)
 library(ggplot2)
+library(gtools)
 
 ## User-defined functions -----------------------------------------------------
 
@@ -134,6 +135,7 @@ nrow(static) #select out each column want as a vector
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
+# Formatting function 
 cov_subset <- function(cov_dataframe_name, period_data){
   covariate <- read.csv(cov_dataframe_name) %>% 
     filter(cell_ID %in% cell_IDs) %>% 
@@ -203,12 +205,10 @@ trend <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
 
 ## Covariates: observation-level (dim: ncell x nperiod x nweek) ---------------
 
-FIGURE THESE OUT 
-
 # Effort 
 effort_temp <- covs %>% 
   dplyr::select(cell_ID, period_counter, effort_w1:effort_w13) %>% 
-  mutate_at(vars(matches("effort_w")), scale2) %>% 
+  mutate_at(vars(matches("effort_w")), scale2) %>%  ## WHY ARE WE RESCALING HERE 
   pivot_longer(effort_w1:effort_w13, names_to = "week", values_to = "effort", 
                values_drop_na = TRUE) %>% 
   mutate(week = as.numeric(str_remove(week, "effort_w")),
@@ -223,6 +223,9 @@ for(i in 1:nrow(effort_temp)){
          as.character(effort_temp$period_counter[i]),
          effort_temp$week[i]] <- effort_temp$effort[i]
 }
+
+str(effort) #this is the df to use 
+hist(effort[,,3]) #data is pre-scaled? no need to scale further? 
 
 # Minjul 
 minjul_temp <- covs %>% 
@@ -243,7 +246,8 @@ for(i in 1:nrow(minjul_temp)){
          minjul_temp$week[i]] <- minjul_temp$minjul[i]
 }
 
-# note: some of these values are negative because have ALREADY BEEN SCALED (scale3())
+str(minjul) #this is the df to use 
+hist(minjul[,,3]) #data is pre-scaled? no need to scale further 
 
 # Minjul Squared ------
 minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
@@ -259,33 +263,28 @@ for(i in 1:nrow(minjul_temp)){
 
 ## Modelling ------------------------------------------------------------------
 
-https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
+# Following vignette found at: 
+# https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
 
-## Look at raw occupancy data -------------------------------------------------
+# Look at raw occupancy data -------------------------------------------------
 
-raw.occ.prob <- apply(revi.data$y, 2, mean, na.rm = TRUE)
-plot(2010:2018, raw.occ.prob, pch = 16, 
-     xlab = 'Year', ylab = 'Raw Occurrence Proportion', 
-     cex = 1.5, frame = FALSE, ylim = c(0, 1))
+# how adequate is a linear trend for our analysis?
+raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
+raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
+raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
+ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
+  xlab("Year") + ylab("Raw Occurrence Proportion")
 
-# Plot average occupancy probability
-plot(apply(dat$psi, 2, mean), pch = 19, xlab = 'Time Period',
-     ylab = 'Average Occupancy Probability',
-     cex = 1.5, frame = FALSE, ylim = c(0, 1))
+# Plot spatially varying trend across study region ---------------------------
 
-# Below we extract the data we need to fit the model and create a plot of the spatially varying trend across the study region
-# Detection-nondetection data
-y <- dat$y
-# Occurrence design matrix for fixed effects
-X <- dat$X
-# Detection design matrix for fixed effets
-X.p <- dat$X.p
-# Occurrence values
-psi <- dat$psi
-# Spatial coordinates
-coords <- dat$coords
-# Spatially varying intercept and covariate effects
-w <- dat$w
+**FIX THIS**
+
+y <- yarray            #detection-nondetection data
+X <- dat$X             #occurrence design matrix for fixed effects
+X.p <- dat$X.p         #detection design matrix for fixed effets  
+psi <- dat$psi         #occurrence values
+coords <- coords       #spatial coordinates
+w <- dat$w.            #spatially varying intercept and covariate effects
 
 cov.effect <- beta[2] + w[, 2]
 plot.dat <- data.frame(x = coords[, 1], 
@@ -297,8 +296,6 @@ ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) +
                        high = '#2166AC', na.value = NA) + 
   theme_bw() 
 # (decrease in occurrence = red, increase in occurrence = blue)
-
-# plots Raw Occurrence Proportion by year -- how how adequate a linear temporal trend is for our analysis?
 
 # Subset data for testing -----------------------------------------------------
 ncell = 200
