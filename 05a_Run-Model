@@ -395,23 +395,13 @@ dat_ls <- list(y = yarray,
 
 ADD MORE IN LATER, JUST TESTING FOR NOW 
 DO NOT FORGET TO SCALE COVARIATES 
+# note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
-# [IF TESTING]
-occ.formula = ~ scale(trend_test)
-det.formula = ~ effort_test + minjul_test + I(minjul_test^2) + (1|proj_test)
+occ.formula = ~ scale(trend) + scale(crop)
+det.formula = ~ effort + minjul + I(minjult^2) + (1|proj)
   
-# [IF SPLITTING]
-occ.formula = ~ scale(trend.fit)
-det.formula = ~ effort.fit + minjul.fit + I(minjul.fit^2) + (1|proj.fit)
-
-# [REGULAR]
-occ.formula = ~ scale(trend) 
-det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
-  
-svc.cols = c(1,2,3), #update with NAMES (see below)
-#if so, need to include c('(Intercept)', 'occ.cov.1') INTERCEPT  
-The svc.cols argument is used to specify the covariates whose effects are estimated as SVCs. svc.cols can either be a numeric indexing vector with integer numbers corresponding to the order in which you specified covariates in the occ.formula argument, or can be a character vector with the names of the covariates specified in occ.formula.  
-
+svc.cols = c('(Intercept', 'crop') #update based on formulae 
+#svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
 
@@ -462,9 +452,11 @@ n.iter <- n.batch * batch.length #not in tutorial?
 
 ## Run model ------------------------------------------------------------------
 
+dat <- dat_ls_test #CHANGE FOR EACH training, split, regular 
+
 out <- svcTPGOcc(occ.formula = occ.formula, 
                  det.formula = det.formula,
-                 data = dat_ls, #CHANGE FOR EACH training, split, regular 
+                 data = dat, 
                  inits = inits.list,
                  n.batch = n.batch,
                  batch.length = batch.length, 
