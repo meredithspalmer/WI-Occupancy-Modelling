@@ -215,19 +215,15 @@ if(length(det_cols) != length(effort_cols)) {
   stop("Detection and effort columns must be the same length.")
 }
 
-# Logical matrix: TRUE where detection exists but effort is missing
+# Locate discrepancies 
 discrepancies <- (!is.na(det_aligned[det_cols])) & (is.na(effort_aligned[effort_cols]))
-
-# Get row/column indices of discrepancies
 which_discrepancies <- which(discrepancies, arr.ind = TRUE)
-
-# Build simple table: cell_ID and period
 discrepancy_table <- data.frame(
   cell_ID = det_aligned$cell_ID[which_discrepancies[, "row"]],
   period  = det_cols[which_discrepancies[, "col"]],
   stringsAsFactors = FALSE
 )
-print(discrepancy_table)
+nrow(discrepancy_table)
 
 ## Patch effort: set NA to 1 wherever a detection exists
 for (i in seq_along(det_cols)) {
@@ -448,9 +444,10 @@ DO NOT FORGET TO SCALE COVARIATES
 # note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
 occ.formula = ~ scale(trend) + scale(crop)
-det.formula = ~ effort + minjul + I(minjult^2) + (1|proj)
+det.formula = ~ effort + minjul + minjul_sq + (1|proj)
 
 svc.cols = c('(Intercept', 'crop') #update based on formulae 
+svc.cols = c(1,2)
 #svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
@@ -469,7 +466,7 @@ inits.list <- list(beta = 0,            #occurrence coefficients
                    phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
                    sigma.sq = 0.5, #fabiola had as 2... 
                    w = matrix(0, length(svc.cols), nrow(yarray_test)),  #fabiola had rep(0, ncell) 
-                   #rho = 0, #not in tutorial? 
+                   #rho = 0,  
                    sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
 
 # Note: don't have to specify priors, can use svcPGOcc() defaults 
@@ -482,7 +479,7 @@ priors.list <- list(alpha.normal = list(mean = 0, var = 2.72),
 
 # Tuning ----------------------------------------------------------------------
 n.chains <- 3
-tuning.list <- list(phi = 0.2) #fabiola has tuning.list <- list(phi = 1, rho = 1)
+tuning.list <- list(phi = 1, rho = 1)
 
 if(testing){
   n.batch <- 10
@@ -510,44 +507,37 @@ out <- svcTPGOcc(occ.formula = occ.formula,
                  inits = inits.list,
                  n.batch = n.batch,
                  batch.length = batch.length, 
-                 priors = priors.list, #in tutorial, not in fabiola's code
+                 priors = priors.list,  
                  svc.cols = svc.cols,
                  cov.model = "exponential",  #alternative to test could be 'spherical'
                  NNGP = TRUE, 
                  n.neighbors = 5,  
-                 tuning = tuning.list, #not in fabiola's code...         
+                 tuning = tuning.list, 
                  n.report = n.report, 
                  n.burn = n.burn,
                  n.thin = n.thin,
-                 n.chains = nchains,
+                 n.chains = n.chains,
                  #search.type = 'cb', #in fabiola's code, not in tutorial? 
                  verbose = TRUE,
                  ar1 = TRUE) 
 # would add k-fold parameters to this model if using k-fold cross validation ... 
 
-summary(out)
-plogis(2.13) #convert logit values to probability scale
-
-## sandbox --- 
-# where are the NA values in covs? 
-str(dat_ls_test)
-sum(is.na(dat_ls_test$det.covs$effort)) #NAS HERE --- is this what fabiola's code was for? 
-sum(is.na(dat_ls_test$occ.covs$minjul)) 
-sum(is.na(dat_ls_test$occ.covs$minjul_sq))
-sum(is.na(dat_ls_test$occ.covs$ndepl))
-sum(is.na(dat_ls_test$occ.covs$proj))
+## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
 # where is there detection but missing effort? 
 discrepancies <- !is.na(yarray_test) & is.na(effort_test)
-idx <- which(discrepancies, arr.ind = TRUE) #three instances 
+(idx <- which(discrepancies, arr.ind = TRUE)) #three instances 
+
+# for now, add 1 to effort where there is a detection; 
+# HOWEVER, working on backtracking to figure out where this issue is coming from
+effort_test[discrepancies] <- 1
+sum(!is.na(yarray_test) & is.na(effort_test))  # should be 0
+
+# now, rerun code from line 378 ('organize data') 
 
 
-
-
-
-
-
-
+summary(out)
+plogis(2.13) #convert logit values to probability scale
 
 
 #To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
