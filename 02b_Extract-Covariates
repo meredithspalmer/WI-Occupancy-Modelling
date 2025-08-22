@@ -29,6 +29,7 @@ library(sf)
 library(arrow)
 library(purrr)
 library(parallel)
+library(glmnet)
 
 # Set up reference raster -----------------------------------------------------
 
@@ -88,7 +89,7 @@ for (cov in covariate_cols) {
     any(!is.na(v)) && (is.numeric(v)) && (var(v, na.rm = TRUE) > 0)
   })]
   
-  # ---------- Full model: cov ~ x + y + good_preds ----------
+  # Full model: cov ~ x + y + good_preds 
   full_predictors <- c("x", "y", good_preds)
   fit_dat_full <- extracted[train_rows, c(cov, full_predictors)]
   fit_dat_full <- fit_dat_full[complete.cases(fit_dat_full), ]
@@ -104,7 +105,7 @@ for (cov in covariate_cols) {
     }
   }
   
-  # ---------- Fallback: cov ~ x + y ----------
+  # Fallback: cov ~ x + y 
   if (length(miss)) {
     fit_dat_xy <- extracted[train_rows, c(cov, "x", "y")]
     fit_dat_xy <- fit_dat_xy[complete.cases(fit_dat_xy), ]
@@ -118,7 +119,7 @@ for (cov in covariate_cols) {
     }
   }
   
-  # ---------- Last resort: fill with column mean ----------
+  # Last resort: fill with column mean  
   if (length(miss)) {
     mu <- mean(extracted[[cov]], na.rm = TRUE)
     extracted[miss, cov] <- mu
@@ -293,7 +294,7 @@ cov_df <- extracted %>%
 write.csv(cov_df, "primary_occ_covariates_precseas.csv", row.names = F)
 
 
-# Read TIF files for WARMEST SEASON PRECIP --    
+# Read TIF files for WARMEST SEASON PRECIP ---    
 r_list <- list(
   warmseas_1999 = rast("precwarm_2010_100km2.tif"),
   warmseas_2011 = rast("precwarm_2040_100km2.tif")
@@ -412,22 +413,58 @@ for(i in 1:length(evi)){
 evi_stack <- rast(evi_list_raster)
 names(evi_stack) <- gsub('.{11}$', '', evi)
 
-# extract mean values for each cell_ID across all rasters in the stack
+# Extract mean values for each cell_ID across all rasters in the stack
 extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
 head(extracted)
 
-# format dataframe 
-EVI_long <- extracted %>%
-  pivot_longer(cols = starts_with("evi_"),  
-               names_to = "covariate",
-               values_to = "cov_value") %>%
-  mutate(
-    year = as.numeric(sub("evi_(\\d{4})_(\\d{3})", "\\1", covariate)),  
-    day_of_year = as.numeric(sub("evi_\\d{4}_(\\d{3})", "\\1", covariate)),  
-    date = as.Date(paste(year, day_of_year), format = "%Y %j")  
-  ) %>% 
-  filter(year %in% periods$year) %>% 
-  select(c(cell_ID, cov_value, date))
+# Predict missing values 
+impute_evi_ridge <- function(df) {
+  df_long <- df %>%
+    pivot_longer(
+      cols = starts_with("evi_"),
+      names_to = "date",
+      values_to = "evi"
+    )
+  
+  df_long <- df_long %>%
+    mutate(year = as.integer(str_extract(date, "(?<=evi_)\\d{4}")),
+           doy  = as.integer(str_extract(date, "(?<=evi_\\d{4}_)\\d{3}")),
+           evi  = ifelse(is.nan(evi), NA, evi))  # treat NaN as NA
+  
+  X <- model.matrix(~ year + doy, df_long)[, -1]  # drop intercept (glmnet adds one)
+  y <- df_long$evi
+  
+  # Fit ridge regression on non-missing data
+  fit <- cv.glmnet(
+    X[!is.na(y), ], 
+    y[!is.na(y)], 
+    alpha = 0,            # ridge regression
+    nfolds = 5,
+    standardize = TRUE
+  )
+  
+  # Predict for ALL cells (including NAs)
+  df_long$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
+
+  # Replace original values where missing 
+  df_long <- df_long %>%
+    mutate(evi_final = ifelse(is.na(evi), evi_filled, evi))
+  
+  df_long
+}
+
+result <- impute_evi_ridge(extracted) 
+ 
+EVI_long <- result %>% 
+  filter(year %in% periods$year) %>%
+  mutate(year_str = str_extract(date, "(?<=evi_)\\d{4}"),
+         doy_str  = str_extract(date, "(?<=evi_\\d{4}_)\\d{3}"),
+         obs_date = as.Date(as.numeric(doy_str) - 1, 
+                            origin = paste0(year_str, "-01-01"))) %>%
+  dplyr::select(-year_str, -doy_str) %>% 
+  dplyr::select(c(cell_ID, evi_final, obs_date)) %>% 
+  rename(cov_value = evi_final, 
+        date = obs_date)
 
 EVI_joined <- EVI_long %>%
   left_join(periods %>% mutate(dummy = 1), by = character()) %>% 
@@ -443,7 +480,7 @@ EVI_mat <- EVI_joined %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-write.csv(EVI_mat, "primary_occ_covariates_EVI.csv")
+write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI.csv")
 
 
 # Read TIF files for GFC
