@@ -179,7 +179,7 @@ effort_temp <- covs %>%
   mutate(week = as.numeric(str_remove(week, "effort_w")),
          period_counter = paste0("p", period_counter))
 
-effort <- array(NA, dim = c(ncell, nperiod, nweek))
+effort <- array(NA, dim = c(ncell, nperiod, nweek)) #change NA to 0? 
 rownames(effort) <- unique(sort(covs$cell_ID))
 colnames(effort) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
 
@@ -191,6 +191,57 @@ for(i in 1:nrow(effort_temp)){
 
 str(effort)  
 hist(effort[,,3]) #data is pre-scaled: no need to scale further
+
+### NOTE #### 
+
+# There are some "effort" values in covs that are NA when there are detection 
+# values in ystack; this code identifies and throws a quick patch on these issues
+# HOWEVER, need to go back to review how effort is generated to understand underlying
+# issue 
+
+## Detect issues 
+
+# Ensure rows align by cell_ID
+common_cells <- intersect(ystack$cell_ID, covs$cell_ID)
+det_aligned <- ystack[match(common_cells, ystack$cell_ID), ]
+effort_aligned <- covs[match(common_cells, covs$cell_ID), ]
+
+# Columns of interest
+det_cols <- paste0("V", 1:13)
+effort_cols <- paste0("effort_w", 1:13)
+
+# Make sure the number of columns match
+if(length(det_cols) != length(effort_cols)) {
+  stop("Detection and effort columns must be the same length.")
+}
+
+# Logical matrix: TRUE where detection exists but effort is missing
+discrepancies <- (!is.na(det_aligned[det_cols])) & (is.na(effort_aligned[effort_cols]))
+
+# Get row/column indices of discrepancies
+which_discrepancies <- which(discrepancies, arr.ind = TRUE)
+
+# Build simple table: cell_ID and period
+discrepancy_table <- data.frame(
+  cell_ID = det_aligned$cell_ID[which_discrepancies[, "row"]],
+  period  = det_cols[which_discrepancies[, "col"]],
+  stringsAsFactors = FALSE
+)
+print(discrepancy_table)
+
+## Patch effort: set NA to 1 wherever a detection exists
+for (i in seq_along(det_cols)) {
+  det_col <- det_cols[i]
+  effort_col <- effort_cols[i]
+  
+  idx <- !is.na(det_aligned[[det_col]]) & is.na(effort_aligned[[effort_col]])
+  effort_aligned[[effort_col]][idx] <- 1
+}
+
+# Replace the original effort_df rows for these cell_IDs
+covs[match(common_cells, covs$cell_ID), effort_cols] <- effort_aligned[effort_cols]
+
+#########
 
 # Minjul 
 minjul_temp <- covs %>% 
@@ -485,6 +536,10 @@ sum(is.na(dat_ls_test$occ.covs$minjul))
 sum(is.na(dat_ls_test$occ.covs$minjul_sq))
 sum(is.na(dat_ls_test$occ.covs$ndepl))
 sum(is.na(dat_ls_test$occ.covs$proj))
+
+# where is there detection but missing effort? 
+discrepancies <- !is.na(yarray_test) & is.na(effort_test)
+idx <- which(discrepancies, arr.ind = TRUE) #three instances 
 
 
 
