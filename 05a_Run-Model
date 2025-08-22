@@ -116,15 +116,14 @@ for(i in 1:nrow(ystack2)){
 coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) %>% 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID) %>% 
-  select(-cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
   as.matrix()
 
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
-csv_files <- list.files("Covariates for modelling", pattern = "\\.csv$", full.names = TRUE)
 
 static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>% 
-  select(-c(elevation, cities_md, cities_sm)) %>% #from Data-Explore code 
+  dplyr::select(-c(elevation, cities_md, cities_sm, x, y)) %>% #from Data-Explore code 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
 nrow(static) #select out each column want as a vector 
@@ -215,7 +214,7 @@ for(i in 1:nrow(minjul_temp)){
 str(minjul) 
 hist(minjul[,,3]) #data is pre-scaled: no need to scale further
 
-# Minjul Squared ------
+# Minjul Squared  
 minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(minjul_sq) <- unique(covs$cell_ID)
 colnames(minjul_sq) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
@@ -248,7 +247,7 @@ ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() +
 
 **FIX THIS**
   
-y <- yarray            #detection-nondetection data
+  y <- yarray            #detection-nondetection data
 X <- dat$X             #occurrence design matrix for fixed effects
 X.p <- dat$X.p         #detection design matrix for fixed effets  
 psi <- dat$psi         #occurrence values
@@ -330,24 +329,24 @@ minjul_sq.pred <- minjul_sq[pred.indx,,]
 
 # if TEST 
 dat_ls_test <- list(y = yarray_test,
-               occ.covs = list(crop = crop_test, 
-                               gpw = gpw_test,
-                               gfc = gfc_test, 
-                               precseas = precseas_test,
-                               wdpa = wdpa_test,
-                               evi = evi_test, 
-                               road.dist = static_test$road_dist,
-                               tri = static_test$tri,
-                               river_dist = static_test$river_dist,
-                               coeff_var = static_test$coeff_var,
-                               cities_lg = static_test$cities_lg,
-                               trend = trend_test),
-               det.covs = list(effort = effort_test, #already scaled! 
-                               minjul = minjul_test, #already scaled! 
-                               minjul_sq = minjul_sq_test, #already scaled! 
-                               ndepl = ndepl_test, 
-                               proj = proj_test),
-               coords = coords_test)
+                    occ.covs = list(crop = crop_test, 
+                                    gpw = gpw_test,
+                                    gfc = gfc_test, 
+                                    precseas = precseas_test,
+                                    wdpa = wdpa_test,
+                                    evi = evi_test, 
+                                    road.dist = static_test$road_dist,
+                                    tri = static_test$tri,
+                                    river_dist = static_test$river_dist,
+                                    coeff_var = static_test$coeff_var,
+                                    cities_lg = static_test$cities_lg,
+                                    trend = trend_test),
+                    det.covs = list(effort = effort_test, #already scaled! 
+                                    minjul = minjul_test, #already scaled! 
+                                    minjul_sq = minjul_sq_test, #already scaled! 
+                                    ndepl = ndepl_test, 
+                                    proj = proj_test),
+                    coords = coords_test)
 
 # if SPLITTNG 
 dat_ls_split <- list(y = y.fit,
@@ -399,7 +398,7 @@ DO NOT FORGET TO SCALE COVARIATES
 
 occ.formula = ~ scale(trend) + scale(crop)
 det.formula = ~ effort + minjul + I(minjult^2) + (1|proj)
-  
+
 svc.cols = c('(Intercept', 'crop') #update based on formulae 
 #svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
@@ -481,15 +480,11 @@ plogis(2.13) #convert logit values to probability scale
 ## sandbox --- 
 # where are the NA values in covs? 
 str(dat_ls_test)
-sum(is.na(dat_ls_test$occ.covs$crop))
-sum(is.na(dat_ls_test$occ.covs$gpw))
-sum(is.na(dat_ls_test$occ.covs$gfc))
-sum(is.na(dat_ls_test$occ.covs$precseas))
-sum(is.na(dat_ls_test$occ.covs$wdpa))
-sum(is.na(dat_ls_test$occ.covs$evi)) #NA VALUES 
-sum(is.na(dat_ls_test$occ.covs$road_dist))
-sum(is.na(dat_ls_test$occ.covs$coeff_var)) #NA VALUES 
-sum(is.na(dat_ls_test$occ.covs$cities_lg))
+sum(is.na(dat_ls_test$det.covs$effort)) #NAS HERE --- is this what fabiola's code was for? 
+sum(is.na(dat_ls_test$occ.covs$minjul)) 
+sum(is.na(dat_ls_test$occ.covs$minjul_sq))
+sum(is.na(dat_ls_test$occ.covs$ndepl))
+sum(is.na(dat_ls_test$occ.covs$proj))
 
 
 
