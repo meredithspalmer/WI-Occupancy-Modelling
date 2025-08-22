@@ -364,35 +364,28 @@ minjul_sq.pred <- minjul_sq[pred.indx,,]
 
 
 # Prep inits -------------------------------------------------------------------
+
+# UPDATE yarray as yarray, yarray_test, or y.fit; coords, etc. 
+
 z.init <- apply(yarray_test, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+#z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
+dist.data <- dist(coords_test)          #pairwise distance between all sites 
 inits.list <- list(beta = 0,            #occurrence coefficients
                    alpha = 0,           #detection coefficients
                    z = z.init,          #latent occurrence values
-                   phi = 3 / .5, 
-                   sigma.sq = 2, 
-                   w = rep(0, ncell), 
-                   rho = 0, 
-                   sigma.sq.t = 0.5)    #occurrence random effect variances
+                   phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
+                   sigma.sq = 0.5, #fabiola had as 2... 
+                   w =matrix(0, length(svc.cols), nrow(yarray_test))),  #fabiola had rep(0, ncell) 
+                   rho = 0, #not in tutorial? 
+                   sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
 
-CHECK THAT THIS IS NOT SOMETHING NEED FOR OUR MODEL? 
-  #revi.sp.inits <- list(beta = 0, alpha = 0, z = z.inits,
-  #                      sigma.sq = 1, phi = 3 / mean(dist.hbef), 
-  #                      sigma.sq.t = 1.5, rho = 0.2)
-  
-  ADD THIS IN SOMEWHERE
-dist.hbef <- dist(revi.data$coords)     #pair-wise distance between all sites 
-
-DO WE HAVE PRIORS? WHAT IS APPROPRIATE FOR OUR MODEL? 
-  revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
-                         alpha.normal = list(mean = 0, var = 2.72), 
-                         sigma.sq.t.ig = c(2, 0.5), 
-                         rho.unif = c(-1, 1),
-                         sigma.sq.ig = c(2, 1), 
-                         phi.unif = c(3 / max(dist.hbef), 3 / min(dist.hbef)))
-
-#revi.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
-#                    alpha.normal = list(mean = 0, var = 2.72), 
-#                    sigma.sq.psi.ig = list(a = 0.1, b = 0.1))
+# Don't have to specify priors, can use svcPGOcc() defaults 
+# revi.sp.priors <- list(beta.normal = list(mean = 0, var = 2.72), 
+#                        alpha.normal = list(mean = 0, var = 2.72), 
+#                        sigma.sq.t.ig = c(2, 0.5), 
+#                        rho.unif = c(-1, 1),
+#                        sigma.sq.ig = c(2, 1), 
+#                        phi.unif = c(3 / max(dist.data), 3 / min(dist.data)))
 
 
 # Tuning ----------------------------------------------------------------------
@@ -478,18 +471,51 @@ dat_ls <- list(y = yarray,
                                proj = proj),
                coords = coords)
 
-# Run model --------------------------------------------------------------------
+## Formulas -------------------------------------------------------------------
 
+# [IF TESTING]
+occ.formula = ~ 
+det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
+  
+# [IF SPLITTING]
+  occ.formula = ~ trend 
+det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
 
+# [REGULAR]
+occ.formula = ~ trend 
+det.formula = ~ effort + minjul + I(minjul^2) + (1|proj)
+  SCALE COVARIATES 
 
-svcTPGOcc(occ.formula, det.formula, data, inits, priors, 
-          tuning, svc.cols = 1, cov.model = 'exponential', NNGP = TRUE, 
-          n.neighbors = 15, search.type = 'cb', n.batch, 
-          batch.length, accept.rate = 0.43, n.omp.threads = 1, 
-          verbose = TRUE, ar1 = FALSE, n.report = 100, 
-          n.burn = round(.10 * n.batch * batch.length), 
-          n.thin = 1, n.chains = 1, k.fold, k.fold.threads = 1, 
-          k.fold.seed = 100, k.fold.only = FALSE, ...)
+## Run model ------------------------------------------------------------------
+
+out <- svcTPGOcc(occ.formula = occ.formula, 
+                 det.formula = det.formula,
+                 data = dat_ls, #CHANGE FOR EACH training, split, regular 
+                 inits = inits.list,
+                 #prior (in tutorial, not in fabiola's code)
+                 svc.cols = c(1,2,3), #update with NAMES (see below)
+                    #if so, need to include c('(Intercept)', 'occ.cov.1') INTERCEPT
+                 cov.model = "exponential",  #alternative to test could be 'spherical'
+                 NNGP = TRUE, 
+                 n.neighbors = 5, #tutorial has as 15 - why? 
+                 search.type = 'cb', 
+                 n.batch = n.batch,
+                 batch.length = batch.length, 
+                 #accept.rate = 0.43,
+                 #n.omp.threads = 1,
+                 verbose = TRUE,
+                 ar1 = TRUE,
+                 n.report = n.report, 
+                 n.burn = n.burn,
+                 n.thin = n.thin,
+                 n.chains = 3) 
+# would add k-fold parameters to this model if using k-fold cross validation ... 
+
+The svc.cols argument is used to specify the covariates whose effects are estimated as SVCs. svc.cols can either be a numeric indexing vector with integer numbers corresponding to the order in which you specified covariates in the occ.formula argument, or can be a character vector with the names of the covariates specified in occ.formula.  
+  
+summary(out)
+plogis(2.13) #convert logit values to probability scale
+
 
 #Next, we extract the full SVC values using the getSVCSamples() function and then compare the estimated values to those used to generate the model.
 # Intercept ---------------------------------------------------------------
@@ -521,28 +547,6 @@ arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray',
 points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
 
 
-out <- svcTPGOcc(occ.formula = ~ trend,   #SCALE covariates 
-                 det.formula = ~ effort + minjul + I(minjul^2) + (1|proj), 
-                 svc.cols = c(1,2,3),
-                 data = dat_ls, 
-                 inits = inits.list, 
-                 cov.model = "exponential", 
-                 NNGP = TRUE, 
-                 ar1 = TRUE,
-                 n.neighbors = 5, 
-                 search.type = 'cb', 
-                 n.report = n.report, 
-                 n.burn = n.burn,
-                 n.thin = n.thin,
-                 n.chains = 3,  
-                 batch.length = batch.length, 
-                 n.batch = n.batch,
-                 verbose = TRUE)
-
-summary(out)
-
-#convert logit values to probability scale
-plogis(2.13)
 
 #evaluate convergence
 ESS = effective sample size, can be used to assess convergence 
