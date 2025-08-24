@@ -120,6 +120,13 @@ coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.
   as.matrix()
 
 
+## Covariates (all) -----------------------------------------------------------
+
+# We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section.
+
+FROM HERE 
+
+
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
 
 static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>% 
@@ -276,6 +283,42 @@ str(minjul_sq)
 hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
 
+## Plot covariates ------------------------------------------------------------
+
+# what want to do here is create a bounding box around monitored area, and crap 
+# full raster of cov values to this bb and plot over
+
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+
+plottable_coords <- cbind(static, coords) 
+plottable_coords <- st_as_sf(
+  plottable_coords, 
+  coords = c("x", "y"),     
+  crs = crs(ref))
+
+# Map covariates across study area: static  
+names(static)
+cov <- "river_dist" #change as appropriate
+
+ggplot(data = plottable_coords) +
+  geom_sf(aes(fill = cov), lwd = 0.05 ) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
+
+
+#join the covariates to the spatial grid, using the plot name
+plottable_covs <- left_join(select(grid_shp,Cell, geometry),
+                            plot_covs_all,
+                            by = 'Cell')
+#there are some NA grid cells that didn't have covariate values and don't have predictions
+#remove them:
+plottable_covs <- na.omit(plottable_covs)
+ggplot(data = plottable_covs) +
+  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
+
+
 ## Modelling ------------------------------------------------------------------
 
 # Following vignette found at: 
@@ -290,27 +333,18 @@ raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ
 ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
   xlab("Year") + ylab("Raw Occurrence Proportion")
 
-# Plot spatially varying trend across study region  
+# naive plot of occurrence detections 
+naive_plot <- left_join(select(grid_shp, Cell, geometry),
+                        naive, by = 'Cell')
+ggplot(naive_plot) +
+  geom_sf() +
+  geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
+  theme_bw(base_size = 16) +
+  labs(title = "Naive occurrence", fill = "") +
+  viridis::scale_fill_viridis(discrete = TRUE,
+                              option = 'plasma',
+                              na.value = 'grey80')
 
-**FIX THIS**
-  
-  y <- yarray            #detection-nondetection data
-X <- dat$X             #occurrence design matrix for fixed effects
-X.p <- dat$X.p         #detection design matrix for fixed effets  
-psi <- dat$psi         #occurrence values
-coords <- coords       #spatial coordinates
-w <- dat$w.            #spatially varying intercept and covariate effects
-
-cov.effect <- beta[2] + w[, 2]
-plot.dat <- data.frame(x = coords[, 1], 
-                       y = coords[, 2], 
-                       cov.effect = cov.effect)
-ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
-  geom_raster() + 
-  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
-                       high = '#2166AC', na.value = NA) + 
-  theme_bw() 
-# (decrease in occurrence = red, increase in occurrence = blue)
 
 ## Subset data if appropriate -------------------------------------------------
 
@@ -446,14 +480,14 @@ DO NOT FORGET TO SCALE COVARIATES
 occ.formula = ~ scale(trend) + scale(crop)
 det.formula = ~ effort + minjul + minjul_sq + (1|proj)
 
-svc.cols = c('(Intercept', 'crop') #update based on formulae 
-svc.cols = c(1,2) # THIS IS WRONG BECAUSE ASSUMING TREND IS SVC...
+#svc.cols = c('(Intercept', 'crop') #update based on formulae 
+svc.cols = c(1,3)  
 #svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
 
-y_dat <- yarray_test #as yarray, yarray_test, or y.fit 
-coord_dat <- coords_test #as coords, coords_test, or coord.fit 
+y_dat <- y.fit #as yarray, yarray_test, or y.fit 
+coord_dat <- coords.fit #as coords, coords_test, or coord.fit 
 
 z.init <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 #z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
@@ -465,7 +499,7 @@ inits.list <- list(beta = 0,            #occurrence coefficients
                    z = z.init,          #latent occurrence values
                    phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
                    sigma.sq = 0.5, #fabiola had as 2... 
-                   w = matrix(0, length(svc.cols), nrow(yarray_test)),  #fabiola had rep(0, ncell) 
+                   w = matrix(0, length(svc.cols), nrow(y_dat)),  #fabiola had rep(0, ncell) 
                    #rho = 0,  
                    sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
 
@@ -494,12 +528,12 @@ if(testing){
 }
 
 batch.length <- 25
-n.iter <- n.batch * batch.length #not in tutorial? 
+n.iter <- n.batch * batch.length 
 
 
 ## Run model ------------------------------------------------------------------
 
-dat <- dat_ls_test #CHANGE FOR EACH training, split, regular 
+dat <- dat_ls_split #CHANGE FOR EACH training, split, regular 
 
 start_time <- Sys.time()
 out <- svcTPGOcc(occ.formula = occ.formula, 
@@ -533,48 +567,250 @@ end_time - start_time #model run time
 ## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
 # where is there detection but missing effort? 
-discrepancies <- !is.na(yarray_test) & is.na(effort_test)
+discrepancies <- !is.na(y.fit) & is.na(effort.fit)
 (idx <- which(discrepancies, arr.ind = TRUE)) #three instances 
 
 # for now, add 1 to effort where there is a detection; 
 # HOWEVER, working on backtracking to figure out where this issue is coming from
-effort_test[discrepancies] <- 1
-sum(!is.na(yarray_test) & is.na(effort_test))  # should be 0
+effort.fit[discrepancies] <- 1
+sum(!is.na(y.fit) & is.na(effort.fit))  # should be 0
 
 # now, rerun code from line 378 ('organize data') 
+
+
+## Convergence assessment -----------------------------------------------------
+
+# Visually examine trace plots
+# -> We can first visually examine trace plots for convergence by plotting chains for each parameter. Trace plots indicative of convergence look like random scatter around a mean value and do not display any trends. For these reasons, trace plots indicative of convergence are often described as looking like “fuzzy caterpillars.” Below, the trace plots for both the occurrence and detection coefficients are consistent with model convergence.
+
+# -> Occurrence parameters:
+# the spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
+occ.samps <- as.data.frame(out$beta.samples)
+occ.samps$x <- rep(1:(nrow(occ.samps)/n.chains), n.chains)
+occ.samps$chain <- as.factor(rep(1:3, each =nrow(occ.samps)/n.chains))
+names(occ.samps)[c(1:3)] <- c("Intercept", "Trend", "Crop")
+occ.samps.long <- gather(
+  occ.samps, parameter, value,
+  Intercept:Crop, factor_key = T
+)
+
+ggplot(occ.samps.long) +
+  geom_line(
+    aes(x = x, y = value,
+        col = chain, group = chain)) +
+  labs(x ="Iteration") +
+  facet_wrap(~ parameter, nrow = length(unique(occ.samps.long$parameter)), scales = "free_y") +
+  theme_bw()
+
+# -> Detection parameters:
+# the spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
+det.samps <- as.data.frame(out$alpha.samples)
+det.samps$x <- rep(1:(nrow(det.samps)/n.chains), n.chains)
+det.samps$chain <- as.factor(rep(1:3, each =nrow(det.samps)/n.chains))
+names(det.samps)[c(1:4)] <- c("Intercept", "Effort", "Min_Jul", "Min_Jul_Sq")
+det.samps.long <- gather(det.samps, parameter, value, Intercept:Min_Jul_Sq, factor_key = T )
+
+ggplot(det.samps.long) +
+  geom_line(
+    aes(x = x, y = value,
+        col = chain, group = chain)) +
+  labs(x ="Iteration") +
+  facet_wrap(~ parameter, nrow = length(unique(det.samps.long$parameter)), scales = "free_y") +
+  theme_bw()
+
+# Gelman-Rubin diagnostics
+# -> The Gelman-Rubin diagnostic, rˆ (r-hate), formally assesses model convergence by comparing variance of parameter estimates among chains to variance of parameter estimates within chains. A large rˆ means variance among chains is greater than within chains, implying lack of convergence. When assessing convergence it is standard to accept rˆ values below 1.1 (Hobbs and Hooten 2015). The rˆ value can be found for each parameter in the summary output under Rhat.
+plot(out, 'beta', density = FALSE) #occupancy convergence
+plot(out, 'alpha', density = FALSE) #detection convergence
+
+# Effective Sample Size (ESS)
+# -> ESS estimates the number of samples the MCMC sample would contain if correlated samples were removed, providing a measure of the information contained in the MCMC sample. If ESS is low compared to the MCMC sample size this may imply poor mixing and high autocorrelation, and thinning may help to address this. Larger ESS indicates a better sample, but there is no distinct rule for a “large enough” ESS.
+# -> We compare the ESS (denoted as ESS in the summary output) to the MCMC sample size and confirm there is a large ESS for each parameter.
+summary(out) 
+
+# Set sampling parameters to reach satisfactory diagnostics
+# -> If any of the three diagnostics (trace plots, Gelman-Rubin Diagnostics, and ESS) are not satisfactory for any of the parameters, adjust the sampling parameters (n.thin and n.samples) and resample. For example, we first ran this model with n.thin = 2 and n.samples = 9000 and got unsatisfactory trace plots and ESSs for the occurrence coefficients. Trace plots were showing spikes indicating high autocorrelation and poor mixing, so we increased the thinning interval and total number of posterior samples.
+
+
+## Model fit ------------------------------------------------------------------
+
+# Widely Applicable Information Criterion (WAIC)
+waicOcc(out)
+
+# Goodness of Fit: posterior predictive checks
+
+# -> A Bayesian p-value can be used to measure the significance of the deviation of the data from the model predictions, i.e., summarize the previous posterior predictive distribution plots in a single value (Gelman et al. 1995). To evaluate the level to which the distribution of predicted values aligns with the data, the Bayesian p-value relies on a test statistic or discrepency measure, which provides a scalar value that can be compared for observed data versus the posterior predictive distribution. The Bayesian p-value is then defined as the probability that the test statistic for the predicted data is more extreme than the test statistic for the observed data, given the observed data. Multiple test statistics can be used to evaluate model fit, and we use the Freeman-Tukey statistic recommended by Kéry and Royle (2016) and included within the Spocc package. Grouping or binning the binary data based on cells (group=1) or site-nights (group=2) provides two test statistics that may reveal different shortcomings of the model (i.e., problems of model fit in occurrence versus detection)
+
+# -> A Bayesian p-value close to 0 or 1 implies the model does not accurately represent the distribution of the data (Hobbs and Hooten 2015). Note that the Bayesian p-value is a general goodness of fit statistic and won’t provide more information about where in the model potential lack of fit may be occurring (Warton et al. 2017). [if Bayesian p-values close to 0.5, indicates adequate model fit; values >0.1 indicate no lack of fit; values close to 1 require further investigation]
+
+ppc.out.1 <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 1)
+summary(ppc.out.1)
+
+ppc.out.2 <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 2)
+summary(ppc.out.2)
 
 
 ## Examine outputs ------------------------------------------------------------
 summary(out)
 plogis(2.13) #convert logit values to probability scale
 
-# Evaluate convergence
-# -> ESS = effective sample size, can be used to assess convergence 
-QUESTION: how to evaluate whether indicates adequate mizing of MCMC chain?)
-# -> want rhat < 1.1
-plot(out, 'beta', density = FALSE) #occupancy convergence
-plot(out, 'alpha', density = FALSE) #detection convergence
+# [IF PERFORMED] K-fold cross validation (want lower values):
+#k.fold.non.sp$k.fold.deviance
+#k.fold.sp$k.fold.deviance
 
-# Widely Applicable Information Criterion (WAIC)
-waicOcc(out)
-
-# Goodness of Fit: posterior predictive checks
-# Note: Fabiola suggests group 2 - by replicate - instead of by site, for spatial models
-ppc.out <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 2)
-summary(ppc.out)
-# -> if Bayesian p-values close to 0.5, indicates adequate model fit; values >0.1 indicate no lack of fit; values close to 1 require further investigation 
-
-# K-fold cross validation:
-k.fold.non.sp$k.fold.deviance
-k.fold.sp$k.fold.deviance
-# want lower values 
 
 ## Model comparison -----------------------------------------------------------
 
-may want to try running with and without AR1=T vs F 
-could try cov.model = "exponential" vs 'spherical'
+#may want to try running with and without AR1=T vs F ?
+#could try cov.model = "exponential" vs 'spherical'
+#or could just be fine for now 
 
-## Extracting and plotting estimates ------------------------------------------
+
+## Predictions ----------------------------------------------------------------
+
+# We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
+
+# Scale covariates 
+# MSP: assuming just occupancy covariates, not including detection covariates? or try including all for good measure? 
+
+#TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
+
+fc.0 <- scale(occ_covs_all$Forest_PercentCover)
+Cliffs.0 <- scale(occ_covs_all$CliffsCanyons_PercentCover)
+Precip.0 <- scale(occ_covs_all$MeanAnnualPrecipitation_mm)
+
+# Create prediction design matrix (1 = intercept)
+X.0 <- cbind(1, fc.0, Cliffs.0, Precip.0)
+
+out.pred <- predict(out, X.0)
+psi.0.samples <- out.pred$psi.0.samples
+
+# MSP: assuming it is here that I can combine across years and plot?? 
+
+
+## Results --------------------------------------------------------------------
+
+#  Parameter plots
+# -> From the output of the fitted occupancy model, we can extract posterior distributions of model parameters and interpret them. These regression coefficients allow us to interpret effects of the covariates on detection and probability of occurrence. Ninety-five percent CIs for regression coefficients can be accessed quickly through the output summary.
+
+summary(out)
+
+# -> In the following subsections, we make custom parameter plots by accessing and summarizing the full posterior distributions of the parameters. We then provide interpretations of these estimates
+
+NOTE -- may need to update for multi-season (multi-dimension coordinates)
+
+## Occurrence: Access the full samples of the occurrence parameters and save their quantiles within occ_quantiles.
+occ.samps <- out$beta.samples #this holds the full outputted samples
+
+# Create a dataframe to store quantiles in:
+occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
+colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+occ_quantiles$covariate <- colnames(occ.samps)
+occ_quantiles$covariate <- c("(Intercept)", "Forest scaled", "Cliff canyons scaled", "Precipitation scaled")
+occ_quantiles$mean <- colMeans(occ.samps)
+occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Occurrence coefficients',
+          'Single-season, single-species model')
+
+# -> Interpretations:
+# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
+# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
+# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
+
+## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles.
+det.samps <- out$alpha.samples
+det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
+colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+det_quantiles$covariate <- colnames(det.samps)
+det_quantiles$mean <- colMeans(det.samps)
+det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(det_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Detection coefficients',
+          'Single-season, single-species model')
+
+
+## Predictive maps ------------------------------------------------------------
+
+# We create our final predictive maps from the full posterior predictive distributions of ψ across the 4500 cells.
+
+# Occurrence probability means:
+psi.0.mean <- apply(psi.0.samples, 2, mean)
+# -> each column of psi.0.samples is an MCMC sample of the psi for one site
+# -> these are the means ordered in that vector based on their cell
+
+length(psi.0.mean) #this is mean values across all the cells, so we need a map to interpret it
+
+# Find 95% credible intervals and widths of 95% credible interval for occurrence probability estimates:
+quantiles.ordered.samples <- as.data.frame(
+  t(apply(psi.0.samples ,2,quantile,probs=c(0.025,0.975))))
+quantiles.ordered.samples$width <- quantiles.ordered.samples[,2] -
+  quantiles.ordered.samples[,1]
+
+# Predictive plots require the shapefile for the 10x10 grids that can be linked to the unique cell IDs. 
+
+# Create a dataframe for plotting:Plot names in the covariates and in the prediction outputs line up because that is the order it was read into the prediction formula
+
+predicted.df <- data.frame(Cell= occ_covs_all$Cell,
+                           psi.mean = psi.0.mean,
+                           psi.width = quantiles.ordered.samples$width)
+
+# Join the predicted results to the spatial grid, using the plot name
+plottable <- left_join(select(grid_shp,Cell, geometry),
+                       predicted.df,
+                       by = 'Cell')
+# There are some NA grid cells that didn't have covariate values and don't have predictions; remove them: 
+plottable <- na.omit(plottable)
+
+ggplot(data = plottable) +
+  geom_sf(aes(fill = psi.mean), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1)) +
+  ggtitle('LANO posterior mean predicted occurrence',
+          'Single-season, single-species model')
+
+ggplot(plottable) +
+  geom_sf(aes(fill = psi.width), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(option = 'plasma', limits = c(0, 1)) +
+  ggtitle('LANO predicted occurrence 95% interval width',
+          'Single-season, single-species model')
+
+
+## Occurrence data across study area ------------------------------------------
+
+# We may be interested in average occurrence across the whole study area, which can be computed as a derived quantity of the cell-level occurrences. We include naive average occurrence across surveyed cells as a solid line.
+
+psi <- as.data.frame(out$psi.samples) # samples of latent psi across all sites
+#this is psi sampled across all 169 sites
+avg_psi <- rowMeans(psi) #take averages across all columns (sites)
+avg_psi_naive <- mean(as.numeric( as.character(naive$Naive_occupancy) ))
+hist(avg_psi, breaks = 20, freq=F, main = "", xlab = "Mean occurrence across all cells")
+abline(v = avg_psi_naive, lwd = 2)
+
+
+
+
+
+
 
 #To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
 
@@ -612,104 +848,240 @@ arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray',
 points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
 
 
+#https://code.usgs.gov/usgs/norock/irvine_k/vignette-bayesian-site-occupancy-model-bat-acoustic-data/-/blob/main/LANO-OR-WA-vignette.pdf?ref_type=heads
+#Plotting covariates
+ggplot(data = plottable_covs) +
+  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
 
+2.2.2 Naive occurrence map
+First derive naive occurrence for each cell (0 if a species is never observed, 1 if a species is observed):
+  naive <- rowSums(y, na.rm = T)
+naive <- as.data.frame(naive)
+naive$Cell <- as.numeric(rownames(naive))
+naive$Naive_occupancy <- as.factor(ifelse(naive$naive == 0, 0, 1))
 
+Creating a map requires linking the geometry of the grid cells to the occurrence detections. This can be done
+using the cell names (“Cell”).
+naive_plot <- left_join(select(grid_shp, Cell, geometry),
+                        naive, by = 'Cell')
+ggplot(naive_plot) +
+  geom_sf() +
+  geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
+  theme_bw(base_size = 16) +
+  labs(title = "Naive occurrence", fill = "") +
+  viridis::scale_fill_viridis(discrete = TRUE,
+                              option = 'plasma',
+                              na.value = 'grey80')
 
-
-
-
-# data exploration -------------------------------------------------------------
-
-
-
-## prediction
-# Predict occupancy at the 400 new sites
-out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
-
-# Use the getSVCSamples() function to extract the SVC values
-# at the prediction locations
-svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred) 
-# True covariate effect values at new locations
-trend.pred <- beta[2] + w.pred[, 2]
-# Get meian and 95% CIs of the SVC for the trendariate effect
-trend.pred.quants <- apply(svc.pred.samples[["trend"]], 2, quantile, 
-                           probs = c(0.025, 0.5, 0.975))
-plot(trend.pred, trend.pred.quants[2, ], pch = 19, 
-     ylim = c(min(trend.pred.quants[1, ]), max(trend.pred.quants[3, ])),
-     xlab = "True", ylab = "Fit", main = 'Spatially varying trend')
-abline(0, 1)
-arrows(trend.pred, trend.pred.quants[2, ], trend.pred, col = 'gray', 
-       trend.pred.quants[1, ], length = 0.02, angle = 90)
-arrows(trend.pred, trend.pred.quants[1, ], trend.pred, col = 'gray', 
-       trend.pred.quants[3, ], length = 0.02, angle = 90)
-points(trend.pred, trend.pred.quants[2, ], pch = 19)
-
-
-
-
- 
-
-
-# ## Predict -------
-# ?predict.stPGOcc()
-
-REVISIT: 
-  https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
-
-
-# Number of prediction sites.
-J.pred <- nrow(hbefElev)
-# Number of prediction years.
-n.years.pred <- 2
-# Number of predictors (including intercept)
-p.occ <- ncol(out.ar1$beta.samples)
-# Get covariates and standardize them using values used to fit the model
-elev.pred <- (hbefElev$val - mean(revi.data$occ.covs$elev)) / sd(revi.data$occ.covs$elev)
-year.pred <- matrix(rep((c(2010, 2018) - mean(revi.data$occ.covs$years)) / 
-                          sd(revi.data$occ.covs$years), 
-                        length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
-# Create three-dimensional array
-X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
-# Fill in the array
-# Years
-X.0[, , 2] <- year.pred
-# Elevation
-X.0[, , 3] <- elev.pred
-# Elevation^2
-X.0[, , 4] <- elev.pred^2
-# Check out the structure
-str(X.0)
-
-# Indicate which primary time periods (years) we are predicting for
-t.cols <- c(1, 9)
-# Approx. run time: < 30 sec
-out.pred <- predict(out.ar1, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
-# Check out the structure
-str(out.pred)
-
-#we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
-plot.dat <- data.frame(x = hbefElev$Easting, 
-                       y = hbefElev$Northing, 
-                       mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
-                       mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
-                       sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
-                       sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
-                       stringsAsFactors = FALSE)
-# Make a species distribution map showing the point estimates,
-# or predictions (posterior means)
-dat.stars <- st_as_stars(plot.dat, dims = c('x', 'y'))
-# 2009
-ggplot() + 
-  geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi)) +
-  scale_fill_viridis_c(na.value = 'transparent') +
-  labs(x = 'Easting', y = 'Northing', fill = '', 
-       title = 'Mean REVI occurrence probability 2009') +
-  theme_bw()
-
-
-
-
-# Save files -------------------------------------------------------------------
-filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
-save(yarray, covs, species, out, coords, file = filename)
-toc()
+We scale the occurrence covariates based on their values across the entire study area. This step is necessary
+to allow prediction to unsurveyed sample locations, and is further explained under model specification.
+Forest_PercentCover_scaled <-
+  (occ_covs_unscaled$Forest_PercentCover - mean(occ_covs_all$Forest_PercentCover)) / sd(occ_covs_all$FoCliffsCanyons_PercentCover_scaled <-
+                                                                                          (occ_covs_unscaled$CliffsCanyons_PercentCover - mean(occ_covs_all$CliffsCanyons_PercentCover)) / sd(ocMeanAnnualPrecipitation_mm_scaled <-
+                                                                                                                                                                                                (occ_covs_unscaled$MeanAnnualPrecipitation_mm - mean(occ_covs_all$MeanAnnualPrecipitation_mm)) / sd(ococc_covs <-
+                                                                                                                                                                                                                                                                                                      as.data.frame(
+                                                                                                                                                                                                                                                                                                        cbind(Forest_PercentCover_scaled, CliffsCanyons_PercentCover_scaled, MeanAnnualPrecipitation_mm_s
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              Before making inference from our fitted model, we must first confirm that chains have converged within our
+                                                                                                                                                                                                                                                                                                              MCMC sampling algorithm (Hobbs and Hooten 2015). Converged chains are well mixed and explore the
+                                                                                                                                                                                                                                                                                                              posterior efficiently to represent the true shape of the posterior distribution. Additionally, they contain large
+                                                                                                                                                                                                                                                                                                              enough sample sizes to remain stationary with additional samples. We investigate chain convergence by both
+                                                                                                                                                                                                                                                                                                              examining the chains visually and using diagnostic metrics.
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              We can first visually examine trace plots for convergence by plotting chains for each parameter. Trace plots indicative of convergence look like random scatter around a mean value and do not display any trends. For these reasons, trace plots indicative of convergence are often described as looking like “fuzzy caterpillars.” Below, the trace plots for both the occurrence and detection coefficients are consistent with model convergence. 
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              Occurrence parameters:
+                                                                                                                                                                                                                                                                                                                occ.samps <- as.data.frame(out$beta.samples)
+                                                                                                                                                                                                                                                                                                              #the spocc sampling did sample 3 chains, but then stacked them on top of eachother
+                                                                                                                                                                                                                                                                                                              #to plot them separately we have to divide them back into chains:
+                                                                                                                                                                                                                                                                                                              occ.samps$x <- rep(1:(nrow(occ.samps)/n.chains), n.chains)
+                                                                                                                                                                                                                                                                                                              occ.samps$chain <- as.factor(rep(1:3, each =nrow(occ.samps)/n.chains))
+                                                                                                                                                                                                                                                                                                              # convert to long for plotting
+                                                                                                                                                                                                                                                                                                              names(occ.samps)[1] <- "Intercept"
+                                                                                                                                                                                                                                                                                                              occ.samps.long <- gather(
+                                                                                                                                                                                                                                                                                                                occ.samps, parameter, value,
+                                                                                                                                                                                                                                                                                                                Intercept:MeanAnnualPrecipitation_mm_scaled, factor_key = T
+                                                                                                                                                                                                                                                                                                              )
+                                                                                                                                                                                                                                                                                                              ggplot(occ.samps.long) +
+                                                                                                                                                                                                                                                                                                                geom_line(
+                                                                                                                                                                                                                                                                                                                  aes(x = x, y = value,
+                                                                                                                                                                                                                                                                                                                      col = chain, group = chain)) +
+                                                                                                                                                                                                                                                                                                                labs(x ="Iteration") +
+                                                                                                                                                                                                                                                                                                                facet_wrap(~ parameter, nrow = length(unique(occ.samps.long$parameter)), scales = "free_y") +
+                                                                                                                                                                                                                                                                                                                theme_bw()
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              Detection parameters:
+                                                                                                                                                                                                                                                                                                                det.samps <- as.data.frame(out$alpha.samples)
+                                                                                                                                                                                                                                                                                                              #the spocc sampling did sample 3 chains, but then stacked them on top of eachother
+                                                                                                                                                                                                                                                                                                              #to plot them separately we have to divide them back into chains:
+                                                                                                                                                                                                                                                                                                              det.samps$x <- rep(1:(nrow(det.samps)/n.chains), n.chains)
+                                                                                                                                                                                                                                                                                                              det.samps$chain <- as.factor(rep(1:3, each =nrow(det.samps)/n.chains))
+                                                                                                                                                                                                                                                                                                              # convert to long for plotting
+                                                                                                                                                                                                                                                                                                              names(det.samps)[1] <- "Intercept"
+                                                                                                                                                                                                                                                                                                              det.samps.long <- gather(det.samps, parameter, value, Intercept:water_ind, factor_key = T )
+                                                                                                                                                                                                                                                                                                              ggplot(det.samps.long) +
+                                                                                                                                                                                                                                                                                                                geom_line(
+                                                                                                                                                                                                                                                                                                                  aes(x = x, y = value,
+                                                                                                                                                                                                                                                                                                                      col = chain, group = chain)) +
+                                                                                                                                                                                                                                                                                                                labs(x ="Iteration") +
+                                                                                                                                                                                                                                                                                                                facet_wrap(~ parameter, nrow = length(unique(det.samps.long$parameter)), scales = "free_y") +
+                                                                                                                                                                                                                                                                                                                theme_bw()
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              Gelman-Rubin diagnostics
+                                                                                                                                                                                                                                                                                                              The Gelman-Rubin diagnostic, rˆ, formally assesses model convergence by comparing variance of parameter estimates among chains to variance of parameter estimates within chains. A large rˆ means variance among chains is greater than within chains, implying lack of convergence. When assessing convergence it is standard to accept rˆ values below 1.1 (Hobbs and Hooten 2015). The rˆ value can be found for each parameter in the summary output under Rhat.
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              Effective sample size
+                                                                                                                                                                                                                                                                                                              Effective sample size (ESS) estimates the number of samples the MCMC sample would contain if correlated samples were removed, providing a measure of the information contained in the MCMC sample. If ESS is low compared to the MCMC sample size this may imply poor mixing and high autocorrelation, and thinning may help to address this. Larger ESS indicates a better sample, but there is no distinct rule for a “large enough” ESS. We compare the ESS (denoted as ESS in the summary output) to the MCMC sample size and confirm there is a large ESS for each parameter.
+                                                                                                                                                                                                                                                                                                              # data exploration -------------------------------------------------------------
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              ## prediction
+                                                                                                                                                                                                                                                                                                              # Predict occupancy at the 400 new sites
+                                                                                                                                                                                                                                                                                                              out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Use the getSVCSamples() function to extract the SVC values
+                                                                                                                                                                                                                                                                                                              # at the prediction locations
+                                                                                                                                                                                                                                                                                                              svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred) 
+                                                                                                                                                                                                                                                                                                              # True covariate effect values at new locations
+                                                                                                                                                                                                                                                                                                              trend.pred <- beta[2] + w.pred[, 2]
+                                                                                                                                                                                                                                                                                                              # Get meian and 95% CIs of the SVC for the trendariate effect
+                                                                                                                                                                                                                                                                                                              trend.pred.quants <- apply(svc.pred.samples[["trend"]], 2, quantile, 
+                                                                                                                                                                                                                                                                                                                                         probs = c(0.025, 0.5, 0.975))
+                                                                                                                                                                                                                                                                                                              plot(trend.pred, trend.pred.quants[2, ], pch = 19, 
+                                                                                                                                                                                                                                                                                                                   ylim = c(min(trend.pred.quants[1, ]), max(trend.pred.quants[3, ])),
+                                                                                                                                                                                                                                                                                                                   xlab = "True", ylab = "Fit", main = 'Spatially varying trend')
+                                                                                                                                                                                                                                                                                                              abline(0, 1)
+                                                                                                                                                                                                                                                                                                              arrows(trend.pred, trend.pred.quants[2, ], trend.pred, col = 'gray', 
+                                                                                                                                                                                                                                                                                                                     trend.pred.quants[1, ], length = 0.02, angle = 90)
+                                                                                                                                                                                                                                                                                                              arrows(trend.pred, trend.pred.quants[1, ], trend.pred, col = 'gray', 
+                                                                                                                                                                                                                                                                                                                     trend.pred.quants[3, ], length = 0.02, angle = 90)
+                                                                                                                                                                                                                                                                                                              points(trend.pred, trend.pred.quants[2, ], pch = 19)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # ## Predict -------
+                                                                                                                                                                                                                                                                                                              # ?predict.stPGOcc()
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              REVISIT: 
+                                                                                                                                                                                                                                                                                                                https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Number of prediction sites.
+                                                                                                                                                                                                                                                                                                              J.pred <- nrow(hbefElev)
+                                                                                                                                                                                                                                                                                                              # Number of prediction years.
+                                                                                                                                                                                                                                                                                                              n.years.pred <- 2
+                                                                                                                                                                                                                                                                                                              # Number of predictors (including intercept)
+                                                                                                                                                                                                                                                                                                              p.occ <- ncol(out.ar1$beta.samples)
+                                                                                                                                                                                                                                                                                                              # Get covariates and standardize them using values used to fit the model
+                                                                                                                                                                                                                                                                                                              elev.pred <- (hbefElev$val - mean(revi.data$occ.covs$elev)) / sd(revi.data$occ.covs$elev)
+                                                                                                                                                                                                                                                                                                              year.pred <- matrix(rep((c(2010, 2018) - mean(revi.data$occ.covs$years)) / 
+                                                                                                                                                                                                                                                                                                                                        sd(revi.data$occ.covs$years), 
+                                                                                                                                                                                                                                                                                                                                      length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
+                                                                                                                                                                                                                                                                                                              # Create three-dimensional array
+                                                                                                                                                                                                                                                                                                              X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
+                                                                                                                                                                                                                                                                                                              # Fill in the array
+                                                                                                                                                                                                                                                                                                              # Years
+                                                                                                                                                                                                                                                                                                              X.0[, , 2] <- year.pred
+                                                                                                                                                                                                                                                                                                              # Elevation
+                                                                                                                                                                                                                                                                                                              X.0[, , 3] <- elev.pred
+                                                                                                                                                                                                                                                                                                              # Elevation^2
+                                                                                                                                                                                                                                                                                                              X.0[, , 4] <- elev.pred^2
+                                                                                                                                                                                                                                                                                                              # Check out the structure
+                                                                                                                                                                                                                                                                                                              str(X.0)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Indicate which primary time periods (years) we are predicting for
+                                                                                                                                                                                                                                                                                                              t.cols <- c(1, 9)
+                                                                                                                                                                                                                                                                                                              # Approx. run time: < 30 sec
+                                                                                                                                                                                                                                                                                                              out.pred <- predict(out.ar1, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
+                                                                                                                                                                                                                                                                                                              # Check out the structure
+                                                                                                                                                                                                                                                                                                              str(out.pred)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              #we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
+                                                                                                                                                                                                                                                                                                              plot.dat <- data.frame(x = hbefElev$Easting, 
+                                                                                                                                                                                                                                                                                                                                     y = hbefElev$Northing, 
+                                                                                                                                                                                                                                                                                                                                     mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
+                                                                                                                                                                                                                                                                                                                                     mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
+                                                                                                                                                                                                                                                                                                                                     sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
+                                                                                                                                                                                                                                                                                                                                     sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
+                                                                                                                                                                                                                                                                                                                                     stringsAsFactors = FALSE)
+                                                                                                                                                                                                                                                                                                              # Make a species distribution map showing the point estimates,
+                                                                                                                                                                                                                                                                                                              # or predictions (posterior means)
+                                                                                                                                                                                                                                                                                                              dat.stars <- st_as_stars(plot.dat, dims = c('x', 'y'))
+                                                                                                                                                                                                                                                                                                              # 2009
+                                                                                                                                                                                                                                                                                                              ggplot() + 
+                                                                                                                                                                                                                                                                                                                geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi)) +
+                                                                                                                                                                                                                                                                                                                scale_fill_viridis_c(na.value = 'transparent') +
+                                                                                                                                                                                                                                                                                                                labs(x = 'Easting', y = 'Northing', fill = '', 
+                                                                                                                                                                                                                                                                                                                     title = 'Mean REVI occurrence probability 2009') +
+                                                                                                                                                                                                                                                                                                                theme_bw()
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Save files -------------------------------------------------------------------
+                                                                                                                                                                                                                                                                                                              filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
+                                                                                                                                                                                                                                                                                                              save(yarray, covs, species, out, coords, file = filename)
+                                                                                                                                                                                                                                                                                                              toc()
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Predict occupancy at the 400 new sites
+                                                                                                                                                                                                                                                                                                              out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # get SVC values at the prediction locations
+                                                                                                                                                                                                                                                                                                              svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Get mean values of the SVC for the covariate
+                                                                                                                                                                                                                                                                                                              svc.cov.pred.mean <- apply(svc.pred.samples$occ.cov.1, 2, mean)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Plot
+                                                                                                                                                                                                                                                                                                              plot(coords.pred, type = "n", xlab = "", ylab = "", asp = TRUE, 
+                                                                                                                                                                                                                                                                                                                   main = "Estimated values", bty = 'n')
+                                                                                                                                                                                                                                                                                                              points(coords.pred, pch=15, cex = 2.1, 
+                                                                                                                                                                                                                                                                                                                     col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/
+                                                                                                                                                                                                                                                                                                                                 diff(range(svc.cov.pred.mean))))
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              ## adapt 
+                                                                                                                                                                                                                                                                                                              # First standardize elevation using mean and sd from fitted model
+                                                                                                                                                                                                                                                                                                              elev.pred <- (hbefElev$val - mean(btbwHBEF$occ.covs[, 1])) / sd(btbwHBEF$occ.covs[, 1])
+                                                                                                                                                                                                                                                                                                              coords.0 <- as.matrix(hbefElev[, c('Easting', 'Northing')])
+                                                                                                                                                                                                                                                                                                              X.0 <- cbind(1, elev.pred, elev.pred^2)
+                                                                                                                                                                                                                                                                                                              out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              # Plot spatially varying trend across study region  
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              **FIX THIS**
+                                                                                                                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                y <- yarray            #detection-nondetection data
+                                                                                                                                                                                                                                                                                                              X <- dat$X             #occurrence design matrix for fixed effects
+                                                                                                                                                                                                                                                                                                              X.p <- dat$X.p         #detection design matrix for fixed effets  
+                                                                                                                                                                                                                                                                                                              psi <- dat$psi         #occurrence values
+                                                                                                                                                                                                                                                                                                              coords <- coords       #spatial coordinates
+                                                                                                                                                                                                                                                                                                              w <- dat$w             #spatially varying intercept and covariate effects
+                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                              cov.effect <- beta[2] + w[, 2]
+                                                                                                                                                                                                                                                                                                              plot.dat <- data.frame(x = coords[, 1], 
+                                                                                                                                                                                                                                                                                                                                     y = coords[, 2], 
+                                                                                                                                                                                                                                                                                                                                     cov.effect = cov.effect)
+                                                                                                                                                                                                                                                                                                              ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
+                                                                                                                                                                                                                                                                                                                geom_raster() + 
+                                                                                                                                                                                                                                                                                                                scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
+                                                                                                                                                                                                                                                                                                                                     high = '#2166AC', na.value = NA) + 
+                                                                                                                                                                                                                                                                                                                theme_bw() 
+                                                                                                                                                                                                                                                                                                              # (decrease in occurrence = red, increase in occurrence = blue)
+                                                                                                                                                                                                                                                                                                              
