@@ -124,7 +124,10 @@ coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.
 
 # We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section.
 
-FROM HERE; instead of in model (to make predicting easier)
+FROM HERE; instead of in model (to make predicting easier); e.g.: 
+
+Forest_PercentCover_scaled <- (occ_covs_unscaled$Forest_PercentCover - mean(occ_covs_all$Forest_PercentCover)) / sd(occ_covs_all$Forest_PercentCover)
+CliffsCanyons_PercentCover_scaled <- (occ_covs_unscaled$CliffsCanyons_PercentCover - mean(occ_covs_all$CliffsCanyons_PercentCover)) / sd(occu_covs_all$CliffsCanyons_PercentCover)
 
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
