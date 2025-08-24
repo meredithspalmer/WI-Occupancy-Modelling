@@ -124,7 +124,7 @@ coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.
 
 # We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section.
 
-FROM HERE 
+FROM HERE; instead of in model (to make predicting easier)
 
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
@@ -285,7 +285,8 @@ hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
 ## Plot covariates ------------------------------------------------------------
 
-# what want to do here is create a bounding box around monitored area, and crap 
+TO DO
+# what want to do here is create a bounding box around monitored area, and crop 
 # full raster of cov values to this bb and plot over
 
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
@@ -334,6 +335,9 @@ ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() +
   xlab("Year") + ylab("Raw Occurrence Proportion")
 
 # naive plot of occurrence detections 
+
+TO DO -- native_plot would be bb around areas detected?? 
+
 naive_plot <- left_join(select(grid_shp, Cell, geometry),
                         naive, by = 'Cell')
 ggplot(naive_plot) +
@@ -486,8 +490,8 @@ svc.cols = c(1,3)
 
 # Prep inits -------------------------------------------------------------------
 
-y_dat <- y.fit #as yarray, yarray_test, or y.fit 
-coord_dat <- coords.fit #as coords, coords_test, or coord.fit 
+y_dat <- yarray #as yarray, yarray_test, or y.fit 
+coord_dat <- coords #as coords, coords_test, or coord.fit 
 
 z.init <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 #z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
@@ -533,7 +537,7 @@ n.iter <- n.batch * batch.length
 
 ## Run model ------------------------------------------------------------------
 
-dat <- dat_ls_split #CHANGE FOR EACH training, split, regular 
+dat <- dat_ls #CHANGE FOR EACH training, split, regular 
 
 start_time <- Sys.time()
 out <- svcTPGOcc(occ.formula = occ.formula, 
@@ -567,13 +571,14 @@ end_time - start_time #model run time
 ## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
 # where is there detection but missing effort? 
-discrepancies <- !is.na(y.fit) & is.na(effort.fit)
+discrepancies <- !is.na(yarray) & is.na(effort)
 (idx <- which(discrepancies, arr.ind = TRUE)) #three instances 
+length(idx)
 
 # for now, add 1 to effort where there is a detection; 
 # HOWEVER, working on backtracking to figure out where this issue is coming from
-effort.fit[discrepancies] <- 1
-sum(!is.na(y.fit) & is.na(effort.fit))  # should be 0
+effort[discrepancies] <- 1
+sum(!is.na(yarray) & is.na(effort))  # should be 0
 
 # now, rerun code from line 378 ('organize data') 
 
@@ -706,7 +711,7 @@ occ.samps <- out$beta.samples #this holds the full outputted samples
 occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
 colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
 occ_quantiles$covariate <- colnames(occ.samps)
-occ_quantiles$covariate <- c("(Intercept)", "Forest scaled", "Cliff canyons scaled", "Precipitation scaled")
+occ_quantiles$covariate <- c("(Intercept)", "Trend scale", "Crop scaled")
 occ_quantiles$mean <- colMeans(occ.samps)
 occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
 
@@ -719,8 +724,7 @@ ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
   geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
   xlab('Covariate') +
   ylab('Posterior Distribution') +
-  ggtitle('Occurrence coefficients',
-          'Single-season, single-species model')
+  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
 
 # -> Interpretations:
 # • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
@@ -744,8 +748,7 @@ ggplot(det_quantiles, aes(x = covariate, y = mean)) +
   geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
   xlab('Covariate') +
   ylab('Posterior Distribution') +
-  ggtitle('Detection coefficients',
-          'Single-season, single-species model')
+  ggtitle('Detection coefficients', 'Multi-season, single-species model')
 
 
 ## Predictive maps ------------------------------------------------------------
@@ -1078,10 +1081,6 @@ Forest_PercentCover_scaled <-
                                                                                                                                                                                                                                                                                                               plot.dat <- data.frame(x = coords[, 1], 
                                                                                                                                                                                                                                                                                                                                      y = coords[, 2], 
                                                                                                                                                                                                                                                                                                                                      cov.effect = cov.effect)
-                                                                                                                                                                                                                                                                                                              ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
-                                                                                                                                                                                                                                                                                                                geom_raster() + 
-                                                                                                                                                                                                                                                                                                                scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
-                                                                                                                                                                                                                                                                                                                                     high = '#2166AC', na.value = NA) + 
-                                                                                                                                                                                                                                                                                                                theme_bw() 
-                                                                                                                                                                                                                                                                                                              # (decrease in occurrence = red, increase in occurrence = blue)
+
+                                                                                                                                                                                                                                                                                                               ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + geom_raster() + scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', high = '#2166AC', na.value = NA) + theme_bw() # (decrease in occurrence = red, increase in occurrence = blue)
                                                                                                                                                                                                                                                                                                               
