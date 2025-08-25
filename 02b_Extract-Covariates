@@ -58,7 +58,8 @@ static_layers <- list(
 r_c <- rast(static_layers)
 
 # Extract cell_IDs
-extracted <- terra::zonal(r_c, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+#extracted <- terra::zonal(r_c, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(r_c, reference, fun = mean, na.rm = TRUE, df = TRUE) #for full dataset
 coords <- as.data.frame(reference, xy=T)
 extracted <- merge(extracted, coords, all.x=T) %>% distinct()
 
@@ -127,7 +128,8 @@ for (cov in covariate_cols) {
 }
 
 # Save 
-write.csv(extracted, "../Covariates for modelling/site_level_covariates.csv", row.names = FALSE)
+#write.csv(extracted, "../Covariates for modelling/site_level_covariates.csv", row.names = FALSE)
+write.csv(extracted, "../Covariates for modelling/site_level_covariates_full.csv", row.names = FALSE)
 
 
 # Dynamic layers ---------------------------------------------------------------
