@@ -470,7 +470,7 @@ dat_ls_split <- list(y = y.fit,
                                      proj = proj.fit),
                      coords = coords.fit)
 
-# if NOT TEST NOR SPLITTING 
+# if RUNNING FULL MODEL
 dat_ls <- list(y = yarray,
                occ.covs = list(crop = crop, 
                                gpw = gpw,
@@ -497,7 +497,7 @@ ADD MORE IN LATER, JUST TESTING FOR NOW
 DO NOT FORGET TO SCALE COVARIATES 
 # note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
-occ.formula = ~ scale(trend) + scale(crop) + cities_lg
+occ.formula = ~ scale(crop) + cities_lg
 det.formula = ~ effort + minjul + minjul_sq + (1|proj)
 
 #svc.cols = c('(Intercept', 'crop') #update based on formulae 
@@ -745,29 +745,56 @@ ggplot(det_quantiles, aes(x = covariate, y = mean)) +
 
 ## Predictions ----------------------------------------------------------------
 
-# We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
+# Predict occupancy across all sites in the original data list 
 
-# Scale covariates 
+svc.out <- out #this contain trends 
+static.out <- out #this contains only spatially varying 
 
-TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
+I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!! 
 
-fc.0 <- scale(occ_covs_all$Forest_PercentCover)
-Cliffs.0 <- scale(occ_covs_all$CliffsCanyons_PercentCover)
-Precip.0 <- scale(occ_covs_all$MeanAnnualPrecipitation_mm)
+# Number of sites 
+(n.sites <- length(unique(covs$cell_ID)))
 
-# Create prediction design matrix (1 = intercept)
-X.0 <- cbind(1, fc.0, Cliffs.0, Precip.0)
+# Number of primary periods  
+(n.period <- length(seq(min(covs$period_counter), max(covs$period_counter), by = 1)))
 
-out.pred <- predict(out, X.0)
-psi.0.samples <- out.pred$psi.0.samples
+# Number of replicates 
+n.rep <- 13 
 
-# MSP: assuming it is here that I can combine across years and plot?? 
+# Number of occupancy regression parameters
+(n.beta <- ncol(out$beta.samples))
+names(out$beta.samples)
 
+# Create and fill an empty array with the proper dimensions --- NEED TO ADD REPLICATES? try without first? 
+X.0 <- array(NA, dim = c(n.sites, n.years, n.beta))
 
-# ## Predict -------
+# Intercept
+X.0[, , 1] <- 1
 
-# ?predict.stPGOcc()
-# REVISIT: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+# Crops (standardized by values used to fit the model) --- PULL THESE FROM DATA_LS? 
+crop.pred <- (as.numeric(dat_ls$occ.covs$crop) - mean(as.numeric(fit.data$occ.covs$crop)) / sd(as.numeric(fit.data$occ.covs$crop)))
+X.0[, , 2] <- crop.pred
+
+# Cities 
+cities.pred <- (as.numeric(dat_ls$occ.covs$cities_lg) - mean(as.numeric(fit.data$occ.covs$cities_lg)) / sd(as.numeric(fit.data$occ.covs$cities_lg)))
+X.0[, , 3] <- cities.pred
+
+# Primary period (standardized by values used to fit the model)
+period.pred <- (dat_ls$occ.covs$years - mean(fit.data$occ.covs$years)) / sd(fit.data$occ.covs$years)
+X.0[, , 4] <- years.pred
+
+# Give names to X.0 just to make things clear
+dimnames(X.0)[[3]] <- c('(Intercept)', 'elev', 'elev.2', 'years')
+
+# Prediction coordinates
+coords.0 <- full.data$coords
+# Predict across all years and sites in the original data set
+out.pred.occ <- predict(out, X.0, coords.0, t.cols = 1:n.years, type = 'occupancy')
+str(out.pred.occ)
+# Can then manipulate the objects in out.pred.occ as desired
+# e.g., calculate mean occupancy probability for each site/year
+psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
+
 # Number of prediction sites.
 J.pred <- nrow(hbefElev)
 # Number of prediction years.
@@ -813,6 +840,44 @@ ggplot() + geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi))
   labs(x = 'Easting', y = 'Northing', fill = '', 
        title = 'Mean REVI occurrence probability 2009') +
   theme_bw()  
+
+
+
+
+
+# We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
+
+TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
+
+# Scale covariates 
+fc.0 <- scale(occ_covs_all$Forest_PercentCover)
+Cliffs.0 <- scale(occ_covs_all$CliffsCanyons_PercentCover)
+Precip.0 <- scale(occ_covs_all$MeanAnnualPrecipitation_mm)
+
+# Create prediction design matrix (1 = intercept)
+X.0 <- cbind(1, fc.0, Cliffs.0, Precip.0)
+
+out.pred <- predict(out, X.0)
+psi.0.samples <- out.pred$psi.0.samples
+
+# MSP: assuming it is here that I can combine across years and plot?? 
+
+
+# Assuming you have a fitted svcTPGOcc model object named 'svc_model'
+# and a data frame 'new_data' with covariates for prediction locations and years.
+
+# Predict occupancy probability at new locations and/or future years
+predicted_occupancy <- predict(svc_model, X.0 = new_data)
+
+# 'predicted_occupancy' will contain posterior predictive samples for occupancy
+# at the specified locations and years, allowing you to assess uncertainty.
+
+
+# ## Predict -------
+
+# ?predict.stPGOcc()
+# REVISIT: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+
 
 
 
@@ -982,5 +1047,3 @@ ggplot(data = plottable_covs) +
 filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
 save(yarray, covs, species, out, coords, file = filename)
 toc()
-
-## ------------------------------------------------------------------------------
