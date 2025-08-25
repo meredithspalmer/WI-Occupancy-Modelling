@@ -35,7 +35,7 @@ scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 cov_subset <- function(cov_dataframe_name, period_data){
   covariate <- read.csv(cov_dataframe_name) %>% 
     filter(cell_ID %in% cell_IDs) %>% 
-    arrange(cell_ID) 
+    arrange(cell_ID)
   keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
   df_subset <- covariate[, keep_cols] %>% 
     as.matrix()
@@ -142,6 +142,8 @@ static_scaled <- static %>%
 
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
+
+## NEED TO SCALE 
 
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop.csv", periods)
@@ -290,27 +292,27 @@ hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
 ## Plot covariates ------------------------------------------------------------
 
-TO DO
+TO DO -- this needs to be done for FULL coords but cropped to bb of species projects 
+
 # what want to do here is create a bounding box around monitored area, and crop 
 # full raster of cov values to this bb and plot over
 
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 
-plottable_coords <- cbind(static, coords) 
+plottable_coords <- cbind(static_scaled, coords) 
 plottable_coords <- st_as_sf(
   plottable_coords, 
   coords = c("x", "y"),     
   crs = crs(ref))
 
 # Map covariates across study area: static  
-names(static)
-cov <- "river_dist" #change as appropriate
+names(static_scaled)
+cov <- "river_dist_scaled" #change as appropriate
 
 ggplot(data = plottable_coords) +
-  geom_sf(aes(fill = cov), lwd = 0.05 ) +
+  geom_sf(aes(fill = river_dist_scaled), lwd = 0.05) +
   theme_bw() +
   viridis::scale_fill_viridis(limits = c(0, 1))
-
 
 #join the covariates to the spatial grid, using the plot name
 plottable_covs <- left_join(select(grid_shp,Cell, geometry),
@@ -332,19 +334,26 @@ ggplot(data = plottable_covs) +
 
 ## Look at raw occupancy data -------------------------------------------------
 
-# how adequate is a linear trend for our analysis?
+# Raw occurrence proprortions
+# How adequate is a linear trend for our analysis?
 raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
 raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
 raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
 ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
   xlab("Year") + ylab("Raw Occurrence Proportion")
 
-# naive plot of occurrence detections 
+# Naive plot of occurrence detections 
+#First derive naive occurrence for each cell (0 if a species is never observed, 1 if a species is observed):
+naive <- rowSums(yarray, na.rm = T)
+naive <- as.data.frame(naive)
+naive$Cell <- as.numeric(rownames(naive))
+naive$Naive_occupancy <- as.factor(ifelse(naive$naive == 0, 0, 1))
+naive_plot <- left_join(select(grid_shp, Cell, geometry), naive, by = 'Cell')
 
 TO DO -- native_plot would be bb around areas detected?? 
-  
-  naive_plot <- left_join(select(grid_shp, Cell, geometry),
-                          naive, by = 'Cell')
+TO DO -- what is grid_shp? 
+    
+# Plot 
 ggplot(naive_plot) +
   geom_sf() +
   geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
@@ -417,6 +426,8 @@ minjul_sq.pred <- minjul_sq[pred.indx,,]
 
 # Organize data for svcTPGOcc -------------------------------------------------
 
+ADD SCALED FROM STATIC SCALED 
+
 # if TEST 
 dat_ls_test <- list(y = yarray_test,
                     occ.covs = list(crop = crop_test, 
@@ -467,11 +478,11 @@ dat_ls <- list(y = yarray,
                                precseas = precseas,
                                wdpa = wdpa,
                                evi = evi, 
-                               road.dist = static$road_dist,
-                               tri = static$tri,
-                               river_dist = static$river_dist,
-                               coeff_var = static$coeff_var,
-                               cities_lg = static$cities_lg,
+                               road.dist = static_scaled$road_dist_scaled,
+                               tri = static_scaled$tri_scaled,
+                               river_dist = static_scaled$river_dist_scaled,
+                               coeff_var = static_scaled$coeff_var_scaled,
+                               cities_lg = static_scaled$cities_lg_scaled,
                                trend = trend),
                det.covs = list(effort = effort, #already scaled! 
                                minjul = minjul, #already scaled! 
@@ -486,7 +497,7 @@ ADD MORE IN LATER, JUST TESTING FOR NOW
 DO NOT FORGET TO SCALE COVARIATES 
 # note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
-occ.formula = ~ scale(trend) + scale(crop)
+occ.formula = ~ scale(trend) + scale(crop) + cities_lg
 det.formula = ~ effort + minjul + minjul_sq + (1|proj)
 
 #svc.cols = c('(Intercept', 'crop') #update based on formulae 
@@ -681,9 +692,8 @@ plogis(2.13) #convert logit values to probability scale
 # We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
 
 # Scale covariates 
-# MSP: assuming just occupancy covariates, not including detection covariates? or try including all for good measure? 
 
-#TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
+TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
 
 fc.0 <- scale(occ_covs_all$Forest_PercentCover)
 Cliffs.0 <- scale(occ_covs_all$CliffsCanyons_PercentCover)
@@ -697,190 +707,6 @@ psi.0.samples <- out.pred$psi.0.samples
 
 # MSP: assuming it is here that I can combine across years and plot?? 
 
-
-## Results --------------------------------------------------------------------
-
-#  Parameter plots
-# -> From the output of the fitted occupancy model, we can extract posterior distributions of model parameters and interpret them. These regression coefficients allow us to interpret effects of the covariates on detection and probability of occurrence. Ninety-five percent CIs for regression coefficients can be accessed quickly through the output summary.
-
-summary(out)
-
-# -> In the following subsections, we make custom parameter plots by accessing and summarizing the full posterior distributions of the parameters. We then provide interpretations of these estimates
-
-NOTE -- may need to update for multi-season (multi-dimension coordinates)
-
-## Occurrence: Access the full samples of the occurrence parameters and save their quantiles within occ_quantiles.
-occ.samps <- out$beta.samples #this holds the full outputted samples
-
-# Create a dataframe to store quantiles in:
-occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
-colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
-occ_quantiles$covariate <- colnames(occ.samps)
-occ_quantiles$covariate <- c("(Intercept)", "Trend scale", "Crop scaled")
-occ_quantiles$mean <- colMeans(occ.samps)
-occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
-
-ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
-  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
-  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
-                linewidth = 1.5, show.legend = FALSE) +
-  geom_point() +
-  theme_bw() +
-  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariate') +
-  ylab('Posterior Distribution') +
-  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
-
-# -> Interpretations:
-# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
-# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
-# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
-
-## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles.
-det.samps <- out$alpha.samples
-det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
-colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
-det_quantiles$covariate <- colnames(det.samps)
-det_quantiles$mean <- colMeans(det.samps)
-det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
-
-ggplot(det_quantiles, aes(x = covariate, y = mean)) +
-  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
-  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
-                linewidth = 1.5, show.legend = FALSE) +
-  geom_point() +
-  theme_bw() +
-  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariate') +
-  ylab('Posterior Distribution') +
-  ggtitle('Detection coefficients', 'Multi-season, single-species model')
-
-
-## Predictive maps ------------------------------------------------------------
-
-# We create our final predictive maps from the full posterior predictive distributions of ψ across the 4500 cells.
-
-# Occurrence probability means:
-psi.0.mean <- apply(psi.0.samples, 2, mean)
-# -> each column of psi.0.samples is an MCMC sample of the psi for one site
-# -> these are the means ordered in that vector based on their cell
-
-length(psi.0.mean) #this is mean values across all the cells, so we need a map to interpret it
-
-# Find 95% credible intervals and widths of 95% credible interval for occurrence probability estimates:
-quantiles.ordered.samples <- as.data.frame(
-  t(apply(psi.0.samples ,2,quantile,probs=c(0.025,0.975))))
-quantiles.ordered.samples$width <- quantiles.ordered.samples[,2] -
-  quantiles.ordered.samples[,1]
-
-# Predictive plots require the shapefile for the 10x10 grids that can be linked to the unique cell IDs. 
-
-# Create a dataframe for plotting:Plot names in the covariates and in the prediction outputs line up because that is the order it was read into the prediction formula
-
-predicted.df <- data.frame(Cell= occ_covs_all$Cell,
-                           psi.mean = psi.0.mean,
-                           psi.width = quantiles.ordered.samples$width)
-
-# Join the predicted results to the spatial grid, using the plot name
-plottable <- left_join(select(grid_shp,Cell, geometry),
-                       predicted.df,
-                       by = 'Cell')
-# There are some NA grid cells that didn't have covariate values and don't have predictions; remove them: 
-plottable <- na.omit(plottable)
-
-ggplot(data = plottable) +
-  geom_sf(aes(fill = psi.mean), lwd = 0.05) +
-  theme_bw() +
-  viridis::scale_fill_viridis(limits = c(0, 1)) +
-  ggtitle('LANO posterior mean predicted occurrence',
-          'Single-season, single-species model')
-
-ggplot(plottable) +
-  geom_sf(aes(fill = psi.width), lwd = 0.05) +
-  theme_bw() +
-  viridis::scale_fill_viridis(option = 'plasma', limits = c(0, 1)) +
-  ggtitle('LANO predicted occurrence 95% interval width',
-          'Single-season, single-species model')
-
-
-## Occurrence data across study area ------------------------------------------
-
-# We may be interested in average occurrence across the whole study area, which can be computed as a derived quantity of the cell-level occurrences. We include naive average occurrence across surveyed cells as a solid line.
-
-psi <- as.data.frame(out$psi.samples) # samples of latent psi across all sites
-#this is psi sampled across all 169 sites
-avg_psi <- rowMeans(psi) #take averages across all columns (sites)
-avg_psi_naive <- mean(as.numeric( as.character(naive$Naive_occupancy) ))
-hist(avg_psi, breaks = 20, freq=F, main = "", xlab = "Mean occurrence across all cells")
-abline(v = avg_psi_naive, lwd = 2)
-
-
-
-
-## add in the following 
-
-#To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
-
-svc.samples <- getSVCSamples(out) 
-str(svc.samples)
-
-#The resulting object, here called svc.samples, is a list with each component corresponding to a matrix of the MCMC samples of each spatially varying coefficient estimated in the model, with rows corresponding to MCMC sample and column corresponding to site.
-
-# Intercept ---------------------------------------------------------------
-svc.samples <- getSVCSamples(out.svc.trend)
-int.quants <- apply(svc.samples[["(Intercept)"]], 2, quantile, 
-                    probs = c(0.025, 0.5, 0.975))
-svc.true.fit <- beta + w.fit
-plot(svc.true.fit[, 1], int.quants[2, ], pch = 19, 
-     ylim = c(min(int.quants[1, ]), max(int.quants[3, ])),
-     xlab = "True", ylab = "Fit", main = 'Intercept')
-abline(0, 1)
-arrows(svc.true.fit[, 1], int.quants[2, ], svc.true.fit[, 1], col = 'gray', 
-       int.quants[1, ], length = 0.02, angle = 90)
-arrows(svc.true.fit[, 1], int.quants[1, ], svc.true.fit[, 1], col = 'gray', 
-       int.quants[3, ], length = 0.02, angle = 90)
-points(svc.true.fit[, 1], int.quants[2, ], pch = 19)
-
-# Trend -------------------------------------------------------------------
-trend.quants <- apply(svc.samples[["trend"]], 2, quantile, 
-                      probs = c(0.025, 0.5, 0.975))
-plot(svc.true.fit[, 2], trend.quants[2, ], pch = 19, 
-     ylim = c(min(trend.quants[1, ]), max(trend.quants[3, ])),
-     xlab = "True", ylab = "Fit", main = 'Spatially-Varying Trends')
-abline(0, 1)
-arrows(svc.true.fit[, 2], trend.quants[2, ], svc.true.fit[, 2], col = 'gray', 
-       trend.quants[1, ], length = 0.02, angle = 90)
-arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray', 
-       trend.quants[3, ], length = 0.02, angle = 90)
-points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
-
-
-#https://code.usgs.gov/usgs/norock/irvine_k/vignette-bayesian-site-occupancy-model-bat-acoustic-data/-/blob/main/LANO-OR-WA-vignette.pdf?ref_type=heads
-#Plotting covariates
-ggplot(data = plottable_covs) +
-  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
-  theme_bw() +
-  viridis::scale_fill_viridis(limits = c(0, 1))
-
-2.2.2 Naive occurrence map
-First derive naive occurrence for each cell (0 if a species is never observed, 1 if a species is observed):
-  naive <- rowSums(y, na.rm = T)
-naive <- as.data.frame(naive)
-naive$Cell <- as.numeric(rownames(naive))
-naive$Naive_occupancy <- as.factor(ifelse(naive$naive == 0, 0, 1))
-
-Creating a map requires linking the geometry of the grid cells to the occurrence detections. This can be done
-using the cell names (“Cell”).
-naive_plot <- left_join(select(grid_shp, Cell, geometry),
-                        naive, by = 'Cell')
-ggplot(naive_plot) +
-  geom_sf() +
-  geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
-  theme_bw(base_size = 16) +
-  labs(title = "Naive occurrence", fill = "") +
-  viridis::scale_fill_viridis(discrete = TRUE,
-                              option = 'plasma',
-                              na.value = 'grey80')
 
 # ## Predict -------
 
@@ -931,6 +757,176 @@ ggplot() + geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi))
   labs(x = 'Easting', y = 'Northing', fill = '', 
        title = 'Mean REVI occurrence probability 2009') +
   theme_bw()  
+
+
+
+
+
+# We create our final predictive maps from the full posterior predictive distributions of ψ across the 4500 cells.
+
+# Occurrence probability means:
+psi.0.mean <- apply(psi.0.samples, 2, mean)
+# -> each column of psi.0.samples is an MCMC sample of the psi for one site
+# -> these are the means ordered in that vector based on their cell
+
+length(psi.0.mean) #this is mean values across all the cells, so we need a map to interpret it
+
+# Find 95% credible intervals and widths of 95% credible interval for occurrence probability estimates:
+quantiles.ordered.samples <- as.data.frame(
+  t(apply(psi.0.samples ,2,quantile,probs=c(0.025,0.975))))
+quantiles.ordered.samples$width <- quantiles.ordered.samples[,2] -
+  quantiles.ordered.samples[,1]
+
+# Predictive plots require the shapefile for the 10x10 grids that can be linked to the unique cell IDs. 
+
+# Create a dataframe for plotting:Plot names in the covariates and in the prediction outputs line up because that is the order it was read into the prediction formula
+
+predicted.df <- data.frame(Cell= occ_covs_all$Cell,
+                           psi.mean = psi.0.mean,
+                           psi.width = quantiles.ordered.samples$width)
+
+# Join the predicted results to the spatial grid, using the plot name
+plottable <- left_join(select(grid_shp,Cell, geometry),
+                       predicted.df,
+                       by = 'Cell')
+# There are some NA grid cells that didn't have covariate values and don't have predictions; remove them: 
+plottable <- na.omit(plottable)
+
+ggplot(data = plottable) +
+  geom_sf(aes(fill = psi.mean), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1)) +
+  ggtitle('LANO posterior mean predicted occurrence',
+          'Single-season, single-species model')
+
+ggplot(plottable) +
+  geom_sf(aes(fill = psi.width), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(option = 'plasma', limits = c(0, 1)) +
+  ggtitle('LANO predicted occurrence 95% interval width',
+          'Single-season, single-species model')
+
+
+
+## Results --------------------------------------------------------------------
+
+##  Parameter plots
+# -> From the output of the fitted occupancy model, we can extract posterior distributions of model parameters and interpret them. These regression coefficients allow us to interpret effects of the covariates on detection and probability of occurrence. Ninety-five percent CIs for regression coefficients can be accessed quickly through the output summary.
+
+summary(out)
+
+# -> In the following subsections, we make custom parameter plots by accessing and summarizing the full posterior distributions of the parameters. We then provide interpretations of these estimates
+
+## Occurrence: Access the full samples of the occurrence parameters and save their quantiles within occ_quantiles.
+occ.samps <- out$beta.samples #this holds the full outputted samples
+
+# Create a dataframe to store quantiles in:
+occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
+colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+occ_quantiles$covariate <- colnames(occ.samps)
+occ_quantiles$covariate <- c("(Intercept)", "Trend scale", "Crop scaled", "City Access scaled")
+occ_quantiles$mean <- colMeans(occ.samps)
+occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
+
+# -> Interpretations:
+# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
+# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
+# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
+
+## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles
+det.samps <- out$alpha.samples
+det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
+colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+det_quantiles$covariate <- colnames(det.samps)
+det_quantiles$mean <- colMeans(det.samps)
+det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(det_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Detection coefficients', 'Multi-season, single-species model')
+
+
+## Occurrence data across study area ------------------------------------------
+
+# We may be interested in average occurrence across the whole study area, which can be computed as a derived quantity of the cell-level occurrences. We include naive average occurrence across surveyed cells as a solid line.
+
+psi <- as.data.frame(out$psi.samples) # samples of latent psi across all sites
+#this is psi sampled across all 169 sites
+avg_psi <- rowMeans(psi) #take averages across all columns (sites)
+avg_psi_naive <- mean(as.numeric(as.character(naive$Naive_occupancy))) FIGURE THIS OUT 
+hist(avg_psi, breaks = 20, freq=F, main = "", xlab = "Mean occurrence across all cells")
+abline(v = avg_psi_naive, lwd = 2) FIGURE THIS OUT 
+
+
+
+
+## add in the following 
+
+## Estimates of SVCs 
+
+# To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
+
+# The resulting object, here called svc.samples, is a list with each component corresponding to a matrix of the MCMC samples of each spatially varying coefficient estimated in the model, with rows corresponding to MCMC sample and column corresponding to site.
+
+svc.samples <- getSVCSamples(out) 
+str(svc.samples)
+
+# Intercept 
+svc.samples <- getSVCSamples(out.svc.trend)
+int.quants <- apply(svc.samples[["(Intercept)"]], 2, quantile, 
+                    probs = c(0.025, 0.5, 0.975))
+svc.true.fit <- beta + w.fit
+plot(svc.true.fit[, 1], int.quants[2, ], pch = 19, 
+     ylim = c(min(int.quants[1, ]), max(int.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Intercept')
+abline(0, 1)
+arrows(svc.true.fit[, 1], int.quants[2, ], svc.true.fit[, 1], col = 'gray', 
+       int.quants[1, ], length = 0.02, angle = 90)
+arrows(svc.true.fit[, 1], int.quants[1, ], svc.true.fit[, 1], col = 'gray', 
+       int.quants[3, ], length = 0.02, angle = 90)
+points(svc.true.fit[, 1], int.quants[2, ], pch = 19)
+
+# Trend -------------------------------------------------------------------
+trend.quants <- apply(svc.samples[["trend"]], 2, quantile, 
+                      probs = c(0.025, 0.5, 0.975))
+plot(svc.true.fit[, 2], trend.quants[2, ], pch = 19, 
+     ylim = c(min(trend.quants[1, ]), max(trend.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Spatially-Varying Trends')
+abline(0, 1)
+arrows(svc.true.fit[, 2], trend.quants[2, ], svc.true.fit[, 2], col = 'gray', 
+       trend.quants[1, ], length = 0.02, angle = 90)
+arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray', 
+       trend.quants[3, ], length = 0.02, angle = 90)
+points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
+
+
+#https://code.usgs.gov/usgs/norock/irvine_k/vignette-bayesian-site-occupancy-model-bat-acoustic-data/-/blob/main/LANO-OR-WA-vignette.pdf?ref_type=heads
+#Plotting covariates
+ggplot(data = plottable_covs) +
+  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
+
+
+
 
 # Save files -------------------------------------------------------------------
 
