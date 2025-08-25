@@ -797,7 +797,9 @@ str(out.pred.occ)
 # e.g., calculate mean occupancy probability for each site/period
 psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
 
-
+WHY ARE ALL psi.0.samples NA? 
+sum(is.na(out.pred.occ$psi.0.samples))/length(out.pred.occ$psi.0.samples)
+something scaled covariates issue?? 
 
 #prediction for occurance
 out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
