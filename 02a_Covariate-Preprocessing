@@ -417,14 +417,15 @@ rm(list=ls())
 gc()
 
 # Set wd 
-setwd("/gpfs/gibbs/project/jetz/msp69/WI_2024/Spatial Layers/Raw spatial layers/WDPA_Jan2025_Public_shp")
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers/WDPA_Jan2025_Public_shp")
 
 # Load reference data 
-reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
-site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+#reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
+#site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+#reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
 
-# Subset to site cells 
-reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+# Load reference data for all terrestrial land 
+reference_sub <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
 
 # Load and reproject WDPA files 
 shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
@@ -485,8 +486,8 @@ for (yr in years) {
 
 # Combine all years into one dataframe
 final_df <- bind_rows(results_list)
-write.csv(final_df, "prop_wdpa.csv", row.names=F)
-
+#write.csv(final_df, "prop_wdpa.csv", row.names=F)
+write.csv(final_df, "prop_wdpa_full.csv", row.names=F)
 
 
 ################################################################################
@@ -505,13 +506,12 @@ library(dplyr)
 library(stringr)
 
 # Load reference data 
-reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
-site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+#reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
+#site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
+#reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
 
-# Keep only site cells
-reference_sub <- reference
-reference_sub[!(reference[] %in% site_cells$cell_ID)] <- NA
-plot(reference_sub)
+# Load reference data for all terrestrial land 
+reference_sub <- rast("../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
 
 # Classes
 crop_class <- c(10,11,12,20,30,40)
@@ -571,8 +571,10 @@ for (file in lc_files) {
   urban_all <- bind_rows(urban_all, urban_prop)
 }
 
-write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
-write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
+#write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
+#write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
+write.csv(crop_all,  "crop_proportion_all_years_full.csv",  row.names=FALSE)
+write.csv(urban_all, "urban_proportion_all_years_full.csv", row.names=FALSE)
 
 
 ############################################################################
