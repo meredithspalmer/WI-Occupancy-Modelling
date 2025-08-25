@@ -687,6 +687,62 @@ plogis(2.13) #convert logit values to probability scale
 #or could just be fine for now 
 
 
+## Results --------------------------------------------------------------------
+
+##  Parameter plots
+# -> From the output of the fitted occupancy model, we can extract posterior distributions of model parameters and interpret them. These regression coefficients allow us to interpret effects of the covariates on detection and probability of occurrence. Ninety-five percent CIs for regression coefficients can be accessed quickly through the output summary.
+
+summary(out)
+
+# -> In the following subsections, we make custom parameter plots by accessing and summarizing the full posterior distributions of the parameters. We then provide interpretations of these estimates
+
+## Occurrence: Access the full samples of the occurrence parameters and save their quantiles within occ_quantiles.
+occ.samps <- out$beta.samples #this holds the full outputted samples
+
+# Create a dataframe to store quantiles in:
+occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
+colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+occ_quantiles$covariate <- colnames(occ.samps)
+occ_quantiles$covariate <- c("(Intercept)", "Trend scale", "Crop scaled", "City Access scaled")
+occ_quantiles$mean <- colMeans(occ.samps)
+occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
+
+# -> Interpretations:
+# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
+# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
+# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
+
+## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles
+det.samps <- out$alpha.samples
+det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
+colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+det_quantiles$covariate <- colnames(det.samps)
+det_quantiles$mean <- colMeans(det.samps)
+det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(det_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Detection coefficients', 'Multi-season, single-species model')
+
+
 ## Predictions ----------------------------------------------------------------
 
 # We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
@@ -808,60 +864,53 @@ ggplot(plottable) +
 
 
 
-## Results --------------------------------------------------------------------
+# Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
 
-##  Parameter plots
-# -> From the output of the fitted occupancy model, we can extract posterior distributions of model parameters and interpret them. These regression coefficients allow us to interpret effects of the covariates on detection and probability of occurrence. Ninety-five percent CIs for regression coefficients can be accessed quickly through the output summary.
+# Predict occupancy at the 400 new sites
+out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
 
-summary(out)
+# get SVC values at the prediction locations
+svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred)
 
-# -> In the following subsections, we make custom parameter plots by accessing and summarizing the full posterior distributions of the parameters. We then provide interpretations of these estimates
+# Get mean values of the SVC for the covariate
+svc.cov.pred.mean <- apply(svc.pred.samples$occ.cov.1, 2, mean)
 
-## Occurrence: Access the full samples of the occurrence parameters and save their quantiles within occ_quantiles.
-occ.samps <- out$beta.samples #this holds the full outputted samples
+# Plot
+plot(coords.pred, type = "n", xlab = "", ylab = "", asp = TRUE, 
+     main = "Estimated values", bty = 'n')
+points(coords.pred, pch=15, cex = 2.1, 
+       col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/diff(range(svc.cov.pred.mean))))
 
-# Create a dataframe to store quantiles in:
-occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
-colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
-occ_quantiles$covariate <- colnames(occ.samps)
-occ_quantiles$covariate <- c("(Intercept)", "Trend scale", "Crop scaled", "City Access scaled")
-occ_quantiles$mean <- colMeans(occ.samps)
-occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+## adapt 
+# First standardize elevation using mean and sd from fitted model
+elev.pred <- (hbefElev$val - mean(btbwHBEF$occ.covs[, 1])) / sd(btbwHBEF$occ.covs[, 1])
+coords.0 <- as.matrix(hbefElev[, c('Easting', 'Northing')])
+X.0 <- cbind(1, elev.pred, elev.pred^2)
+out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
 
-ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
-  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
-  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
-                linewidth = 1.5, show.legend = FALSE) +
-  geom_point() +
-  theme_bw() +
-  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariate') +
-  ylab('Posterior Distribution') +
-  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
+# Plot spatially varying trend across study region  
+**FIX THIS**
+  
+  y <- yarray            #detection-nondetection data
+X <- dat$X             #occurrence design matrix for fixed effects
+X.p <- dat$X.p         #detection design matrix for fixed effets  
+psi <- dat$psi         #occurrence values
+coords <- coords       #spatial coordinates
+w <- dat$w             #spatially varying intercept and covariate effects
+cov.effect <- beta[2] + w[, 2]
+plot.dat <- data.frame(x = coords[, 1], 
+                       y = coords[, 2], 
+                       cov.effect = cov.effect)
 
-# -> Interpretations:
-# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
-# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
-# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
+ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
+  geom_raster() + 
+  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
+                       high = '#2166AC', na.value = NA) + 
+  theme_bw() 
+# (decrease in occurrence = red, increase in occurrence = blue)
 
-## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles
-det.samps <- out$alpha.samples
-det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
-colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
-det_quantiles$covariate <- colnames(det.samps)
-det_quantiles$mean <- colMeans(det.samps)
-det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
 
-ggplot(det_quantiles, aes(x = covariate, y = mean)) +
-  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
-  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
-                linewidth = 1.5, show.legend = FALSE) +
-  geom_point() +
-  theme_bw() +
-  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariate') +
-  ylab('Posterior Distribution') +
-  ggtitle('Detection coefficients', 'Multi-season, single-species model')
+
 
 
 ## Occurrence data across study area ------------------------------------------
@@ -928,54 +977,10 @@ ggplot(data = plottable_covs) +
 
 
 
-# Save files -------------------------------------------------------------------
+## Save files -------------------------------------------------------------------
 
 filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
-
 save(yarray, covs, species, out, coords, file = filename)
 toc()
 
-# Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
-
-# Predict occupancy at the 400 new sites
-out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
-
-# get SVC values at the prediction locations
-svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred)
-
-# Get mean values of the SVC for the covariate
-svc.cov.pred.mean <- apply(svc.pred.samples$occ.cov.1, 2, mean)
-
-# Plot
-plot(coords.pred, type = "n", xlab = "", ylab = "", asp = TRUE, 
-     main = "Estimated values", bty = 'n')
-points(coords.pred, pch=15, cex = 2.1, 
-       col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/diff(range(svc.cov.pred.mean))))
-
-## adapt 
-# First standardize elevation using mean and sd from fitted model
-elev.pred <- (hbefElev$val - mean(btbwHBEF$occ.covs[, 1])) / sd(btbwHBEF$occ.covs[, 1])
-coords.0 <- as.matrix(hbefElev[, c('Easting', 'Northing')])
-X.0 <- cbind(1, elev.pred, elev.pred^2)
-out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
-
-# Plot spatially varying trend across study region  
-**FIX THIS**
-  
-  y <- yarray            #detection-nondetection data
-X <- dat$X             #occurrence design matrix for fixed effects
-X.p <- dat$X.p         #detection design matrix for fixed effets  
-psi <- dat$psi         #occurrence values
-coords <- coords       #spatial coordinates
-w <- dat$w             #spatially varying intercept and covariate effects
-cov.effect <- beta[2] + w[, 2]
-plot.dat <- data.frame(x = coords[, 1], 
-                       y = coords[, 2], 
-                       cov.effect = cov.effect)
-
-ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
-  geom_raster() + 
-  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
-                       high = '#2166AC', na.value = NA) + 
-  theme_bw() 
-# (decrease in occurrence = red, increase in occurrence = blue)
+## ------------------------------------------------------------------------------
