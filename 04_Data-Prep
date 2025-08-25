@@ -40,8 +40,8 @@ library(viridis)
 # Goal: Prep species-specific stacked detection matrices, by deployment-season-year and week
 
 # Load data 
-overview_seq <- open_dataset("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/sequences_updated_20240710_parquet")
-overview_images <- open_dataset("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/images_updated_20240714_parquet")
+overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
+overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
 
 # Combine data
 dat_seq <- overview_seq |>
