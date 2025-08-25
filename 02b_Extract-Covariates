@@ -32,6 +32,7 @@ library(parallel)
 library(glmnet)
 
 # Set up reference raster -----------------------------------------------------
+# If only want covs for study sites; will need global covs for predicting 
 
 # Load
 reference <- rast("raster_100km2_with_cellID.tif")
@@ -42,7 +43,7 @@ site_cells <- read.csv("WI_loc_matching_cell_ID.csv")
 # Mask reference raster 
 reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
 
-# Static layers ----------------------------------------------------------------
+## Static layers --------------------------------------------------------------
 
 # Read TIF files for static layers 
 static_layers <- list(
@@ -132,9 +133,28 @@ for (cov in covariate_cols) {
 write.csv(extracted, "../Covariates for modelling/site_level_covariates_full.csv", row.names = FALSE)
 
 
-# Dynamic layers ---------------------------------------------------------------
+## Dynamic layers -------------------------------------------------------------
 
-# Create period template 
+# Reference raster ------------------------------------------------------------
+# Use reference raster above for sites only; crop to continents if generating for 
+# entire dataset:  
+
+# Get land polygons
+land <- ne_countries(scale = "medium", returnclass = "sf")
+land_terra <- vect(land)
+
+# Reproject if needed
+if (crs(reference) != crs(land_terra)) {
+  land_terra <- project(land_terra, crs(reference))
+}
+
+# Mask to land
+reference_land <- mask(reference, land_terra)
+plot(reference_land)
+
+writeRaster(reference_land, "raster_100km2_with_cellID_terrestrial.tif", overwrite = TRUE)
+
+# Create period template ------------------------------------------------------
 min_year <- 2000  
 max_year <- 2024 
 range_year <- c(min_year, max_year)
@@ -187,7 +207,8 @@ r_list <- list(
 r_stack <- rast(r_list)
 
 # Extract cell_IDs
-extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # Model data for intervening years 
@@ -215,7 +236,8 @@ cov_df <- extracted %>%
   as.matrix()
 
 # Save 
-write.csv(cov_df, "primary_occ_covariates_precip.csv", row.names = F)
+#write.csv(cov_df, "primary_occ_covariates_precip_full.csv", row.names = F)
+write.csv(cov_df, "primary_occ_covariates_precip_full.csv", row.names = F)
 
 
 # Read TIF files for ANNUAL TEMP ---    
@@ -226,7 +248,8 @@ r_list <- list(
 r_stack <- rast(r_list)
 
 # Extract cell_IDs
-extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # Model data for intervening years 
@@ -254,7 +277,8 @@ cov_df <- extracted %>%
   as.matrix()
 
 # Save 
-write.csv(cov_df, "primary_occ_covariates_temp.csv", row.names = F)
+#write.csv(cov_df, "primary_occ_covariates_temp.csv", row.names = F)
+write.csv(cov_df, "primary_occ_covariates_temp_full.csv", row.names = F)
 
 
 # Read TIF files for SEASONAL PRECIP ---    
@@ -265,7 +289,8 @@ r_list <- list(
 r_stack <- rast(r_list)
 
 # Extract cell_IDs
-extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # Model data for intervening years 
@@ -293,7 +318,8 @@ cov_df <- extracted %>%
   as.matrix()
 
 # Save 
-write.csv(cov_df, "primary_occ_covariates_precseas.csv", row.names = F)
+#write.csv(cov_df, "primary_occ_covariates_precseas.csv", row.names = F)
+write.csv(cov_df, "primary_occ_covariates_precseas_full.csv", row.names = F)
 
 
 # Read TIF files for WARMEST SEASON PRECIP ---    
@@ -304,7 +330,8 @@ r_list <- list(
 r_stack <- rast(r_list)
 
 # Extract cell_IDs
-extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # Model data for intervening years 
@@ -332,7 +359,8 @@ cov_df <- extracted %>%
   as.matrix()
 
 # Save 
-write.csv(cov_df, "primary_occ_covariates_warmseas.csv", row.names = F)
+#write.csv(cov_df, "primary_occ_covariates_warmseas.csv", row.names = F)
+write.csv(cov_df, "primary_occ_covariates_warmseas_full.csv", row.names = F)
 
 
 # Read TIF files for GWP --- 
@@ -347,7 +375,8 @@ for(i in 1:length(gwp)){
 gwp_stack <- rast(gwp_list_raster)
 
 # extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+#extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # to predict GPW for years between those with values (2000-2005-2010-2020) with 95% CI 
@@ -400,7 +429,8 @@ GPW <- extracted %>%
   as.matrix()
 
 # Save 
-write.csv(GPW, "primary_occ_covariates_GPW.csv", row.names = F)
+#write.csv(GPW, "primary_occ_covariates_GPW.csv", row.names = F)
+write.csv(GPW, "primary_occ_covariates_GPW_full.csv", row.names = F)
 
 
 # Read TIF files for EVI --- 
@@ -416,7 +446,8 @@ evi_stack <- rast(evi_list_raster)
 names(evi_stack) <- gsub('.{11}$', '', evi)
 
 # Extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+#extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # Predict missing values 
@@ -447,7 +478,7 @@ impute_evi_ridge <- function(df) {
   
   # Predict for ALL cells (including NAs)
   df_long$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
-
+  
   # Replace original values where missing 
   df_long <- df_long %>%
     mutate(evi_final = ifelse(is.na(evi), evi_filled, evi))
@@ -456,7 +487,7 @@ impute_evi_ridge <- function(df) {
 }
 
 result <- impute_evi_ridge(extracted) 
- 
+
 EVI_long <- result %>% 
   filter(year %in% periods$year) %>%
   mutate(year_str = str_extract(date, "(?<=evi_)\\d{4}"),
@@ -466,7 +497,7 @@ EVI_long <- result %>%
   dplyr::select(-year_str, -doy_str) %>% 
   dplyr::select(c(cell_ID, evi_final, obs_date)) %>% 
   rename(cov_value = evi_final, 
-        date = obs_date)
+         date = obs_date)
 
 EVI_joined <- EVI_long %>%
   left_join(periods %>% mutate(dummy = 1), by = character()) %>% 
@@ -482,10 +513,11 @@ EVI_mat <- EVI_joined %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI.csv")
+#write.csv(EVI_mat, "primary_occ_covariates_EVI.csv", row.names = F)
+write.csv(EVI_mat, "primary_occ_covariates_EVI_full.csv", row.names = F)
 
 
-# Read TIF files for GFC
+# Read TIF files for GFC -- DO NOT DO YET! 
 
 # GFC - 2001:2021 
 gfc_list_raster <- NULL 
