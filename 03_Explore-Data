@@ -27,10 +27,10 @@ overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
 # Species data exploration ---------------------------------------------------------------
 # summarize data for sequence and image projects
 summ_seq <- overview_seq %>% 
-  mutate(record_date = sequence_date_fix,
+  mutate(record_date = sequence_date,
          sensor_start_date = ymd_hms(sensor_start_date_and_time),
          year = year(sensor_start_date)) %>% 
-  group_by(class, Accepted_MOL) %>% 
+  group_by(class, sp_binomial) %>% 
   collect() %>%
   summarise(n_records = n(),
             n_locs = length(unique(deployment_location_id)),
@@ -38,6 +38,7 @@ summ_seq <- overview_seq %>%
             n_years = length(unique(year)),
             min_record_date = min(record_date),
             max_record_date = max(record_date)) 
+
 summ_images <- overview_images %>% 
   mutate(record_date = photo_date,
          sensor_start_date = ymd_hms(sensor_start_date_and_time),
@@ -50,10 +51,14 @@ summ_images <- overview_images %>%
             n_years = length(unique(year)),
             min_record_date = min(record_date),
             max_record_date = max(record_date)) 
+summ_images <- summ_images %>% 
+  rename(sp_binomial = Accepted_MOL) %>% 
+  mutate(min_record_date = ymd(min_record_date), 
+         max_record_date = ymd(max_record_date))
 
 # bring all summaries together
 summ_all <- rbind(summ_seq, summ_images) %>% 
-  group_by(class, Accepted_MOL) %>% 
+  group_by(class, sp_binomial) %>% 
   summarise(n_records = sum(n_records),
             n_locs = sum(n_locs),
             n_projects = sum(n_projects),
@@ -297,7 +302,7 @@ cor_val %>% GGally::ggpairs(upper=list(continuous='points'), lower=list(continuo
 # Skewess among annual covariates for period X
 inspect_num(df_covs %>% select(-c(cell_ID, period))) %>%  
   inspectdf::show_plot(x = ., plot_layout = c(5, 5))
-  
+
 # --> drop urban, precip, warmseas precip? 
 mat.list = list(crop, gpw, gfc, precseas, temp, wdpa, evi)
 
