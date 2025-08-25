@@ -750,7 +750,7 @@ ggplot(det_quantiles, aes(x = covariate, y = mean)) +
 svc.out <- out #this contain trends 
 static.out <- out #this contains only spatially varying 
 
-I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!! 
+I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!! vignette not helpful - does not consider replicates? adapt for primary periods and replicates
 
 # Number of sites 
 (n.sites <- length(unique(covs$cell_ID)))
@@ -761,39 +761,55 @@ I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!!
 # Number of replicates 
 n.rep <- 13 
 
-# Number of occupancy regression parameters
-(n.beta <- ncol(out$beta.samples))
-names(out$beta.samples)
+# Number of occupancy regression parameters -- CHANGE THE OUT 
+(n.beta <- ncol(svc.out$beta.samples))
 
 # Create and fill an empty array with the proper dimensions --- NEED TO ADD REPLICATES? try without first? 
-X.0 <- array(NA, dim = c(n.sites, n.years, n.beta))
+X.0 <- array(NA, dim = c(n.sites, n.period, n.beta))
 
 # Intercept
 X.0[, , 1] <- 1
 
-# Crops (standardized by values used to fit the model) --- PULL THESE FROM DATA_LS? 
+QUESTION -- if variables are already standardized in dat_ls, no need to repeat here -- examine input data
+
+# Primary period (standardized by values used to fit the model)
+period.pred <- (as.numeric(dat_ls$occ.covs$trend))
+X.0[, , 2] <- period.pred
+
+# Crops (standardized by values used to fit the model) --- PULL THESE FROM DAT_LS? 
 crop.pred <- (as.numeric(dat_ls$occ.covs$crop) - mean(as.numeric(fit.data$occ.covs$crop)) / sd(as.numeric(fit.data$occ.covs$crop)))
-X.0[, , 2] <- crop.pred
+X.0[, , 3] <- crop.pred
 
 # Cities 
 cities.pred <- (as.numeric(dat_ls$occ.covs$cities_lg) - mean(as.numeric(fit.data$occ.covs$cities_lg)) / sd(as.numeric(fit.data$occ.covs$cities_lg)))
-X.0[, , 3] <- cities.pred
-
-# Primary period (standardized by values used to fit the model)
-period.pred <- (dat_ls$occ.covs$years - mean(fit.data$occ.covs$years)) / sd(fit.data$occ.covs$years)
-X.0[, , 4] <- years.pred
+X.0[, , 4] <- cities.pred
 
 # Give names to X.0 just to make things clear
-dimnames(X.0)[[3]] <- c('(Intercept)', 'elev', 'elev.2', 'years')
+dimnames(X.0)[[3]] <- c('(Intercept)', 'periods', 'crop', 'cities')
 
 # Prediction coordinates
 coords.0 <- full.data$coords
 # Predict across all years and sites in the original data set
-out.pred.occ <- predict(out, X.0, coords.0, t.cols = 1:n.years, type = 'occupancy')
+out.pred.occ <- predict(svc.out, X.0, coords.0, t.cols = 1:n.years, type = 'occupancy')
 str(out.pred.occ)
+
 # Can then manipulate the objects in out.pred.occ as desired
-# e.g., calculate mean occupancy probability for each site/year
+# e.g., calculate mean occupancy probability for each site/period
 psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
+
+
+
+#prediction for occurance
+out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
+                        t.cols = c(1, 4,7), #set 1 - monsoon
+                        n.omp.threads = 8, type = 'occupancy')
+summary(out.pred_occ)
+
+mean.psi <- apply(out.pred_occ$psi.0.samples, 2, mean)
+sd.psi <- apply(out.pred_occ$psi.0.samples, 2, sd)
+
+
+
 
 # Number of prediction sites.
 J.pred <- nrow(hbefElev)
@@ -1047,3 +1063,5 @@ ggplot(data = plottable_covs) +
 filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
 save(yarray, covs, species, out, coords, file = filename)
 toc()
+
+## ------------------------------------------------------------------------------
