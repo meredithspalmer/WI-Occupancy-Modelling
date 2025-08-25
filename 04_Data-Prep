@@ -100,7 +100,7 @@ if(data_exploration){
   # Spatial coverage
   # Select unique locations
   loc <- dat %>% 
-    select(latitude, longitude, project_id) %>% 
+    dplyr::select(latitude, longitude, project_id) %>% 
     distinct() %>% 
     mutate(project_id = as.factor(project_id))
   
@@ -120,13 +120,13 @@ if(data_exploration){
     tm_grid() +
     tm_dots(col = "project_id", popup.vars=c("Lat" = "latitude", "Long" = "longitude"), 
             size = 0.3) +
-    tm_compass(type = "8star", position = c("right", "top")) +
+    #tm_compass(type = "8star", position = c("right", "top")) +
     tm_scale_bar(breaks = c(0, 500, 1000), text.size = 1, position = c("LEFT", "BOTTOM")) +
     tm_style("col_blind") + # + tm_basemap(server = "OpenTopoMap")
     tm_shape(World) +
     tm_fill(alpha = 0.3) +
     tm_borders() +
-    tm_layout(legend.outside = TRUE)       
+    tm_layout(legend.show = FALSE) #legend.outside = TRUE)       
   print(dat_map_range)
   
   # Map locations --- NOT WORKING; HOW DIFFERENT FROM ABOVE? LOOK AT LATER 
@@ -147,7 +147,7 @@ if(data_exploration){
                              record_year = year(record_date),
                              year_week = as.numeric(paste(record_year, record_week, sep = "")),
                              proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-    select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
+    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
   
   x_label <- (expand.grid(year = seq(year(min(dat$record_date)), year(max(dat$record_date)), by = 1),
                           week = sprintf("%02d", seq(01, 53, 1))) %>% 
@@ -158,7 +158,7 @@ if(data_exploration){
                                    record_year = year(record_date),
                                    year_week = as.numeric(paste(record_year, record_week, sep = "")),
                                    proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-    select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
+    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
   
   ggplot(dat_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id))) +
     geom_point(aes(color = as.factor(project_id))) +
