@@ -122,13 +122,7 @@ coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.
 
 ## Covariates (all) -----------------------------------------------------------
 
-# We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section.
-
-FROM HERE; instead of in model (to make predicting easier); e.g.: 
-
-Forest_PercentCover_scaled <- (occ_covs_unscaled$Forest_PercentCover - mean(occ_covs_all$Forest_PercentCover)) / sd(occ_covs_all$Forest_PercentCover)
-CliffsCanyons_PercentCover_scaled <- (occ_covs_unscaled$CliffsCanyons_PercentCover - mean(occ_covs_all$CliffsCanyons_PercentCover)) / sd(occu_covs_all$CliffsCanyons_PercentCover)
-
+# We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section. Scale before inclusion in model to make easier to scale full covariates for prediction. 
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
 
@@ -137,6 +131,14 @@ static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>%
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
 nrow(static) #select out each column want as a vector 
+
+static_scaled <- static %>% 
+  mutate(across(
+    .cols = c(road_dist, tri, river_dist, coeff_var, cities_lg),
+    .fns = ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE),
+    .names = "{.col}_scaled"
+  )) %>% 
+  dplyr::select(-c(road_dist, tri, river_dist, coeff_var, cities_lg))
 
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
@@ -340,9 +342,9 @@ ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() +
 # naive plot of occurrence detections 
 
 TO DO -- native_plot would be bb around areas detected?? 
-
-naive_plot <- left_join(select(grid_shp, Cell, geometry),
-                        naive, by = 'Cell')
+  
+  naive_plot <- left_join(select(grid_shp, Cell, geometry),
+                          naive, by = 'Cell')
 ggplot(naive_plot) +
   geom_sf() +
   geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
@@ -884,51 +886,51 @@ ggplot(naive_plot) +
 
 # ?predict.stPGOcc()
 # REVISIT: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
-                                                                                           # Number of prediction sites.
+# Number of prediction sites.
 J.pred <- nrow(hbefElev)
-                                                                                           # Number of prediction years.
+# Number of prediction years.
 n.years.pred <- 2
-                                                                                           # Number of predictors (including intercept)
+# Number of predictors (including intercept)
 p.occ <- ncol(out.ar1$beta.samples)
-                                                                                           # Get covariates and standardize them using values used to fit the model
+# Get covariates and standardize them using values used to fit the model
 elev.pred <- (hbefElev$val - mean(revi.data$occ.covs$elev)) / sd(revi.data$occ.covs$elev)
 year.pred <- matrix(rep((c(2010, 2018) - mean(revi.data$occ.covs$years)) / 
-sd(revi.data$occ.covs$years), 
-length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
-                                                                                           # Create three-dimensional array
+                          sd(revi.data$occ.covs$years), 
+                        length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
+# Create three-dimensional array
 X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
-                                                                                           # Fill in the array
-                                                                                           # Years
+# Fill in the array
+# Years
 X.0[, , 2] <- year.pred
-                                                                                           # Elevation
+# Elevation
 X.0[, , 3] <- elev.pred
-                                                                                           # Elevation^2
+# Elevation^2
 X.0[, , 4] <- elev.pred^2
-                                                                                           # Check out the structure
+# Check out the structure
 str(X.0)
-                                                                                          # Indicate which primary time periods (years) we are predicting for
+# Indicate which primary time periods (years) we are predicting for
 t.cols <- c(1, 9)
-                                                                                           # Approx. run time: < 30 sec
+# Approx. run time: < 30 sec
 out.pred <- predict(out.ar1, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
-                                                                                           # Check out the structure
+# Check out the structure
 str(out.pred)
-                                                                                           #we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
+#we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
 plot.dat <- data.frame(x = hbefElev$Easting, y = hbefElev$Northing, 
-mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
-mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
-sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
-sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
-stringsAsFactors = FALSE)
+                       mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
+                       mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
+                       sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
+                       sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
+                       stringsAsFactors = FALSE)
 
 # Make a species distribution map showing the point estimates, or predictions (posterior means)
 dat.stars <- st_as_stars(plot.dat, dims = c('x', 'y'))
 
 # 2009
 ggplot() + geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi)) +
-scale_fill_viridis_c(na.value = 'transparent') +
-labs(x = 'Easting', y = 'Northing', fill = '', 
-title = 'Mean REVI occurrence probability 2009') +
-theme_bw()  
+  scale_fill_viridis_c(na.value = 'transparent') +
+  labs(x = 'Easting', y = 'Northing', fill = '', 
+       title = 'Mean REVI occurrence probability 2009') +
+  theme_bw()  
 
 # Save files -------------------------------------------------------------------
 
@@ -936,8 +938,8 @@ filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_result
 
 save(yarray, covs, species, out, coords, file = filename)
 toc()
-                                                                                          
-																						   # Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
+
+# Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
 
 # Predict occupancy at the 400 new sites
 out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
@@ -950,9 +952,9 @@ svc.cov.pred.mean <- apply(svc.pred.samples$occ.cov.1, 2, mean)
 
 # Plot
 plot(coords.pred, type = "n", xlab = "", ylab = "", asp = TRUE, 
-main = "Estimated values", bty = 'n')
+     main = "Estimated values", bty = 'n')
 points(coords.pred, pch=15, cex = 2.1, 
-col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/diff(range(svc.cov.pred.mean))))
+       col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/diff(range(svc.cov.pred.mean))))
 
 ## adapt 
 # First standardize elevation using mean and sd from fitted model
@@ -963,8 +965,8 @@ out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
 
 # Plot spatially varying trend across study region  
 **FIX THIS**
-
-y <- yarray            #detection-nondetection data
+  
+  y <- yarray            #detection-nondetection data
 X <- dat$X             #occurrence design matrix for fixed effects
 X.p <- dat$X.p         #detection design matrix for fixed effets  
 psi <- dat$psi         #occurrence values
@@ -972,13 +974,12 @@ coords <- coords       #spatial coordinates
 w <- dat$w             #spatially varying intercept and covariate effects
 cov.effect <- beta[2] + w[, 2]
 plot.dat <- data.frame(x = coords[, 1], 
-y = coords[, 2], 
-cov.effect = cov.effect)
+                       y = coords[, 2], 
+                       cov.effect = cov.effect)
 
 ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
-geom_raster() + 
-scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
-high = '#2166AC', na.value = NA) + 
-theme_bw() 
+  geom_raster() + 
+  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
+                       high = '#2166AC', na.value = NA) + 
+  theme_bw() 
 # (decrease in occurrence = red, increase in occurrence = blue)
-                                                                                                                                                                                                                                                                                                              
