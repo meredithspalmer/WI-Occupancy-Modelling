@@ -363,7 +363,7 @@ cov_df <- extracted %>%
 write.csv(cov_df, "primary_occ_covariates_warmseas_full.csv", row.names = F)
 
 
-# Read TIF files for GWP --- 
+# Read TIF files for GPW --- 
 gwp_list_raster <- NULL 
 gwp <- list.files("GWP")
 for(i in 1:length(gwp)){
@@ -376,7 +376,7 @@ gwp_stack <- rast(gwp_list_raster)
 
 # extract mean values for each cell_ID across all rasters in the stack
 #extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # to predict GPW for years between those with values (2000-2005-2010-2020) with 95% CI 
