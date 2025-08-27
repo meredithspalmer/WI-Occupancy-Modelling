@@ -409,85 +409,55 @@ write.csv(extracted, "gfc_2024.csv", row.names=F)
 
 # Calculates the proportion of each grid cell contained within a WDPA polygon
 
-# Set workspace
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers/WDPA_Jan2025_Public_shp")
+rm(list=ls()); gc()
+
 library(terra)
 library(sf)
+library(rnaturalearth)
 library(dplyr)
-rm(list=ls())
-gc()
 
-# Set wd 
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers/WDPA_Jan2025_Public_shp")
+# load reference raster
+ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif") #clipped
 
-# Load reference data 
-#reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
-#site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
-#reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+# create 1km2 raster
+#r1 <- rast(ref_100km, resolution = 0.01)
+ref_1km <- rast("../../Raw spatial layers/Global_1km_CEA_reference_raster.tif") 
+land <- ne_countries(scale = "medium", returnclass = "sf") 
+land_vect <- vect(land)
+ref_1km_land <- mask(ref_1km, land_vect)
 
-# Load reference data for all terrestrial land 
-reference_sub <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
-
-# Load and reproject WDPA files 
+# load reference polygons 
 shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
 shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
 shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+wdpa <- rbind(shape1, shape2, shape3)
+wdpa <- st_transform(wdpa, crs(ref_1km_land))
 
-# Combine all parts
-wdpa_all <- rbind(shape1, shape2, shape3)
+# rasterize protected areas
+r1_pa <- rasterize(vect(wdpa), ref_1km, field=1, touches=TRUE)
+r1_pa[is.na(r1_pa)] <- 0  # convert NA to 0
 
-# Convert to polygon 
-grid_sub <- as.polygons(reference_sub) %>% st_as_sf() 
+# Use nearest assignment: each 1km cell inherits ID of 10km cell it falls in
+r1_id <- resample(ref_100km, ref_1km_land, method="near")
 
-# Reproject to match grid (EPSG:6933)
-wdpa_all <- st_transform(wdpa_all, st_crs(grid_sub))
+# Extract values as data frame
+#df <- data.frame(
+#  cell_ID = values(r1_id),
+#  inPA   = values(r1_pa)
+#) %>% filter(!is.na(cell_ID))
 
-# Compute proportion inside per year
-years <- 1999:2024
-results_list <- vector("list", length(years))
+df <- data.frame(
+  cell_ID = as.vector(r1_id$cell_ID),
+  inPA   = as.vector(r1_pa$layer)) 
+sum(is.na(df$cell_ID))
 
-# Precompute full cell area (all cells are the same size)
-cell_area <- as.numeric(st_area(grid_sub)[1])
+# Proportion of 1km cells inside PA per 10km cell
+summary_df <- df %>%
+  group_by(cell_ID) %>%
+  summarise(prop_in_PA = mean(inPA, na.rm=TRUE))
 
-for (yr in years) {
-  
-  # filter polygons designated up to this year
-  wdpa_yr <- wdpa_all %>% filter(STATUS_YR <= yr)
-  
-  if (nrow(wdpa_yr) > 0) {
-    
-    # intersect grid cells with WDPA polygons
-    inter <- st_intersection(grid_sub, wdpa_yr)
-    
-    # compute proportion of each cell inside protected areas
-    prop_df <- inter %>%
-      mutate(intersect_area = st_area(.),
-             prop_inside = as.numeric(intersect_area) / cell_area) %>%
-      st_drop_geometry() %>%
-      group_by(cell_ID) %>%
-      summarise(prop_inside = sum(prop_inside, na.rm = TRUE)) %>%
-      ungroup()
-    
-    # join back to full grid (fill missing with 0)
-    out <- grid_sub %>%
-      st_drop_geometry() %>%
-      left_join(prop_df, by = "cell_ID") %>%
-      mutate(prop_inside = ifelse(is.na(prop_inside), 0, pmin(prop_inside, 1)),
-             year = yr)
-    
-  } else {
-    # no protected areas yet: prop_inside = 0
-    out <- grid_sub %>%
-      st_drop_geometry() %>%
-      transmute(cell_ID, prop_inside = 0, year = yr)
-  }
-  
-  results_list[[yr - min(years) + 1]] <- out
-}
-
-# Combine all years into one dataframe
-final_df <- bind_rows(results_list)
-#write.csv(final_df, "prop_wdpa.csv", row.names=F)
-write.csv(final_df, "prop_wdpa_full.csv", row.names=F)
+write.csv(summary_df, "prop_wdpa_full.csv", row.names=F)
 
 
 ################################################################################
