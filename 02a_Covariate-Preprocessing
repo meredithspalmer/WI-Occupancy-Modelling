@@ -459,6 +459,64 @@ summary_df <- df %>%
 
 write.csv(summary_df, "prop_wdpa_full.csv", row.names=F)
 
+## time loop -- if works, replace above
+# Calculates the proportion of each grid cell contained within a WDPA polygon
+
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers/WDPA_Jan2025_Public_shp")
+rm(list=ls()); gc()
+
+library(terra)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+
+# load reference raster
+ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif") #clipped
+
+# create 1km2 raster
+#r1 <- rast(ref_100km, resolution = 0.01)
+ref_1km <- rast("../../Raw spatial layers/Global_1km_CEA_reference_raster.tif") 
+land <- ne_countries(scale = "medium", returnclass = "sf") 
+land_vect <- vect(land)
+ref_1km_land <- mask(ref_1km, land_vect)
+
+# load reference polygons 
+shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
+shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
+shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+wdpa <- rbind(shape1, shape2, shape3)
+wdpa <- st_transform(wdpa, crs(ref_1km_land))
+
+# rasterize protected areas
+years <- 1999:2024
+results_list <- NULL
+  
+for(yr in years){
+  wdpa_yr <- wdpa %>% filter(STATUS_YR <= yr)
+  
+  r1_pa <- rasterize(vect(wdpa_yr), ref_1km, field=1, touches=TRUE)
+  r1_pa[is.na(r1_pa)] <- 0  # convert NA to 0
+  
+  # Use nearest assignment: each 1km cell inherits ID of 10km cell it falls in
+  r1_id <- resample(ref_100km, ref_1km_land, method="near")
+  
+  # Extract values as data frame
+  df <- data.frame(
+    cell_ID = as.vector(r1_id$cell_ID),
+    inPA   = as.vector(r1_pa$layer)) 
+  sum(is.na(df$cell_ID))
+  
+  # Proportion of 1km cells inside PA per 10km cell
+  summary_df <- df %>%
+    group_by(cell_ID) %>%
+    summarise(prop_in_PA = mean(inPA, na.rm=TRUE)) %>% 
+    mutate(year = yr)
+  
+  results_list <- rbind(results_list, summary_df)
+}
+
+write.csv(results_list, "prop_wdpa_full.csv", row.names=F, overwrite=T)
+
 
 ################################################################################
 ### Prop Crop & Urban ##########################################################
