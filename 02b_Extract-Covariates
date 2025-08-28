@@ -603,14 +603,15 @@ write.csv(URBAN_joined, "primary_occ_covariates_urban.csv", row.names=F)
 
 
 # propWDPA --- 
-wdpa <- read.csv("wpdf_prop.csv")
+wdpa <- read.csv("prop_wdpa_full.csv")
 
 WDPA_joined <- wdpa %>%
   left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, prop_inside) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_inside, 
+  dplyr::select(cell_ID, period_counter, prop_in_PA) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_in_PA, 
               values_fill = NA) %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-write.csv(WDPA_joined, "primary_occ_covariates_wdpa.csv", row.names=F)
+head(WDPA_joined)
+write.csv(WDPA_joined, "primary_occ_covariates_wdpa_full.csv", row.names=F)
