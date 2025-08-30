@@ -88,14 +88,9 @@ gc()
 # Define periods --------------------------------------------------------------
 
 # Define time in the year-week format 
-all_dat <- all_dat %>% mutate(record_yearweek = yearweek(record_date))
+#all_dat <- all_dat %>% mutate(record_yearweek = yearweek(record_date))
 
-# Define seasonal periods
-#* Winter: Dec - Feb
-#* Spring: March - May
-#* Summer: June - Aug
-#* Fall: Sept - Nov
-
+# Create season template
 min_year <- 2000  
 max_year <- 2024 
 range_year <- c(min_year, max_year)
