@@ -484,13 +484,16 @@ library(terra)
 library(dplyr)
 library(stringr)
 
-# Load reference data 
-#reference <- rast("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/raster_100km2_with_cellID.tif") 
-#site_cells <- read.csv("/gpfs/gibbs/project/jetz/msp69/WI_2024/Wildlife Insights Data_2024/WI_loc_matching_cell_ID.csv") 
-#reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+# Load reference data -- sites 
+reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif") 
+site_cells <- read.csv("../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
 
-# Load reference data for all terrestrial land 
+# Load reference data -- all terrestrial land 
 reference_sub <- rast("../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
+
+# Load coordinates
+coords <- as.data.frame(rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) 
 
 # Classes
 crop_class <- c(10,11,12,20,30,40)
@@ -549,6 +552,52 @@ for (file in lc_files) {
   crop_all  <- bind_rows(crop_all, crop_prop)
   #urban_all <- bind_rows(urban_all, urban_prop)
 }
+
+# Predict values for 2023, 2024 
+library(mgcv)     
+library(dplyr)
+library(tidyr)
+
+# --- INPUT ---
+# df must have columns: cell_ID (factor or character), x, y, year (int), crop_prop (0..1) == PROPROTION 
+# Example: df <- readr::read_csv("your_data.csv")
+
+crop_all <- merge(crop_all, coords, all.x=T) %>% 
+  rename(crop_prop = proportion)
+
+# Ensure response is in (0,1). If you truly have 0/1s, shrink slightly toward the interior Beta regression requires open interval).
+eps <- 1e-6
+df <- df %>%
+  mutate(
+    crop_prop_beta = pmin(pmax(crop_prop, eps), 1 - eps),
+    cell_ID = as.factor(cell_ID)
+  )
+
+# Fit a spatio-temporal GAM with Beta regression.
+#    - s(x,y): smooth spatial surface
+#    - s(year): smooth temporal trend
+#    - ti(x,y,year): space-time interaction (requires the main effects above)
+#    - s(cell_ID, bs="re"): random intercept per cell to capture persistent differences
+fit <- bam(
+  crop_prop_beta ~ s(x, y, bs = "tp", k = 150) +
+    s(year, bs = "cr", k = 12) +
+    ti(x, y, year, bs = c("tp", "tp", "cr"), k = c(50, 50, 12)) +
+    s(cell_ID, bs = "re"),
+  data    = crop_all,
+  family  = betar(link = "logit"),
+  method  = "fREML"
+)
+
+# Build prediction grid for 2023–2024 at all existing cells (x,y, cell_ID)
+newdata <- df %>%
+  distinct(cell_ID, x, y) %>%
+  crossing(year = c(2023L, 2024L))
+
+# Predict on the response scale (already in (0,1) because of betar + logit)
+newdata$pred_crop_prop <- predict(fit, newdata = newdata, type = "response")
+newdata$pred_crop_prop <- pmin(pmax(newdata$pred_crop_prop, 0), 1)
+head(newdata)
+
 
 #write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
 #write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
