@@ -45,12 +45,22 @@ cov_subset <- function(cov_dataframe_name, period_data){
 ## Load prepped data ----------------------------------------------------------
 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
-filename <- filenames[1]
+
+#CHANGE
+filename <- filenames[8]
 
 load(filename)
 print(target_species)
 print(nrow(ystack))
 print(nrow(covs))
+
+# Create new directory to store outputs 
+new_dir_path <- paste("Model outputs/",target_species, "_", Sys.Date(), sep="")
+if (!dir.exists(new_dir_path)) {
+  dir.create(new_dir_path)
+} else {
+  print("Directory already exists")
+}
 
 ## Organize data and covariates -----------------------------------------------
 
@@ -339,8 +349,11 @@ ggplot(data = plottable_covs) +
 raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
 raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
 raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
-ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
-  xlab("Year") + ylab("Raw Occurrence Proportion")
+(raw_occ_plot <- ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
+    xlab("Period") + ylab("Raw Occurrence Proportion") + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)))
+file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
+ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
 
 # Naive plot of occurrence detections 
 #First derive naive occurrence for each cell (0 if a species is never observed, 1 if a species is observed):
@@ -351,10 +364,10 @@ naive$Naive_occupancy <- as.factor(ifelse(naive$naive == 0, 0, 1))
 naive_plot <- left_join(select(grid_shp, Cell, geometry), naive, by = 'Cell')
 
 TO DO -- native_plot would be bb around areas detected?? 
-TO DO -- what is grid_shp? 
-    
-# Plot 
-ggplot(naive_plot) +
+  TO DO -- what is grid_shp? 
+  
+  # Plot 
+  ggplot(naive_plot) +
   geom_sf() +
   geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
   theme_bw(base_size = 16) +
@@ -798,13 +811,13 @@ str(out.pred.occ)
 psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
 
 WHY ARE ALL psi.0.samples NA? 
-sum(is.na(out.pred.occ$psi.0.samples))/length(out.pred.occ$psi.0.samples)
+  sum(is.na(out.pred.occ$psi.0.samples))/length(out.pred.occ$psi.0.samples)
 something scaled covariates issue?? 
-
-#prediction for occurance
-out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
-                        t.cols = c(1, 4,7), #set 1 - monsoon
-                        n.omp.threads = 8, type = 'occupancy')
+  
+  #prediction for occurance
+  out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
+                          t.cols = c(1, 4,7), #set 1 - monsoon
+                          n.omp.threads = 8, type = 'occupancy')
 summary(out.pred_occ)
 
 mean.psi <- apply(out.pred_occ$psi.0.samples, 2, mean)
@@ -1056,7 +1069,6 @@ ggplot(data = plottable_covs) +
   geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
   theme_bw() +
   viridis::scale_fill_viridis(limits = c(0, 1))
-
 
 
 
