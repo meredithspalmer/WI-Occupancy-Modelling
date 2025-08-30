@@ -70,7 +70,7 @@ dat_images <- dat_images[!dat_images$sp_binomial == "Accepted_MOL",] |> #header 
 
 # if loaded csv: 
 dat_images <- dat_images %>% 
-  select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
+  dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
          sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
 
 # Combine data 
@@ -85,18 +85,33 @@ all_dat <- all_dat[!is.na(all_dat$record_date),]
 rm(dat_seq, dat_images, overview_images, overview_seq)
 gc()
 
-# Create detection-non detection matrix ---------------------------------------
+# Define periods --------------------------------------------------------------
 
-# Primary period = season-year 
-# Replicate period = week per season year (13 7-day long weeks; 13 x 7 = 91 days)
-# Sampling units (project-deployment-season-year) sampled less than two weeks are removed 
-# Seasons are defined as:
-# * Winter: Dec - Feb
-# * Spring: March - May
-# * Summer: June - Aug
-# * Fall: Sept - Nov
+# Define time in the year-week format 
+dat <- dat %>% mutate(record_yearweek = yearweek(record_date))
 
-# Data from camera trap locations are aggregated at grid (10x10km2) level. 
+# Define seasonal periods
+#* Winter: Dec - Feb
+#* Spring: March - May
+#* Summer: June - Aug
+#* Fall: Sept - Nov
+
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
+head(periods)
 
 # Add initial info ------------------------------------------------------------
 
@@ -194,35 +209,6 @@ if(data_exploration){
 #dat_sp <- dat_sp %>% filter(longitude != max(longitude)) #remove weird location
 #dat <- dat %>% filter(longitude != max(longitude)) #remove weird location
 
-## Data formatting ------------------------------------------------------------
-
-# Define periods --------------------------------------------------------------
-
-# Define time in the year-week format 
-dat <- dat %>% mutate(record_yearweek = yearweek(record_date))
-
-# Define seasonal periods
-#* Winter: Dec - Feb
-#* Spring: March - May
-#* Summer: June - Aug
-#* Fall: Sept - Nov
-
-min_year <- 2000  
-max_year <- 2024 
-range_year <- c(min_year, max_year)
-min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
-max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
-end_period <-  c(start_period[-1] - 1, NA)
-
-periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
-                      start_period = start_period, 
-                      end_period = end_period) 
-periods <- periods[-nrow(periods),]
-periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
-periods$year <- year(periods$start_period)
-periods$period_counter <- 1:nrow(periods)
-head(periods)
 
 ## Build camera operability matrix (effort) -----------------------------------
 
