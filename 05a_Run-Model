@@ -88,7 +88,7 @@ gc()
 # Define periods --------------------------------------------------------------
 
 # Define time in the year-week format 
-dat <- dat %>% mutate(record_yearweek = yearweek(record_date))
+all_dat <- all_dat %>% mutate(record_yearweek = yearweek(record_date))
 
 # Define seasonal periods
 #* Winter: Dec - Feb
