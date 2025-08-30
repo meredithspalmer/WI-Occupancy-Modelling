@@ -157,7 +157,7 @@ static_scaled <- static %>%
 
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop.csv", periods)
-gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
+gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
 precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas.csv", periods)
 wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
@@ -449,7 +449,7 @@ dat_ls_test <- list(y = yarray_test,
                                     precseas = precseas_test,
                                     wdpa = wdpa_test,
                                     evi = evi_test, 
-                                    road.dist = static_test$road_dist,
+                                    road_dist = static_test$road_dist,
                                     tri = static_test$tri,
                                     river_dist = static_test$river_dist,
                                     coeff_var = static_test$coeff_var,
@@ -470,7 +470,7 @@ dat_ls_split <- list(y = y.fit,
                                      precseas = precseas.fit,
                                      wdpa = wdpa.fit,
                                      evi = evi.fit,
-                                     road.dist = static.fit$road_dist,
+                                     road_dist = static.fit$road_dist,
                                      tri = static.fit$tri,
                                      river_dist = static.fit$river_dist,
                                      coeff_var = static.fit$coeff_var,
@@ -491,7 +491,7 @@ dat_ls <- list(y = yarray,
                                precseas = precseas,
                                wdpa = wdpa,
                                evi = evi, 
-                               road.dist = static_scaled$road_dist_scaled,
+                               road_dist = static_scaled$road_dist_scaled,
                                tri = static_scaled$tri_scaled,
                                river_dist = static_scaled$river_dist_scaled,
                                coeff_var = static_scaled$coeff_var_scaled,
@@ -506,15 +506,15 @@ dat_ls <- list(y = yarray,
 
 ## Formulas -------------------------------------------------------------------
 
-ADD MORE IN LATER, JUST TESTING FOR NOW 
-DO NOT FORGET TO SCALE COVARIATES 
+# DO NOT FORGET TO SCALE COVARIATES 
 # note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
-occ.formula = ~ scale(crop) + cities_lg
-det.formula = ~ effort + minjul + minjul_sq + (1|proj)
+occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + 
+  road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
+det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj)
 
 #svc.cols = c('(Intercept', 'crop') #update based on formulae 
-svc.cols = c(1,3)  
+svc.cols = c(1:10)  
 #svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
@@ -1069,6 +1069,7 @@ ggplot(data = plottable_covs) +
   geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
   theme_bw() +
   viridis::scale_fill_viridis(limits = c(0, 1))
+
 
 
 
