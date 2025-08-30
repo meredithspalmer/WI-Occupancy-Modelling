@@ -569,9 +569,9 @@ write.csv(GFC_joined, "primary_occ_covariates_GFC.csv")
 
 
 # Read CROP proportions ---     
-crop <- read.csv("crop_proportion_all_years.csv") %>% 
+crop <- read.csv("crop_proportion_all_years_predicted.csv") %>% 
   filter(year %in% periods$year) %>% 
-  rename(cov_value = proportion) %>% 
+  rename(cov_value = crop_prop) %>% 
   distinct()
 
 CROP_joined <- crop %>%
@@ -582,7 +582,7 @@ CROP_joined <- crop %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-write.csv(CROP_joined, "primary_occ_covariates_crop.csv", row.names=F)
+write.csv(CROP_joined, "primary_occ_covariates_crop_predicted.csv", row.names=F)
 
 
 # Read URBAN proportions ---     
