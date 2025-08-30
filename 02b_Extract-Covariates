@@ -363,74 +363,50 @@ cov_df <- extracted %>%
 write.csv(cov_df, "primary_occ_covariates_warmseas_full.csv", row.names = F)
 
 
-# Read TIF files for GPW --- 
-gwp_list_raster <- NULL 
-gwp <- list.files("GWP")
-for(i in 1:length(gwp)){
-  file.to.load <- paste0("GWP/",gwp[i]) 
-  r <- rast(file.to.load)
-  gwp_list_raster[[i]] <- r
-  rm(r)
-}
-gwp_stack <- rast(gwp_list_raster)
+## Read TIF files for GPW -----------------------------------------------------
+
+# Load files 
+gwp_stack <- rast(list.files("GWP", full.names = TRUE))
 
 # extract mean values for each cell_ID across all rasters in the stack
-#extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+#extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
 head(extracted)
 
-# to predict GPW for years between those with values (2000-2005-2010-2020) with 95% CI 
-custom_predict <- function(model, temp_range = c(min_year, max_year)) {
-  # 95% confidence interval is first calculated on the link scale and then back-transformed:
-  
-  # build new dataframe
-  newdat = data.frame(year = seq(temp_range[1], temp_range[2], 1))
-  
-  # extract the inverse link function from model
-  ilink <- family(model)$linkinv
-  # add fit and se.fit on the logit scale
-  newdat <- bind_cols(newdat, setNames(as_tibble(predict(model, newdat, se.fit = TRUE)[1:2]),
-                                       c('fit_link','se_link')))
-  # create the interval and backtransform
-  newdat <- mutate(newdat,
-                   mean_GPW  = ilink(fit_link),
-                   upp_95ci = ilink(fit_link + (1.96 * se_link)),
-                   low_95ci = ilink(fit_link - (1.96 * se_link)))
-  newdat
+# to predict GPW for years between those with values (2000-2005-2010-2020-2024) with 95% CI 
+custom_predict_lm <- function(fit, years) {
+  pred <- predict(fit, newdata = data.frame(year = years))
+  tibble(year = years, mean_GPW = pred)
 }
 
-GPW <- extracted %>%
-  pivot_longer(-c(cell_ID), names_to = "year", values_to = "cov") %>% 
-  mutate(year = as.numeric(str_remove(year, "GPW_"))) %>% 
-  group_by(cell_ID) %>% 
-  nest() %>% 
-  mutate(
-    model = map(data, ~{df <- .x %>% filter(!is.na(cov))
-    if (nrow(df) > 1) {
-      lm(cov ~ year, data = df)
-    } else {NA} #returns NA if not enough data 
-    }),
-    pred = map(model, ~{
-      if (is.list(.x)) {
-        custom_predict(.x)
-      } else {NA} #returns NA if no model prediction 
-    })
-  ) %>%
-  unnest(pred) %>% 
-  ungroup() %>% 
-  mutate(cov = mean_GPW,
-         year = as.character(year)) %>% 
-  mutate(year = as.numeric(year)) %>% 
-  filter(year %in% periods$year) %>% 
-  left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, cov) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
-  arrange(cell_ID) %>% 
+future_years <- 2000:2024  # adjust to your desired range
+
+GPW_matrix <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
+  mutate(year = as.numeric(str_remove(year, "GPW_"))) %>%
+  group_by(cell_ID) %>%
+  group_modify(~{
+    df <- filter(.x, !is.na(cov))
+    if (nrow(df) >= 2) {
+      fit <- lm(cov ~ year, data = df)
+      custom_predict_lm(fit, future_years)
+    } else if (nrow(df) == 1) {
+      # Not enough data for regression, return constant value
+      tibble(year = future_years, mean_GPW = rep(df$cov[1], length(future_years)))
+    } else {
+      # No data at all
+      tibble(year = future_years, mean_GPW = NA)
+    }
+  }) %>%
+  ungroup() %>%
+  dplyr::select(cell_ID, year, cov = mean_GPW) %>%
+  pivot_wider(id_cols = cell_ID, names_from = year, values_from = cov, values_fill = NA) %>%
+  arrange(cell_ID) %>%
   as.matrix()
 
 # Save 
-#write.csv(GPW, "primary_occ_covariates_GPW.csv", row.names = F)
-write.csv(GPW, "primary_occ_covariates_GPW_full.csv", row.names = F)
+write.csv(GPW_matrix, "primary_occ_covariates_GPW_predicted.csv", row.names = F)
+#write.csv(GPW, "primary_occ_covariates_GPW_full.csv", row.names = F)
 
 
 # Read TIF files for EVI --- 
