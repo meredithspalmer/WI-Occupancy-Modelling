@@ -1,530 +1,1091 @@
-# Project: WI Occupancy Range Wide Trends
+##########################
+##### Running models ##### 
+##########################
 
-# This file contains code to format the data to run species-level occupancy models.
-
-# Set working directory 
-rm(list=ls()); gc()
+# Set working directory
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+rm(list=ls()); gc()
 set.seed(123)
 
-# Snappy codec
-unlink("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/R/4.2/00LOCK-arrow", recursive = TRUE)
-Sys.setenv(ARROW_S3="ON")
-Sys.setenv(NOT_CRAN="true")
-install.packages("arrow", repos = "https://arrow-r-nightly.s3.amazonaws.com")
-
-# Load libraries
-library(arrow)
-library(coda)
+# Load libraries 
 library(dplyr)
 library(forcats)
-library(ggmap)
-library(gridExtra)
-#library(hrbrthemes)
 library(lubridate)
-library(MCMCvis)
 library(purrr)
 library(reshape2)
-library(rlist)
 library(sf)
 library(spOccupancy)
 library(stringr)
+library(terra)
 library(tibble)
-library(tictoc)
 library(tidyr)
 library(tidyverse) 
-library(tmap)
-library(tmaptools)
-library(tsibble)
-library(viridis)
+library(coda)
+library(stars)
+library(ggplot2)
+library(gtools)
 
-# Prep detection matrix, effort, and julian date -------------------------------
-# Goal: Prep species-specific stacked detection matrices, by deployment-season-year and week
+## User-defined functions -----------------------------------------------------
 
-# Load data 
-#overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
-overview_seq <- read.csv("WI data/sequences_updated_20240710.csv")
-#overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
-overview_images <- read.csv("WI data/images_updated_20240714.csv")
+# Scaling functions
+scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
+scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
-# Format data
-dat_seq <- overview_seq |>
-  mutate(record_date = sequence_date) |>
-  dplyr::select(-c(sequence_date, sequence_datetime)) |>
-  collect()
-
-# if loaded csv: 
-dat_seq <- dat_seq %>% 
-  dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
-         sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
-
-dat_images <- overview_images |>
-  mutate(record_date = photo_date) |>
-  mutate(sp_binomial = Accepted_MOL) |>
-  dplyr::select(-c(photo_date, photo_datetime, Accepted_MOL)) |>
-  collect()
-
-dat_images <- dat_images[!dat_images$sp_binomial == "Accepted_MOL",] |> #header added as row
-  mutate(latitude = as.numeric(latitude)) |>
-  mutate(longitude = as.numeric(longitude)) 
-
-# if loaded csv: 
-dat_images <- dat_images %>% 
-  dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
-         sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
-
-# Combine data 
-all_dat <- rbind(dat_images, dat_seq) %>% 
-  mutate(sensor_start_date = as.Date(sensor_start_date_and_time),
-         sensor_end_date = as.Date(sensor_end_date_and_time),
-         record_date = as.Date(record_date)) %>% 
-  dplyr::select(-c(sensor_start_date_and_time, sensor_end_date_and_time))
-
-all_dat <- all_dat[!is.na(all_dat$record_date),]
-
-rm(dat_seq, dat_images, overview_images, overview_seq)
-gc()
-
-# Define periods --------------------------------------------------------------
-
-# Define time in the year-week format 
-#all_dat <- all_dat %>% mutate(record_yearweek = yearweek(record_date))
-
-# Create season template
-min_year <- 2000  
-max_year <- 2024 
-range_year <- c(min_year, max_year)
-min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
-max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
-end_period <-  c(start_period[-1] - 1, NA)
-
-periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
-                      start_period = start_period, 
-                      end_period = end_period) 
-periods <- periods[-nrow(periods),]
-periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
-periods$year <- year(periods$start_period)
-periods$period_counter <- 1:nrow(periods)
-head(periods)
-
-# Add initial info ------------------------------------------------------------
-
-# Target species name
-target_species <- "Helarctos malayanus"
-
-# extract data for a species
-dat_sp <- all_dat %>% filter(sp_binomial == target_species)
-
-# retain all records of the projects in which the target species was detected
-dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
-
-# Data exploration & cleaning -------------------------------------------------
-
-if(data_exploration){
-  # Spatial and temporal checks ---------------------------------------------
-  # Spatial coverage
-  # Select unique locations
-  loc <- dat %>% 
-    dplyr::select(latitude, longitude, project_id) %>% 
-    distinct() %>% 
-    mutate(project_id = as.factor(project_id))
-  
-  # EXAMINE DATA -> manually update 
-  loc <- loc %>% filter(longitude != max(longitude)) #remove weird location
-  
-  # Create spatial object and set CRS (WGS84)
-  loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
-  st_crs(loc_sp) = 4326
-  
-  # Map locations
-  data("World")
-  World <- st_transform(World, crs = 4326)
-  #tmap_mode("view")
-  tmap_mode("plot")
-  dat_map_range <- tm_shape(loc_sp) +
-    tm_grid() +
-    tm_dots(col = "project_id", popup.vars=c("Lat" = "latitude", "Long" = "longitude"), 
-            size = 0.3) +
-    #tm_compass(type = "8star", position = c("right", "top")) +
-    tm_scale_bar(breaks = c(0, 500, 1000), text.size = 1, position = c("LEFT", "BOTTOM")) +
-    tm_style("col_blind") + # + tm_basemap(server = "OpenTopoMap")
-    tm_shape(World) +
-    tm_fill(alpha = 0.3) +
-    tm_borders() +
-    tm_layout(legend.show = FALSE) #legend.outside = TRUE)       
-  print(dat_map_range)
-  
-  # Map locations --- NOT WORKING; HOW DIFFERENT FROM ABOVE? LOOK AT LATER 
-  data("World")
-  World <- st_transform(World, crs = 4326)
-  #tmap_mode("view")
-  tmap_mode("plot")
-  dat_map_proj <- tm_shape(loc_sp) +
-    tm_grid() +
-    tm_dots(popup.vars=c("Lat" = "latitude", "Long" = "longitude"), size = 0.3) +
-    tm_facets(by = "project_id") +
-    tm_scale_bar(breaks = c(0, 5, 10), text.size = 1, position = c("LEFT", "BOTTOM")) +
-    tm_style("col_blind") 
-  print(dat_map_proj)
-  
-  # Temporal coverage
-  dat_temp <- dat %>% mutate(record_week = sprintf("%02d", week(record_date)),
-                             record_year = year(record_date),
-                             year_week = as.numeric(paste(record_year, record_week, sep = "")),
-                             proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
-  
-  x_label <- (expand.grid(year = seq(year(min(dat$record_date)), year(max(dat$record_date)), by = 1),
-                          week = sprintf("%02d", seq(01, 53, 1))) %>% 
-                mutate(x_label = paste(year, week, sep = "")) %>% 
-                arrange(x_label))$x_label
-  
-  dat_sp_temp <- dat_sp %>% mutate(record_week = sprintf("%02d", week(record_date)),
-                                   record_year = year(record_date),
-                                   year_week = as.numeric(paste(record_year, record_week, sep = "")),
-                                   proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
-  
-  ggplot(dat_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id))) +
-    geom_point(aes(color = as.factor(project_id))) +
-    geom_point(data = dat_sp_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id)),
-               color = "black", inherit.aes = FALSE) +
-    scale_x_discrete("Year-week", breaks = as.factor(x_label[seq(1, length(x_label), by = 8)]), 
-                     labels = as.factor(x_label[seq(1, length(x_label), by = 8)])) +
-    labs(y = "Deployments", title = target_species) +
-    theme_classic() +
-    theme(axis.text.y = element_blank(),
-          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
-          axis.title = element_text(face = "bold"),
-          legend.position = "none")
+# Covariate formatting function 
+cov_subset <- function(cov_dataframe_name, period_data){
+  covariate <- read.csv(cov_dataframe_name) %>% 
+    filter(cell_ID %in% cell_IDs) %>% 
+    arrange(cell_ID)
+  keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
+  df_subset <- covariate[, keep_cols] %>% 
+    as.matrix()
+  return(df_subset)
 }
 
-# After doing checks, clean original data for outliers 
-#dat_sp <- dat_sp %>% filter(longitude != max(longitude)) #remove weird location
-#dat <- dat %>% filter(longitude != max(longitude)) #remove weird location
+## Load prepped data ----------------------------------------------------------
 
+(filenames <- list.files("Data for modelling", full.names = TRUE))
 
-## Build camera operability matrix (effort) -----------------------------------
+#CHANGE
+filename <- filenames[8]
 
-# Start and ending dates for each project_deployment
-proj_depl <- dat %>% 
-  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-  dplyr::select(proj_depl, sensor_start_date, sensor_end_date) %>% 
-  distinct() %>% 
-  drop_na() %>% # to remove depl with NAs in start/end sampling
-  filter(sensor_start_date >= min_date & sensor_end_date <= max_date)
+load(filename)
+print(target_species)
+print(nrow(ystack))
+print(nrow(covs))
 
-# List of project_deployments
-proj_depl_unique <- unique(proj_depl$proj_depl)
-
-# Days from start to end project
-sampling_dates <- seq.Date(periods[1,2], periods[nrow(periods),3], by = "1 days")
-
-# Create empty matrix, add colummn and row names
-cam_op <- matrix(NA, nrow = length(proj_depl_unique), 
-                 ncol = length(sampling_dates))
-colnames(cam_op) <- as.character(sampling_dates)
-rownames(cam_op) <- proj_depl_unique
-
-# Fill matrix with 1 when cameras were active
-for(i in 1:nrow(proj_depl)){
-  cam_op[proj_depl$proj_depl[i], 
-         as.character(seq.Date(as.Date(proj_depl$sensor_start_date[i]), 
-                               as.Date(proj_depl$sensor_end_date[i]), 
-                               by =  1))] <- 1
-} 
-sum(cam_op,na.rm=T) #check if working 
-
-if(data_exploration){ 
-  eff <- data.frame(active_depl = colSums(cam_op, na.rm = TRUE), sampl_date = as.Date(colnames(cam_op)))
-  ggplot() +
-    geom_col(data = eff, aes(x = sampl_date, y = active_depl), col = "royalblue") +
-    geom_vline(xintercept = c(periods$start_period, periods$end_period[nrow(periods)]), linetype = "dashed",
-               color = "grey56") +
-    labs(x = "Date", y = "Number of active deployments", title = target_species) +
-    theme_bw()
+# Create new directory to store outputs 
+new_dir_path <- paste("Model outputs/",target_species, "_", Sys.Date(), sep="")
+if (!dir.exists(new_dir_path)) {
+  dir.create(new_dir_path)
+} else {
+  print("Directory already exists")
 }
 
-## Build Julian date matrix ---------------------------------------------------
+## Organize data and covariates -----------------------------------------------
 
-juldat <- matrix(rep(yday(colnames(cam_op)), nrow(cam_op)), 
-                 ncol = ncol(cam_op),
-                 byrow = TRUE)
-colnames(juldat) <- colnames(cam_op)
-rownames(juldat) <- rownames(cam_op)
+# Remove cases without cell_ID
+ystack <- cbind(ystack, covs %>% dplyr::select(cell_ID)) %>% drop_na(cell_ID)
+covs <- covs %>% drop_na(cell_ID)
 
-## Build detection/non-detection matrix ----------------------------------------
+# Set dimensions
+(ncell <- length(unique(covs$cell_ID)))
+(nperiod <- length(seq(min(covs$period_counter), max(covs$period_counter), by = 1)))
+nweek <- 13
+(min_year <- min(covs$year))
+(max_year <- max(covs$year))
+cell_IDs <- unique(ystack$cell_ID)
 
-# Prepare matrix
-det_mat <- cam_op
+periods <- data.frame(period_counter = seq(min(covs$period_counter), 
+                                           max(covs$period_counter), by = 1)) %>% 
+  left_join(covs %>% dplyr::select(period_counter, season, year) %>% distinct()) 
 
-# Replace 1s with 0s (camera on; set baselien as non-detections) 
-det_mat[det_mat == 1] <- 0   
+# fill gaps
+for(i in 1:nrow(periods)){
+  if(is.na(periods$season[i])){
 
-# Remove records without effort information
-dat_sp <- dat_sp %>% 
-  filter(paste(project_id, deployment_location_id, sep = "_") %in% proj_depl_unique)
+    # fix NAs in season
+    if(as.character(periods$season[i-1]) == "Spring") {
+      periods$season[i] <-  "Summer"
+    } else if(as.character(periods$season[i-1]) == "Summer") {
+      periods$season[i] <-  "Fall"
+    } else if(as.character(periods$season[i-1]) == "Fall") {
+      periods$season[i] <-  "Winter"
+    } else {
+      periods$season[i] <-  "Spring"
+    }
 
-# Fill in detections 
-dat_sp$proj_depl <- paste(dat_sp$project_id, dat_sp$deployment_location_id, sep = "_")
-for(i in 1:nrow(dat_sp)){
-  det_mat[dat_sp$proj_depl[i], as.character(dat_sp$record_date[i])] <- 1
-} 
-
-# Check 
-table(det_mat) 
-
-## Organize in periods -------------------------------------------------------- 
-
-# Detection/non-detection -----------------------------------------------------
-
-# Prepare list to store detection matrix by period
-det_ls <- vector("list", length = nrow(periods))
-
-# Split detection/non-detection matrix by period
-for (i in 1:nrow(periods)){
-  det_ls[[i]] <- det_mat[, as.character(seq.Date(as.Date(periods$start_period[i]), 
-                                                 as.Date(periods$end_period[i]), 
-                                                 by = "1 days"))]
-}
-
-# Make ncol even across year-season by adding NAs columns
-# Set max length to 13 weeks x 7 days = 91 
-max.length <- 91 
-
-# Remove columns if more that max.length
-for(i in 1:length(det_ls)){
-  if(ncol(det_ls[[i]]) > max.length){
-    det_ls[[i]] <- det_ls[[i]][, 1:max.length]
+    # fix NAs in year
+    if(as.character(periods$season[i-1]) == "Winter") {
+      periods$year[i] = periods$year[i-1]+1
+    } else {
+      periods$year[i] = periods$year[i-1] 
+    }
   }
 }
 
-# Add NA columns to list elements
-det_ls <- lapply(det_ls, function(v) {cbind(v, matrix(NA, nrow = nrow(v), ncol = max.length-ncol(v)))})
+## Observations ---------------------------------------------------------------
+ystack2 <- cbind(ystack, covs %>% dplyr::select(cell_ID, period_counter)) %>% 
+  pivot_longer(V1:V13, names_to = "week", values_to = "det", values_drop_na = TRUE) %>% 
+  mutate(week = as.numeric(str_remove(week, pattern = "V")),
+         period_counter = paste0("p", period_counter)) 
+ystack2 <- ystack2[order(ystack2$cell_ID),]
 
-# Check that all items in list have same dimensions
-unlist(sapply(det_ls, dim))
+yarray <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(yarray) <- unique(covs$cell_ID)
+colnames(yarray) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
 
-# Add info about season, year
-for(i in 1:length(det_ls)) {
-  det_ls[[i]] <- cbind(det_ls[[i]], 
-                       cbind(rep(periods$season[i], nrow(det_ls[[i]])), 
-                             rep(year(periods$start_period[i]), nrow(det_ls[[i]]))))
-  colnames(det_ls[[i]])[(max.length+1):(max.length+2)] <- c("season", "year")
+for(i in 1:nrow(ystack2)){
+  yarray[as.character(ystack2$cell_ID[i]),
+         as.character(ystack2$period_counter[i]),
+         ystack2$week[i]] <- ystack2$det[i]
 }
 
-# Unlist detection histories 
-det_mat <- list.rbind(det_ls)  
 
-## Effort ---------------------------------------------------------------------
+## Coordinates ----------------------------------------------------------------
+coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) %>% 
+  filter(cell_ID %in% cell_IDs) %>% 
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
 
-# Prepare list to store cam_op (i.e. effort) by period
-cam_op_ls <- vector("list", length = nrow(periods))
 
-# split cam_op matrix by period
-for (i in 1:nrow(periods)){
-  cam_op_ls[[i]] <- cam_op[, as.character(seq.Date(as.Date(periods$start_period[i]), 
-                                                   as.Date(periods$end_period[i]), 
-                                                   by = "1 days"))]
+## Covariates (all) -----------------------------------------------------------
+
+# We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section. Scale before inclusion in model to make easier to scale full covariates for prediction. 
+
+## Covariates: spatial (dim: ncell) ------------------------------------------- 
+
+static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>% 
+  dplyr::select(-c(elevation, cities_md, cities_sm, x, y)) %>% #from Data-Explore code 
+  filter(cell_ID %in% cell_IDs) %>% 
+  arrange(cell_ID)
+nrow(static) #select out each column want as a vector 
+
+static_scaled <- static %>% 
+  mutate(across(
+    .cols = c(road_dist, tri, river_dist, coeff_var, cities_lg),
+    .fns = ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE),
+    .names = "{.col}_scaled"
+  )) %>% 
+  dplyr::select(-c(road_dist, tri, river_dist, coeff_var, cities_lg))
+
+
+## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
+
+## NEED TO SCALE 
+
+# Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
+crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop.csv", periods)
+gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
+gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW.csv", periods) 
+gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
+precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas.csv", periods)
+wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
+evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods)
+
+# Number of deployments 
+ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
+rownames(ndepl) <- unique(sort(covs$cell_ID))
+colnames(ndepl) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+for(i in 1:nrow(covs)){
+  ndepl[as.character(covs$cell_ID[i]),
+        as.character(paste0("p", covs$period_counter[i]))] <- covs$n_depl[i]
 }
 
-# Make ncol even across year-season by adding NAs columns
-# Set max length to 13 weeks x 7 days = 91 
-max.length <- 91
-
-# Remove columns if more that max.length
-for(i in 1:length(cam_op_ls)){
-  if(ncol(cam_op_ls[[i]]) > max.length){
-    cam_op_ls[[i]] <- cam_op_ls[[i]][, 1:max.length]
-  }
+# Project IDs  
+proj <- matrix(0, nrow = ncell, ncol = nperiod)
+rownames(proj) <- unique(sort(covs$cell_ID))
+colnames(proj) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+covs$proj_ft <- as.numeric(as.factor(covs$proj))
+for(i in seq_len(nrow(covs))){
+  r <- as.character(covs$cell_ID[i])
+  c <- paste0("p", covs$period_counter[i])
+  proj[r, c] <- covs$proj_ft[i]
 }
 
-# Add NA columns to list elements
-cam_op_ls <- lapply(cam_op_ls, function(v) { cbind(v, matrix(NA, nrow = nrow(v), ncol = max.length-ncol(v)))})
+# Trend 
+trend <- data.frame(cell_ID = unique(covs$cell_ID)) %>%
+  tidyr::crossing(periods[1:2]) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = period_counter) %>% 
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix() 
 
-# Check that all items in list have same dimensions
-unlist(sapply(cam_op_ls, dim))
 
-# Add info about season, year
-for(i in 1:length(cam_op_ls)) {
-  cam_op_ls[[i]] <- cbind(cam_op_ls[[i]], 
-                          cbind(rep(periods$season[i], nrow(cam_op_ls[[i]])), 
-                                rep(year(periods$start_period[i]), nrow(cam_op_ls[[i]]))))
-  colnames(cam_op_ls[[i]])[(max.length+1):(max.length+2)] <- c("season", "year")
+## Covariates: observation-level (dim: ncell x nperiod x nweek) ---------------
+
+# Effort 
+effort_temp <- covs %>% 
+  dplyr::select(cell_ID, period_counter, effort_w1:effort_w13) %>% 
+  mutate_at(vars(matches("effort_w")), scale2) %>%   
+  pivot_longer(effort_w1:effort_w13, names_to = "week", values_to = "effort", 
+               values_drop_na = TRUE) %>% 
+  mutate(week = as.numeric(str_remove(week, "effort_w")),
+         period_counter = paste0("p", period_counter))
+
+effort <- array(NA, dim = c(ncell, nperiod, nweek)) #change NA to 0? 
+rownames(effort) <- unique(sort(covs$cell_ID))
+colnames(effort) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+
+for(i in 1:nrow(effort_temp)){
+  effort[as.character(effort_temp$cell_ID[i]),
+         as.character(effort_temp$period_counter[i]),
+         effort_temp$week[i]] <- effort_temp$effort[i]
 }
 
-# Unlist detection histories
-cam_op <- list.rbind(cam_op_ls) 
+str(effort)  
+hist(effort[,,3]) #data is pre-scaled: no need to scale further
 
-## Julian date ----------------------------------------------------------------
+### NOTE #### 
 
-# Prepare list to store juldat by period
-juldat_ls <- vector("list", length = nrow(periods))
+# There are some "effort" values in covs that are NA when there are detection 
+# values in ystack; this code identifies and throws a quick patch on these issues
+# HOWEVER, need to go back to review how effort is generated to understand underlying
+# issue 
 
-# Split juldat matrix by period
-for (i in 1:nrow(periods)){
-  juldat_ls[[i]] <- juldat[, as.character(seq.Date(as.Date(periods$start_period[i]), 
-                                                   as.Date(periods$end_period[i]), 
-                                                   by =  "1 days"))]
+## Detect issues 
+
+# Ensure rows align by cell_ID
+common_cells <- intersect(ystack$cell_ID, covs$cell_ID)
+det_aligned <- ystack[match(common_cells, ystack$cell_ID), ]
+effort_aligned <- covs[match(common_cells, covs$cell_ID), ]
+
+# Columns of interest
+det_cols <- paste0("V", 1:13)
+effort_cols <- paste0("effort_w", 1:13)
+
+# Make sure the number of columns match
+if(length(det_cols) != length(effort_cols)) {
+  stop("Detection and effort columns must be the same length.")
 }
 
-# Make ncol even across year-season by adding NAs columns
-# Set max length to 13 weeks x 7 days = 91 
-max.length <- 91
+# Locate discrepancies 
+discrepancies <- (!is.na(det_aligned[det_cols])) & (is.na(effort_aligned[effort_cols]))
+which_discrepancies <- which(discrepancies, arr.ind = TRUE)
+discrepancy_table <- data.frame(
+  cell_ID = det_aligned$cell_ID[which_discrepancies[, "row"]],
+  period  = det_cols[which_discrepancies[, "col"]],
+  stringsAsFactors = FALSE
+)
+nrow(discrepancy_table)
 
-# Remove columns if more that max.length
-for(i in 1:length(juldat_ls)){
-  if(ncol(juldat_ls[[i]]) > max.length){
-    juldat_ls[[i]] <- juldat_ls[[i]][, 1:max.length]
-  }
+## Patch effort: set NA to 1 wherever a detection exists
+for (i in seq_along(det_cols)) {
+  det_col <- det_cols[i]
+  effort_col <- effort_cols[i]
+
+  idx <- !is.na(det_aligned[[det_col]]) & is.na(effort_aligned[[effort_col]])
+  effort_aligned[[effort_col]][idx] <- 1
 }
 
-# Add NA columns to list elements
-juldat_ls <- lapply(juldat_ls, function(v) { cbind(v, matrix(NA, nrow = nrow(v), ncol = max.length-ncol(v)))})
+# Replace the original effort_df rows for these cell_IDs
+covs[match(common_cells, covs$cell_ID), effort_cols] <- effort_aligned[effort_cols]
 
-# Check that all items in list have same dimensions
-unlist(sapply(juldat_ls, dim))
+#########
 
-# Unlist detection histories
-juldat <- list.rbind(juldat_ls)  
+# Minjul 
+minjul_temp <- covs %>% 
+  dplyr::select(cell_ID, period_counter, starts_with("minjul_w")) %>% 
+  mutate_at(vars(matches("minjul_w")), scale3) %>% 
+  pivot_longer(minjul_w1:minjul_w13, names_to = "week", values_to = "minjul", 
+               values_drop_na = TRUE) %>% 
+  mutate(week = as.numeric(str_remove(week, "minjul_w")),
+         period_counter = paste0("p", period_counter))
 
-## Remove deployment-season combinations with no effort -----------------------
-ind <- apply(cam_op[,1:max.length], 1, function(x) all(is.na(x)))
-cam_op <- cam_op[!ind, ]
-det_mat <- det_mat[!ind, ]
-juldat <- juldat[!ind, ]
+minjul <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(minjul) <- unique(sort(covs$cell_ID))
+colnames(minjul) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
 
-## Aggregate in weekly occasions ----------------------------------------------
-
-# Detection/non-detection -----------------------------------------------------
-det_sub <- data.frame(apply(as.data.frame(det_mat[, 1:(ncol(det_mat)-2)]), 2, as.numeric))
-indx <- seq(1, ceiling(ncol(det_sub)+1), 7)
-ystack <- matrix(NA, nrow = nrow(det_sub), ncol = length(indx)-1)
-
-for(i in 1:(length(indx)-1)) {
-  temp <- det_sub[,indx[i]:(indx[i+1]-1)]
-  ystack[,i] <- apply(temp, 1, function(x) ifelse(all(is.na(x)), NA, max(x, na.rm = TRUE)))
+for(i in 1:nrow(minjul_temp)){
+  minjul[as.character(minjul_temp$cell_ID[i]),
+         as.character(minjul_temp$period_counter[i]),
+         minjul_temp$week[i]] <- minjul_temp$minjul[i]
 }
 
-# Effort ------------------------------------------------------------------ 
-cam_op_sub <- data.frame(apply(as.data.frame(cam_op[, 1:(ncol(cam_op)-2)]), 2, as.numeric))
-indx <- seq(1, ceiling(ncol(cam_op_sub)+1), 7)
-effort <- matrix(NA, nrow = nrow(cam_op_sub), ncol = length(indx)-1)
+str(minjul) 
+hist(minjul[,,3]) #data is pre-scaled: no need to scale further
 
-for(i in 1:(length(indx)-1)) {
-  temp <- cam_op_sub[,indx[i]:(indx[i+1]-1)]
-  effort[,i] <- apply(temp, 1, function(x) ifelse(all(is.na(x)), NA, sum(x, na.rm = TRUE)))
-}
-effort <- as.data.frame(effort)
-colnames(effort) <- paste("effort_w", seq(1, ncol(effort), 1), sep = "")
+# Minjul Squared  
+minjul_sq <- array(NA, dim = c(ncell, nperiod, nweek))
+rownames(minjul_sq) <- unique(covs$cell_ID)
+colnames(minjul_sq) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
 
-# Minimum Julian date ----------------------------------------------------- 
-juldat_sub <- data.frame(apply(as.data.frame(juldat[, 1:(ncol(juldat))]), 2, as.numeric))
-indx <- seq(1, ceiling(ncol(juldat_sub)+1), 7)
-minjul <- matrix(NA, nrow = nrow(juldat_sub), ncol = length(indx)-1)
-for(i in 1:(length(indx)-1)) {
-  temp <- juldat_sub[,indx[i]:(indx[i+1]-1)]
-  minjul[,i] <- apply(temp, 1, function(x) min(x, na.rm = TRUE))
-}
-minjul <- as.data.frame(minjul)
-colnames(minjul) <- paste("minjul_w", seq(1, ncol(minjul), 1), sep = "")
-
-# Remove deployment-season with less than two weeks of sampling
-ind <- apply(effort[,1:13], 1, function(x) sum(!is.na(x)))
-effort <- effort[ind > 1, ]
-ystack <- ystack[ind > 1, ]
-det_mat <- det_mat[ind > 1, ]
-minjul <- minjul[ind > 1, ]
-
-## Prepare covariates related to sampling -------------------------------------
-
-# Add season/time covariates (?)
-covs <- cbind(effort, minjul) %>% 
-  mutate(proj_depl = rownames(det_mat),
-         season = det_mat[, ncol(det_mat)-1],
-         year = det_mat[, ncol(det_mat)],
-         proj = substr(proj_depl, 1, 7),
-         depl = substr(proj_depl, 9, nchar(proj_depl)))
-
-if(data_exploration){
-  # Visualize effort
-  covs_long <- covs %>% 
-    select(proj_depl, season, year, effort_w1:effort_w13) %>% 
-    mutate(proj_depl_s_y = paste(proj_depl, season, year, sep = "_")) %>% 
-    select(-c("proj_depl", "season", "year")) %>% 
-    pivot_longer(!proj_depl_s_y, names_to = "effort_week", values_to = "effort") %>% 
-    mutate_at(vars(effort_week), ~fct_relevel(., c("effort_w1", "effort_w2", "effort_w3",
-                                                   "effort_w4", "effort_w5", "effort_w6",
-                                                   "effort_w7", "effort_w8", "effort_w9",
-                                                   "effort_w10", "effort_w11", "effort_w12",
-                                                   "effort_w13")))
-  
-  ggplot(covs_long, aes(x = effort_week, y = proj_depl_s_y, color = as.factor(effort), 
-                        fill = as.factor(effort))) +
-    geom_tile() +
-    theme_bw() +
-    theme(axis.text.y = element_blank(),
-          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
-  
-  # Visualize detection/nondetection matrices
-  ystack_long <- as.data.frame(ystack) %>% 
-    mutate(proj_depl_s_y = with(covs, paste(proj_depl, season, year, sep = "_")),
-           season_year = with(covs, paste(season, year, sep = "_"))) %>% 
-    pivot_longer(!c(proj_depl_s_y, season_year), names_to = "det_week", values_to = "det") %>% 
-    mutate_at(vars(det_week), ~fct_relevel(., c("V1", "V2", "V3", "V4", "V5",
-                                                "V6", "V7", "V8", "V9", "V10",
-                                                "V11", "V12", "V13"))) 
-  
-  ggplot(ystack_long, aes(x = det_week, y = proj_depl_s_y, color = as.factor(det), 
-                          fill = as.factor(det))) +
-    geom_tile() +
-    scale_fill_manual(values = c("black", "red", "white")) +
-    labs(x="Week", y="Proj_depl_season_year", title="Detection matrices") +
-    theme_bw() +
-    theme(axis.text.y = element_blank(),
-          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
-    facet_wrap(~season_year)
+for(i in 1:nrow(minjul_temp)){
+  minjul_sq[as.character(minjul_temp$cell_ID[i]),
+            as.character(minjul_temp$period_counter[i]),
+            minjul_temp$week[i]] <- minjul_temp$minjul[i]^2
 }
 
-# Add period counter
-covs <- left_join(covs, periods %>% 
-                    dplyr::select("season", "year", "period_counter") %>% 
-                    mutate(year = as.character(year)))
+str(minjul_sq)
+hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
-## Spatially aggregate to cell ID ---------------------------------------------
 
-coords <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv") %>% 
-  mutate(proj_depl = paste(project_id, deployment_location_id, sep="_")) %>% 
-  dplyr::select(-c(project_id, deployment_location_id)) %>% 
-  distinct()
-covs <- left_join(covs, coords, by = "proj_depl")
+## Plot covariates ------------------------------------------------------------
 
-# Quick check 
-sum(is.na(covs$cell_ID))
+TO DO -- this needs to be done for FULL coords but cropped to bb of species projects 
 
-ystack2 <- as.data.frame(ystack) 
-ystack2 <- cbind(ystack2, covs)
+# what want to do here is create a bounding box around monitored area, and crop 
+# full raster of cov values to this bb and plot over
 
-test <- ystack2 #quick save - good through here; afterwards, things get weird 
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 
-ystack2_group <- ystack2 %>% 
-  drop_na(cell_ID) %>% 
-  group_by(cell_ID, season, `year`) %>% 
-  summarise(n_depl = n(),
-            across(starts_with("V"), function(x) ifelse(all(is.na(x)), NA, max(x, na.rm = TRUE))),
-            across(starts_with("effort_w"), function(x) ifelse(all(is.na(x)), NA, sum(x, na.rm = TRUE))),
-            across(minjul_w1:minjul_w13, min),
-            proj = unique(proj),
-            period_counter = unique(period_counter)) %>% 
-  ungroup() 
+plottable_coords <- cbind(static_scaled, coords) 
+plottable_coords <- st_as_sf(
+  plottable_coords, 
+  coords = c("x", "y"),     
+  crs = crs(ref))
 
-# -> more than 7 days effort because combining effort from multiple project-deployments within same 
-# cell_ID (e.g., if 6 projects each operating for full 7 days, effort is 42)
+# Map covariates across study area: static  
+names(static_scaled)
+cov <- "river_dist_scaled" #change as appropriate
 
-# Reorganize outputs for modeling
-ystack <- ystack2_group %>% dplyr::select(V1:V13)
-covs <- ystack2_group %>% dplyr::select(-(V1:V13))
+ggplot(data = plottable_coords) +
+  geom_sf(aes(fill = river_dist_scaled), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
 
-filename <- paste("Data for modelling/", target_species, "_", Sys.Date(), ".RData", sep = "")
-save(ystack, covs, target_species, file = filename)
+#join the covariates to the spatial grid, using the plot name
+plottable_covs <- left_join(select(grid_shp,Cell, geometry),
+                            plot_covs_all,
+                            by = 'Cell')
+#there are some NA grid cells that didn't have covariate values and don't have predictions
+#remove them:
+plottable_covs <- na.omit(plottable_covs)
+ggplot(data = plottable_covs) +
+  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
+
+
+## Modelling ------------------------------------------------------------------
+
+# Following vignette found at: 
+# https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
+
+## Look at raw occupancy data -------------------------------------------------
+
+# Raw occurrence proprortions
+# How adequate is a linear trend for our analysis?
+raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
+raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
+raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
+(raw_occ_plot <- ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
+    xlab("Period") + ylab("Raw Occurrence Proportion") + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)))
+file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
+ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
+
+# Naive plot of occurrence detections 
+#First derive naive occurrence for each cell (0 if a species is never observed, 1 if a species is observed):
+naive <- rowSums(yarray, na.rm = T)
+naive <- as.data.frame(naive)
+naive$Cell <- as.numeric(rownames(naive))
+naive$Naive_occupancy <- as.factor(ifelse(naive$naive == 0, 0, 1))
+naive_plot <- left_join(select(grid_shp, Cell, geometry), naive, by = 'Cell')
+
+TO DO -- native_plot would be bb around areas detected?? 
+  TO DO -- what is grid_shp? 
+
+  # Plot 
+  ggplot(naive_plot) +
+  geom_sf() +
+  geom_sf(aes(fill = Naive_occupancy), lwd = 0.01) +
+  theme_bw(base_size = 16) +
+  labs(title = "Naive occurrence", fill = "") +
+  viridis::scale_fill_viridis(discrete = TRUE,
+                              option = 'plasma',
+                              na.value = 'grey80')
+
+
+## Subset data if appropriate -------------------------------------------------
+
+# IF TESTING: for speed  
+ncell = 200
+
+yarray_test <- yarray[1:ncell,,]
+coords_test <- coords[1:ncell,]
+
+static_test <- static[1:ncell,]
+gpw_test <- gpw[1:ncell,]
+evi_test <- evi[1:ncell,]
+crop_test <- crop[1:ncell,]
+gfc_test <- gfc[1:ncell,]
+precseas_test <- precseas[1:ncell,]
+wdpa_test <- wdpa[1:ncell,]
+
+ndepl_test <- ndepl[1:ncell,]
+proj_test <- proj[1:ncell,]
+trend_test <- trend[1:ncell,]
+effort_test <- effort[1:ncell,,]  
+minjul_test <- minjul[1:ncell,,]  
+minjul_sq_test <- minjul_sq[1:ncell,,]
+
+# If SPLITTING: fit model with 75% of locations to train, remaining 25% to predict 
+J <- length(unique(covs$cell_ID)) #1102 sites
+pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
+
+y.fit <- yarray[-pred.indx,,]
+y.pred <- yarray[pred.indx,,]
+coords.fit <- coords[-pred.indx,]
+coords.pred <- coords[pred.indx,]
+
+static.fit <- static[-pred.indx,]
+static.pred <- static[pred.indx,]
+gpw.fit <- gpw[-pred.indx,]
+gpw.pred <- gpw[pred.indx,]
+evi.fit <- evi[-pred.indx,]
+evi.pred <- evi[pred.indx,]
+crop.fit <- crop[-pred.indx,]
+crop.pred <- crop[pred.indx,]
+gfc.fit <- gfc[-pred.indx,]
+gfc.pred <- gfc[pred.indx,]
+precseas.fit <- precseas[-pred.indx,]
+precseas.pred <- precseas[pred.indx,]
+wdpa.fit <- wdpa[-pred.indx,]
+wdpa.pred <- wdpa[pred.indx,]
+ndepl.fit <- ndepl[-pred.indx,]
+ndepl.pred <- ndepl[pred.indx,]
+proj.fit <- proj[-pred.indx,]
+proj.pred <- proj[pred.indx,]
+trend.fit <- trend[-pred.indx,]
+trend.pred <- trend[pred.indx,]
+effort.fit <- effort[-pred.indx,,] 
+effort.pred <- effort[pred.indx,,] 
+minjul.fit <- minjul[-pred.indx,,]  
+minjul.pred <- minjul[pred.indx,,]  
+minjul_sq.fit <- minjul_sq[-pred.indx,,]
+minjul_sq.pred <- minjul_sq[pred.indx,,]
+
+
+# Organize data for svcTPGOcc -------------------------------------------------
+
+ADD SCALED FROM STATIC SCALED 
+
+# if TEST 
+dat_ls_test <- list(y = yarray_test,
+                    occ.covs = list(crop = crop_test, 
+                                    gpw = gpw_test,
+                                    gfc = gfc_test, 
+                                    precseas = precseas_test,
+                                    wdpa = wdpa_test,
+                                    evi = evi_test, 
+                                    road.dist = static_test$road_dist,
+                                    road_dist = static_test$road_dist,
+                                    tri = static_test$tri,
+                                    river_dist = static_test$river_dist,
+                                    coeff_var = static_test$coeff_var,
+                                    cities_lg = static_test$cities_lg,
+                                    trend = trend_test),
+                    det.covs = list(effort = effort_test, #already scaled! 
+                                    minjul = minjul_test, #already scaled! 
+                                    minjul_sq = minjul_sq_test, #already scaled! 
+                                    ndepl = ndepl_test, 
+                                    proj = proj_test),
+                    coords = coords_test)
+
+# if SPLITTNG 
+dat_ls_split <- list(y = y.fit,
+                     occ.covs = list(crop = crop.fit, 
+                                     gpw = gpw.fit,
+                                     gfc = gfc.fit, 
+                                     precseas = precseas.fit,
+                                     wdpa = wdpa.fit,
+                                     evi = evi.fit,
+                                     road.dist = static.fit$road_dist,
+                                     road_dist = static.fit$road_dist,
+                                     tri = static.fit$tri,
+                                     river_dist = static.fit$river_dist,
+                                     coeff_var = static.fit$coeff_var,
+                                     cities_lg = static.fit$cities_lg,
+                                     trend = trend.fit),
+                     det.covs = list(effort = effort.fit, #already scaled! 
+                                     minjul = minjul.fit, #already scaled! 
+                                     minjul_sq = minjul_sq.fit, #already scaled! 
+                                     ndepl = ndepl.fit, 
+                                     proj = proj.fit),
+                     coords = coords.fit)
+
+# if RUNNING FULL MODEL
+dat_ls <- list(y = yarray,
+               occ.covs = list(crop = crop, 
+                               gpw = gpw,
+                               gfc = gfc, 
+                               precseas = precseas,
+                               wdpa = wdpa,
+                               evi = evi, 
+                               road.dist = static_scaled$road_dist_scaled,
+                               road_dist = static_scaled$road_dist_scaled,
+                               tri = static_scaled$tri_scaled,
+                               river_dist = static_scaled$river_dist_scaled,
+                               coeff_var = static_scaled$coeff_var_scaled,
+                               cities_lg = static_scaled$cities_lg_scaled,
+                               trend = trend),
+               det.covs = list(effort = effort, #already scaled! 
+                               minjul = minjul, #already scaled! 
+                               minjul_sq = minjul_sq, #already scaled! 
+                               ndepl = ndepl, 
+                               proj = proj),
+               coords = coords)
+
+## Formulas -------------------------------------------------------------------
+
+ADD MORE IN LATER, JUST TESTING FOR NOW 
+DO NOT FORGET TO SCALE COVARIATES 
+# DO NOT FORGET TO SCALE COVARIATES 
+# note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
+
+occ.formula = ~ scale(crop) + cities_lg
+det.formula = ~ effort + minjul + minjul_sq + (1|proj)
+occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + 
+  road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
+det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj)
+
+#svc.cols = c('(Intercept', 'crop') #update based on formulae 
+svc.cols = c(1,3)  
+svc.cols = c(1:10)  
+#svc.cols = used to specify the covariates whose effects are estimated as SVCs
+
+# Prep inits -------------------------------------------------------------------
+
+y_dat <- yarray #as yarray, yarray_test, or y.fit 
+coord_dat <- coords #as coords, coords_test, or coord.fit 
+
+z.init <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+#z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
+
+dist.data <- dist(coord_dat)           #pairwise distance between all sites 
+
+inits.list <- list(beta = 0,            #occurrence coefficients
+                   alpha = 0,           #detection coefficients
+                   z = z.init,          #latent occurrence values
+                   phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
+                   sigma.sq = 0.5, #fabiola had as 2... 
+                   w = matrix(0, length(svc.cols), nrow(y_dat)),  #fabiola had rep(0, ncell) 
+                   #rho = 0,  
+                   sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
+
+# Note: don't have to specify priors, can use svcPGOcc() defaults 
+priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
+                    beta.normal = list(mean = 0, var = 2.72),
+                    sigma.sq.ig = list(a = 2, b = 0.5),
+                    phi.unif = list(a = 3 / max(dist.data), 
+                                    b = 3 / min(dist.data)))
+
+
+# Tuning ----------------------------------------------------------------------
+n.chains <- 3
+tuning.list <- list(phi = 1, rho = 1)
+
+if(testing){
+  n.batch <- 10
+  n.burn = 50
+  n.thin = 1
+  n.report = 10 
+}else{
+  n.batch <- 400 #tutorial has 800
+  n.burn = 2000 #tutorial has 10000
+  n.thin = 10 
+  n.report = 40 #tutorial has 100
+}
+
+batch.length <- 25
+n.iter <- n.batch * batch.length 
+
+
+## Run model ------------------------------------------------------------------
+
+dat <- dat_ls #CHANGE FOR EACH training, split, regular 
+
+start_time <- Sys.time()
+out <- svcTPGOcc(occ.formula = occ.formula, 
+                 det.formula = det.formula,
+                 data = dat, 
+                 inits = inits.list,
+                 n.batch = n.batch,
+                 batch.length = batch.length, 
+                 priors = priors.list,  
+                 svc.cols = svc.cols,
+                 cov.model = "exponential",  #alternative to test could be 'spherical'
+                 NNGP = TRUE, 
+                 n.neighbors = 5,  
+                 tuning = tuning.list, 
+                 n.report = n.report, 
+                 n.burn = n.burn,
+                 n.thin = n.thin,
+                 n.chains = n.chains,
+                 #search.type = 'cb', #in fabiola's code, not in tutorial? 
+                 verbose = TRUE,
+                 ar1 = TRUE) 
+# would add k-fold parameters to this model if using k-fold cross validation ... 
+#k.fold = 4, 
+#k.fold.threads = 4,
+#k.fold.only = TRUE) 
+#str(k.fold.sp)
+
+end_time <- Sys.time()
+end_time - start_time #model run time 
+
+## IF THIS ERRORS ON DETECTION COVARIATES ## 
+
+# where is there detection but missing effort? 
+discrepancies <- !is.na(yarray) & is.na(effort)
+(idx <- which(discrepancies, arr.ind = TRUE)) #three instances 
+length(idx)
+
+# for now, add 1 to effort where there is a detection; 
+# HOWEVER, working on backtracking to figure out where this issue is coming from
+effort[discrepancies] <- 1
+sum(!is.na(yarray) & is.na(effort))  # should be 0
+
+# now, rerun code from line 378 ('organize data') 
+
+
+## Convergence assessment -----------------------------------------------------
+
+# Visually examine trace plots
+# -> We can first visually examine trace plots for convergence by plotting chains for each parameter. Trace plots indicative of convergence look like random scatter around a mean value and do not display any trends. For these reasons, trace plots indicative of convergence are often described as looking like “fuzzy caterpillars.” Below, the trace plots for both the occurrence and detection coefficients are consistent with model convergence.
+
+# -> Occurrence parameters:
+# the spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
+occ.samps <- as.data.frame(out$beta.samples)
+occ.samps$x <- rep(1:(nrow(occ.samps)/n.chains), n.chains)
+occ.samps$chain <- as.factor(rep(1:3, each =nrow(occ.samps)/n.chains))
+names(occ.samps)[c(1:3)] <- c("Intercept", "Trend", "Crop")
+occ.samps.long <- gather(
+  occ.samps, parameter, value,
+  Intercept:Crop, factor_key = T
+)
+
+ggplot(occ.samps.long) +
+  geom_line(
+    aes(x = x, y = value,
+        col = chain, group = chain)) +
+  labs(x ="Iteration") +
+  facet_wrap(~ parameter, nrow = length(unique(occ.samps.long$parameter)), scales = "free_y") +
+  theme_bw()
+
+# -> Detection parameters:
+# the spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
+det.samps <- as.data.frame(out$alpha.samples)
+det.samps$x <- rep(1:(nrow(det.samps)/n.chains), n.chains)
+det.samps$chain <- as.factor(rep(1:3, each =nrow(det.samps)/n.chains))
+names(det.samps)[c(1:4)] <- c("Intercept", "Effort", "Min_Jul", "Min_Jul_Sq")
+det.samps.long <- gather(det.samps, parameter, value, Intercept:Min_Jul_Sq, factor_key = T )
+
+ggplot(det.samps.long) +
+  geom_line(
+    aes(x = x, y = value,
+        col = chain, group = chain)) +
+  labs(x ="Iteration") +
+  facet_wrap(~ parameter, nrow = length(unique(det.samps.long$parameter)), scales = "free_y") +
+  theme_bw()
+
+# Gelman-Rubin diagnostics
+# -> The Gelman-Rubin diagnostic, rˆ (r-hate), formally assesses model convergence by comparing variance of parameter estimates among chains to variance of parameter estimates within chains. A large rˆ means variance among chains is greater than within chains, implying lack of convergence. When assessing convergence it is standard to accept rˆ values below 1.1 (Hobbs and Hooten 2015). The rˆ value can be found for each parameter in the summary output under Rhat.
+plot(out, 'beta', density = FALSE) #occupancy convergence
+plot(out, 'alpha', density = FALSE) #detection convergence
+
+# Effective Sample Size (ESS)
+# -> ESS estimates the number of samples the MCMC sample would contain if correlated samples were removed, providing a measure of the information contained in the MCMC sample. If ESS is low compared to the MCMC sample size this may imply poor mixing and high autocorrelation, and thinning may help to address this. Larger ESS indicates a better sample, but there is no distinct rule for a “large enough” ESS.
+# -> We compare the ESS (denoted as ESS in the summary output) to the MCMC sample size and confirm there is a large ESS for each parameter.
+summary(out) 
+
+# Set sampling parameters to reach satisfactory diagnostics
+# -> If any of the three diagnostics (trace plots, Gelman-Rubin Diagnostics, and ESS) are not satisfactory for any of the parameters, adjust the sampling parameters (n.thin and n.samples) and resample. For example, we first ran this model with n.thin = 2 and n.samples = 9000 and got unsatisfactory trace plots and ESSs for the occurrence coefficients. Trace plots were showing spikes indicating high autocorrelation and poor mixing, so we increased the thinning interval and total number of posterior samples.
+
+
+## Model fit ------------------------------------------------------------------
+
+# Widely Applicable Information Criterion (WAIC)
+waicOcc(out)
+
+# Goodness of Fit: posterior predictive checks
+
+# -> A Bayesian p-value can be used to measure the significance of the deviation of the data from the model predictions, i.e., summarize the previous posterior predictive distribution plots in a single value (Gelman et al. 1995). To evaluate the level to which the distribution of predicted values aligns with the data, the Bayesian p-value relies on a test statistic or discrepency measure, which provides a scalar value that can be compared for observed data versus the posterior predictive distribution. The Bayesian p-value is then defined as the probability that the test statistic for the predicted data is more extreme than the test statistic for the observed data, given the observed data. Multiple test statistics can be used to evaluate model fit, and we use the Freeman-Tukey statistic recommended by Kéry and Royle (2016) and included within the Spocc package. Grouping or binning the binary data based on cells (group=1) or site-nights (group=2) provides two test statistics that may reveal different shortcomings of the model (i.e., problems of model fit in occurrence versus detection)
+
+# -> A Bayesian p-value close to 0 or 1 implies the model does not accurately represent the distribution of the data (Hobbs and Hooten 2015). Note that the Bayesian p-value is a general goodness of fit statistic and won’t provide more information about where in the model potential lack of fit may be occurring (Warton et al. 2017). [if Bayesian p-values close to 0.5, indicates adequate model fit; values >0.1 indicate no lack of fit; values close to 1 require further investigation]
+
+ppc.out.1 <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 1)
+summary(ppc.out.1)
+
+ppc.out.2 <- ppcOcc(out, fit.stat = 'freeman-tukey', group = 2)
+summary(ppc.out.2)
+
+
+## Examine outputs ------------------------------------------------------------
+summary(out)
+plogis(2.13) #convert logit values to probability scale
+
+# [IF PERFORMED] K-fold cross validation (want lower values):
+#k.fold.non.sp$k.fold.deviance
+#k.fold.sp$k.fold.deviance
+
+
+## Model comparison -----------------------------------------------------------
+
+#may want to try running with and without AR1=T vs F ?
+#could try cov.model = "exponential" vs 'spherical'
+#or could just be fine for now 
+
+
+## Results --------------------------------------------------------------------
+
+##  Parameter plots
+# -> From the output of the fitted occupancy model, we can extract posterior distributions of model parameters and interpret them. These regression coefficients allow us to interpret effects of the covariates on detection and probability of occurrence. Ninety-five percent CIs for regression coefficients can be accessed quickly through the output summary.
+
+summary(out)
+
+# -> In the following subsections, we make custom parameter plots by accessing and summarizing the full posterior distributions of the parameters. We then provide interpretations of these estimates
+
+## Occurrence: Access the full samples of the occurrence parameters and save their quantiles within occ_quantiles.
+occ.samps <- out$beta.samples #this holds the full outputted samples
+
+# Create a dataframe to store quantiles in:
+occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps),6))
+colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+occ_quantiles$covariate <- colnames(occ.samps)
+occ_quantiles$covariate <- c("(Intercept)", "Trend scale", "Crop scaled", "City Access scaled")
+occ_quantiles$mean <- colMeans(occ.samps)
+occ_quantiles[,3:6] <- t(apply(occ.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
+
+# -> Interpretations:
+# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
+# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
+# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
+
+## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles
+det.samps <- out$alpha.samples
+det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
+colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+det_quantiles$covariate <- colnames(det.samps)
+det_quantiles$mean <- colMeans(det.samps)
+det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
+
+ggplot(det_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariate') +
+  ylab('Posterior Distribution') +
+  ggtitle('Detection coefficients', 'Multi-season, single-species model')
+
+
+## Predictions ----------------------------------------------------------------
+
+# Predict occupancy across all sites in the original data list 
+
+svc.out <- out #this contain trends 
+static.out <- out #this contains only spatially varying 
+
+I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!! vignette not helpful - does not consider replicates? adapt for primary periods and replicates
+
+# Number of sites 
+(n.sites <- length(unique(covs$cell_ID)))
+
+# Number of primary periods  
+(n.period <- length(seq(min(covs$period_counter), max(covs$period_counter), by = 1)))
+
+# Number of replicates 
+n.rep <- 13 
+
+# Number of occupancy regression parameters -- CHANGE THE OUT 
+(n.beta <- ncol(svc.out$beta.samples))
+
+# Create and fill an empty array with the proper dimensions --- NEED TO ADD REPLICATES? try without first? 
+X.0 <- array(NA, dim = c(n.sites, n.period, n.beta))
+
+# Intercept
+X.0[, , 1] <- 1
+
+QUESTION -- if variables are already standardized in dat_ls, no need to repeat here -- examine input data
+
+# Primary period (standardized by values used to fit the model)
+period.pred <- (as.numeric(dat_ls$occ.covs$trend))
+X.0[, , 2] <- period.pred
+
+# Crops (standardized by values used to fit the model) --- PULL THESE FROM DAT_LS? 
+crop.pred <- (as.numeric(dat_ls$occ.covs$crop) - mean(as.numeric(fit.data$occ.covs$crop)) / sd(as.numeric(fit.data$occ.covs$crop)))
+X.0[, , 3] <- crop.pred
+
+# Cities 
+cities.pred <- (as.numeric(dat_ls$occ.covs$cities_lg) - mean(as.numeric(fit.data$occ.covs$cities_lg)) / sd(as.numeric(fit.data$occ.covs$cities_lg)))
+X.0[, , 4] <- cities.pred
+
+# Give names to X.0 just to make things clear
+dimnames(X.0)[[3]] <- c('(Intercept)', 'periods', 'crop', 'cities')
+
+# Prediction coordinates
+coords.0 <- full.data$coords
+# Predict across all years and sites in the original data set
+out.pred.occ <- predict(svc.out, X.0, coords.0, t.cols = 1:n.years, type = 'occupancy')
+str(out.pred.occ)
+
+# Can then manipulate the objects in out.pred.occ as desired
+# e.g., calculate mean occupancy probability for each site/period
+psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
+
+WHY ARE ALL psi.0.samples NA? 
+  sum(is.na(out.pred.occ$psi.0.samples))/length(out.pred.occ$psi.0.samples)
+something scaled covariates issue?? 
+
+  #prediction for occurance
+  out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
+                          t.cols = c(1, 4,7), #set 1 - monsoon
+                          n.omp.threads = 8, type = 'occupancy')
+summary(out.pred_occ)
+
+mean.psi <- apply(out.pred_occ$psi.0.samples, 2, mean)
+sd.psi <- apply(out.pred_occ$psi.0.samples, 2, sd)
+
+
+
+
+# Number of prediction sites.
+J.pred <- nrow(hbefElev)
+# Number of prediction years.
+n.years.pred <- 2
+# Number of predictors (including intercept)
+p.occ <- ncol(out.ar1$beta.samples)
+# Get covariates and standardize them using values used to fit the model
+elev.pred <- (hbefElev$val - mean(revi.data$occ.covs$elev)) / sd(revi.data$occ.covs$elev)
+year.pred <- matrix(rep((c(2010, 2018) - mean(revi.data$occ.covs$years)) / 
+                          sd(revi.data$occ.covs$years), 
+                        length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
+# Create three-dimensional array
+X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
+# Fill in the array
+# Years
+X.0[, , 2] <- year.pred
+# Elevation
+X.0[, , 3] <- elev.pred
+# Elevation^2
+X.0[, , 4] <- elev.pred^2
+# Check out the structure
+str(X.0)
+# Indicate which primary time periods (years) we are predicting for
+t.cols <- c(1, 9)
+# Approx. run time: < 30 sec
+out.pred <- predict(out.ar1, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
+# Check out the structure
+str(out.pred)
+#we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
+plot.dat <- data.frame(x = hbefElev$Easting, y = hbefElev$Northing, 
+                       mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
+                       mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
+                       sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
+                       sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
+                       stringsAsFactors = FALSE)
+
+# Make a species distribution map showing the point estimates, or predictions (posterior means)
+dat.stars <- st_as_stars(plot.dat, dims = c('x', 'y'))
+
+# 2009
+ggplot() + geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi)) +
+  scale_fill_viridis_c(na.value = 'transparent') +
+  labs(x = 'Easting', y = 'Northing', fill = '', 
+       title = 'Mean REVI occurrence probability 2009') +
+  theme_bw()  
+
+
+
+
+
+# We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
+
+TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
+
+# Scale covariates 
+fc.0 <- scale(occ_covs_all$Forest_PercentCover)
+Cliffs.0 <- scale(occ_covs_all$CliffsCanyons_PercentCover)
+Precip.0 <- scale(occ_covs_all$MeanAnnualPrecipitation_mm)
+
+# Create prediction design matrix (1 = intercept)
+X.0 <- cbind(1, fc.0, Cliffs.0, Precip.0)
+
+out.pred <- predict(out, X.0)
+psi.0.samples <- out.pred$psi.0.samples
+
+# MSP: assuming it is here that I can combine across years and plot?? 
+
+
+# Assuming you have a fitted svcTPGOcc model object named 'svc_model'
+# and a data frame 'new_data' with covariates for prediction locations and years.
+
+# Predict occupancy probability at new locations and/or future years
+predicted_occupancy <- predict(svc_model, X.0 = new_data)
+
+# 'predicted_occupancy' will contain posterior predictive samples for occupancy
+# at the specified locations and years, allowing you to assess uncertainty.
+
+
+# ## Predict -------
+
+# ?predict.stPGOcc()
+# REVISIT: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+
+
+
+
+
+
+# We create our final predictive maps from the full posterior predictive distributions of ψ across the 4500 cells.
+
+# Occurrence probability means:
+psi.0.mean <- apply(psi.0.samples, 2, mean)
+# -> each column of psi.0.samples is an MCMC sample of the psi for one site
+# -> these are the means ordered in that vector based on their cell
+
+length(psi.0.mean) #this is mean values across all the cells, so we need a map to interpret it
+
+# Find 95% credible intervals and widths of 95% credible interval for occurrence probability estimates:
+quantiles.ordered.samples <- as.data.frame(
+  t(apply(psi.0.samples ,2,quantile,probs=c(0.025,0.975))))
+quantiles.ordered.samples$width <- quantiles.ordered.samples[,2] -
+  quantiles.ordered.samples[,1]
+
+# Predictive plots require the shapefile for the 10x10 grids that can be linked to the unique cell IDs. 
+
+# Create a dataframe for plotting:Plot names in the covariates and in the prediction outputs line up because that is the order it was read into the prediction formula
+
+predicted.df <- data.frame(Cell= occ_covs_all$Cell,
+                           psi.mean = psi.0.mean,
+                           psi.width = quantiles.ordered.samples$width)
+
+# Join the predicted results to the spatial grid, using the plot name
+plottable <- left_join(select(grid_shp,Cell, geometry),
+                       predicted.df,
+                       by = 'Cell')
+# There are some NA grid cells that didn't have covariate values and don't have predictions; remove them: 
+plottable <- na.omit(plottable)
+
+ggplot(data = plottable) +
+  geom_sf(aes(fill = psi.mean), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1)) +
+  ggtitle('LANO posterior mean predicted occurrence',
+          'Single-season, single-species model')
+
+ggplot(plottable) +
+  geom_sf(aes(fill = psi.width), lwd = 0.05) +
+  theme_bw() +
+  viridis::scale_fill_viridis(option = 'plasma', limits = c(0, 1)) +
+  ggtitle('LANO predicted occurrence 95% interval width',
+          'Single-season, single-species model')
+
+
+
+# Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
+
+# Predict occupancy at the 400 new sites
+out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
+
+# get SVC values at the prediction locations
+svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred)
+
+# Get mean values of the SVC for the covariate
+svc.cov.pred.mean <- apply(svc.pred.samples$occ.cov.1, 2, mean)
+
+# Plot
+plot(coords.pred, type = "n", xlab = "", ylab = "", asp = TRUE, 
+     main = "Estimated values", bty = 'n')
+points(coords.pred, pch=15, cex = 2.1, 
+       col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/diff(range(svc.cov.pred.mean))))
+
+## adapt 
+# First standardize elevation using mean and sd from fitted model
+elev.pred <- (hbefElev$val - mean(btbwHBEF$occ.covs[, 1])) / sd(btbwHBEF$occ.covs[, 1])
+coords.0 <- as.matrix(hbefElev[, c('Easting', 'Northing')])
+X.0 <- cbind(1, elev.pred, elev.pred^2)
+out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
+
+# Plot spatially varying trend across study region  
+**FIX THIS**
+
+  y <- yarray            #detection-nondetection data
+X <- dat$X             #occurrence design matrix for fixed effects
+X.p <- dat$X.p         #detection design matrix for fixed effets  
+psi <- dat$psi         #occurrence values
+coords <- coords       #spatial coordinates
+w <- dat$w             #spatially varying intercept and covariate effects
+cov.effect <- beta[2] + w[, 2]
+plot.dat <- data.frame(x = coords[, 1], 
+                       y = coords[, 2], 
+                       cov.effect = cov.effect)
+
+ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
+  geom_raster() + 
+  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
+                       high = '#2166AC', na.value = NA) + 
+  theme_bw() 
+# (decrease in occurrence = red, increase in occurrence = blue)
+
+
+
+
+
+## Occurrence data across study area ------------------------------------------
+
+# We may be interested in average occurrence across the whole study area, which can be computed as a derived quantity of the cell-level occurrences. We include naive average occurrence across surveyed cells as a solid line.
+
+psi <- as.data.frame(out$psi.samples) # samples of latent psi across all sites
+#this is psi sampled across all 169 sites
+avg_psi <- rowMeans(psi) #take averages across all columns (sites)
+avg_psi_naive <- mean(as.numeric(as.character(naive$Naive_occupancy))) FIGURE THIS OUT 
+hist(avg_psi, breaks = 20, freq=F, main = "", xlab = "Mean occurrence across all cells")
+abline(v = avg_psi_naive, lwd = 2) FIGURE THIS OUT 
+
+
+
+
+## add in the following 
+
+## Estimates of SVCs 
+
+# To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
+
+# The resulting object, here called svc.samples, is a list with each component corresponding to a matrix of the MCMC samples of each spatially varying coefficient estimated in the model, with rows corresponding to MCMC sample and column corresponding to site.
+
+svc.samples <- getSVCSamples(out) 
+str(svc.samples)
+
+# Intercept 
+svc.samples <- getSVCSamples(out.svc.trend)
+int.quants <- apply(svc.samples[["(Intercept)"]], 2, quantile, 
+                    probs = c(0.025, 0.5, 0.975))
+svc.true.fit <- beta + w.fit
+plot(svc.true.fit[, 1], int.quants[2, ], pch = 19, 
+     ylim = c(min(int.quants[1, ]), max(int.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Intercept')
+abline(0, 1)
+arrows(svc.true.fit[, 1], int.quants[2, ], svc.true.fit[, 1], col = 'gray', 
+       int.quants[1, ], length = 0.02, angle = 90)
+arrows(svc.true.fit[, 1], int.quants[1, ], svc.true.fit[, 1], col = 'gray', 
+       int.quants[3, ], length = 0.02, angle = 90)
+points(svc.true.fit[, 1], int.quants[2, ], pch = 19)
+
+# Trend -------------------------------------------------------------------
+trend.quants <- apply(svc.samples[["trend"]], 2, quantile, 
+                      probs = c(0.025, 0.5, 0.975))
+plot(svc.true.fit[, 2], trend.quants[2, ], pch = 19, 
+     ylim = c(min(trend.quants[1, ]), max(trend.quants[3, ])),
+     xlab = "True", ylab = "Fit", main = 'Spatially-Varying Trends')
+abline(0, 1)
+arrows(svc.true.fit[, 2], trend.quants[2, ], svc.true.fit[, 2], col = 'gray', 
+       trend.quants[1, ], length = 0.02, angle = 90)
+arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray', 
+       trend.quants[3, ], length = 0.02, angle = 90)
+points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
+
+
+#https://code.usgs.gov/usgs/norock/irvine_k/vignette-bayesian-site-occupancy-model-bat-acoustic-data/-/blob/main/LANO-OR-WA-vignette.pdf?ref_type=heads
+#Plotting covariates
+ggplot(data = plottable_covs) +
+  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
+  theme_bw() +
+  viridis::scale_fill_viridis(limits = c(0, 1))
+
+
+
+
+## Save files -------------------------------------------------------------------
+
+filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
+save(yarray, covs, species, out, coords, file = filename)
+toc()
+
+## ------------------------------------------------------------------------------
