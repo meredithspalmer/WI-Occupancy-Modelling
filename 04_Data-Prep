@@ -46,24 +46,38 @@ library(viridis)
 # Goal: Prep species-specific stacked detection matrices, by deployment-season-year and week
 
 # Load data 
-overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
-overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
+#overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
+overview_seq <- read.csv("WI data/sequences_updated_20240710.csv")
+#overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
+overview_images <- read.csv("WI data/images_updated_20240714.csv")
 
-# Combine data
+# Format data
 dat_seq <- overview_seq |>
   mutate(record_date = sequence_date) |>
   dplyr::select(-c(sequence_date, sequence_datetime)) |>
   collect()
+
+# if loaded csv: 
+dat_seq <- dat_seq %>% 
+  select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
+         sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
 
 dat_images <- overview_images |>
   mutate(record_date = photo_date) |>
   mutate(sp_binomial = Accepted_MOL) |>
   dplyr::select(-c(photo_date, photo_datetime, Accepted_MOL)) |>
   collect()
+
 dat_images <- dat_images[!dat_images$sp_binomial == "Accepted_MOL",] |> #header added as row
   mutate(latitude = as.numeric(latitude)) |>
   mutate(longitude = as.numeric(longitude)) 
 
+# if loaded csv: 
+dat_images <- dat_images %>% 
+  select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
+         sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
+
+# Combine data 
 all_dat <- rbind(dat_images, dat_seq) %>% 
   mutate(sensor_start_date = as.Date(sensor_start_date_and_time),
          sensor_end_date = as.Date(sensor_end_date_and_time),
