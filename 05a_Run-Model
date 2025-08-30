@@ -55,7 +55,7 @@ dat_seq <- overview_seq |>
 
 # if loaded csv: 
 dat_seq <- dat_seq %>% 
-  select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
+  dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
          sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
 
 dat_images <- overview_images |>
