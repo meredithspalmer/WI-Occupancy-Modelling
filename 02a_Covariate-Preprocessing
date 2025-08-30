@@ -558,16 +558,13 @@ library(mgcv)
 library(dplyr)
 library(tidyr)
 
-# --- INPUT ---
-# df must have columns: cell_ID (factor or character), x, y, year (int), crop_prop (0..1) == PROPROTION 
-# Example: df <- readr::read_csv("your_data.csv")
-
+crop_all <- read.csv("../10x10 km spatial layers/crop_proportion_all_years.csv")
 crop_all <- merge(crop_all, coords, all.x=T) %>% 
   rename(crop_prop = proportion)
 
 # Ensure response is in (0,1). If you truly have 0/1s, shrink slightly toward the interior Beta regression requires open interval).
 eps <- 1e-6
-df <- df %>%
+crop_all <- crop_all %>%
   mutate(
     crop_prop_beta = pmin(pmax(crop_prop, eps), 1 - eps),
     cell_ID = as.factor(cell_ID)
@@ -581,17 +578,12 @@ df <- df %>%
 fit <- bam(
   crop_prop_beta ~ s(x, y, bs = "tp", k = 150) +
     s(year, bs = "cr", k = 12) +
-    ti(x, y, year, bs = c("tp", "tp", "cr"), k = c(50, 50, 12)) +
     s(cell_ID, bs = "re"),
-  data    = crop_all,
+  data    = df,
   family  = betar(link = "logit"),
-  method  = "fREML"
+  method  = "fREML",
+  discrete = TRUE   # works again without ti()
 )
-
-# Build prediction grid for 2023–2024 at all existing cells (x,y, cell_ID)
-newdata <- df %>%
-  distinct(cell_ID, x, y) %>%
-  crossing(year = c(2023L, 2024L))
 
 # Predict on the response scale (already in (0,1) because of betar + logit)
 newdata$pred_crop_prop <- predict(fit, newdata = newdata, type = "response")
@@ -599,7 +591,31 @@ newdata$pred_crop_prop <- pmin(pmax(newdata$pred_crop_prop, 0), 1)
 head(newdata)
 
 
-#write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
+# ^ this takes a LONG time to run; do short version for now: 
+library(purrr)
+future_years <- data.frame(year = c(2023, 2024))
+
+pred_df <- crop_all %>%
+  group_by(cell_ID, x, y) %>%
+  nest() %>%
+  mutate(
+    fit = map(data, ~ lm(crop_prop ~ splines::ns(year, df = 4), data = .x)),  # flexible but extrapolates
+    preds = map(fit, ~ {
+      tibble(
+        year = future_years$year,
+        crop_prop = predict(.x, newdata = future_years)
+      )
+    })
+  ) %>%
+  select(-data, -fit) %>%
+  unnest(preds)
+
+head(pred_df)
+
+crop_all <- crop_all %>% select(-crop_prop_beta)
+crop_all <- rbind(crop_all, pred_df)
+
+#write.csv(crop_all,  "crop_proportion_all_years_predicted.csv",  row.names=FALSE)
 #write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
 write.csv(crop_all,  "crop_proportion_all_years_full.csv",  row.names=FALSE)
 
