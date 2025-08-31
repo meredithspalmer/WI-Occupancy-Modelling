@@ -176,6 +176,7 @@ head(periods)
 ## Annual dynamic layers ------------------------------------------------------
 
 # Function to predict CHELSA variables for years between those with values (1999-2010, 2011-2040) with 95% CI 
+DO NOT USE THIS -- SEE HOW CALCULATE PRECSEAS AND REWRITE ALL CODE ACCORDINGLY 
 custom_predict <- function(model, data) {
   if (!inherits(model, "lm")) {
     return(tibble(year = numeric(0),
@@ -293,32 +294,56 @@ r_stack <- rast(r_list)
 extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
-# Model data for intervening years 
+# Reshape and interpolate for 2000–2024
 cov_df <- extracted %>%
-  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% 
-  mutate(year = as.numeric(str_remove(year, "precseas_"))) %>% 
-  group_by(cell_ID) %>% 
-  nest() %>% 
-  mutate(
-    model = map(data, ~{
-      df <- .x %>% filter(!is.na(cov))
-      if (nrow(df) > 1) lm(cov ~ year, data = df) else NA
-    }),
-    pred = map2(model, data, ~custom_predict(.x, .y))
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
+  mutate(year = as.numeric(str_remove(year, "precseas_"))) %>%
+  group_by(cell_ID) %>%
+  summarise(
+    start_year = min(year, na.rm = TRUE),
+    end_year   = max(year, na.rm = TRUE),
+    start_cov  = cov[year == min(year, na.rm = TRUE)],
+    end_cov    = cov[year == max(year, na.rm = TRUE)],
+    .groups = "drop"
   ) %>%
-  unnest(pred) %>% 
+  rowwise() %>%
+  mutate(preds = list({
+    if (is.na(start_cov) || is.na(end_cov)) {
+      tibble(year = periods$year, cov = NA_real_)
+    } else {
+      tibble(
+        year = periods$year,
+        cov  = approx(
+          x = c(start_year, end_year),
+          y = c(start_cov, end_cov),
+          xout = periods$year,
+          rule = 2
+        )$y
+      )
+    }
+  })) %>%
+  unnest(preds) %>%
   ungroup() %>% 
-  mutate(cov = mean_cov,
-         year = as.numeric(year)) %>% 
-  filter(year %in% periods$year) %>% 
-  left_join(periods, by = "year", relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, cov) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov, values_fill = NA) %>%
-  arrange(cell_ID) %>% 
+  distinct()
+
+# Expand to seasons (4 rows per year) ---
+cov_df <- cov_df %>%
+  left_join(periods %>% dplyr::select(year, period_counter), by = "year", relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, cov)
+
+# Pivot to final matrix ---
+cov_df <- cov_df %>%
+  pivot_wider(
+    id_cols = cell_ID,
+    names_from = period_counter,
+    values_from = cov,
+    values_fill = NA
+  ) %>%
+  arrange(cell_ID) %>%
   as.matrix()
 
 # Save 
-#write.csv(cov_df, "primary_occ_covariates_precseas.csv", row.names = F)
+#write.csv(cov_df, "primary_occ_covariates_precseas_predicted.csv", row.names = F)
 write.csv(cov_df, "primary_occ_covariates_precseas_full.csv", row.names = F)
 
 
