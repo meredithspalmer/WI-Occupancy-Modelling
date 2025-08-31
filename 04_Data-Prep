@@ -111,13 +111,24 @@ head(periods)
 # Add initial info ------------------------------------------------------------
 
 # Target species name
-target_species <- "Helarctos malayanus"
+target_species <- "Panthera onca"
 
 # Extract data for a species
 dat_sp <- all_dat %>% filter(sp_binomial == target_species)
+nrow(dat_sp)
 
 # Retain all records of the projects in which the target species was detected
 dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
+
+# Check start and end dates: if issue, flip (note: many of these are 1 day depls)
+nrow(dat %>% filter(sensor_end_date <= sensor_start_date))
+head(dat %>% filter(sensor_end_date <= sensor_start_date))
+dat_sp <- dat_sp %>%
+  mutate(sensor_start_date = pmin(sensor_start_date, sensor_end_date),
+         sensor_end_date   = pmax(sensor_start_date, sensor_end_date))
+dat <- dat %>%
+  mutate(sensor_start_date = pmin(sensor_start_date, sensor_end_date),
+         sensor_end_date   = pmax(sensor_start_date, sensor_end_date))
 
 # Data exploration & cleaning -------------------------------------------------
 
@@ -131,7 +142,7 @@ if(data_exploration){
     mutate(project_id = as.factor(project_id))
   
   # EXAMINE DATA -> manually update 
-  #loc <- loc %>% filter(longitude != max(longitude)) #remove weird location
+  #loc <- loc %>% filter(latitude != min(latitude)) #remove weird location
   
   # Create spatial object and set CRS (WGS84)
   loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
