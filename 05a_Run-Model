@@ -160,10 +160,10 @@ UPDATE THE FOLLOWING WITH PREDICTED DATA:
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
 gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_predicted.csv.csv", periods) 
 precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_predicted.csv", periods)
+wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", periods)
+evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) #this is fine w/o pred
 
-evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
-wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
 
 # Number of deployments 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
