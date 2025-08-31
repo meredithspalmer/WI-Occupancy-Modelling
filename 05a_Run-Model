@@ -4,7 +4,7 @@
 
 # Set working directory
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
-rm(list=ls()); gc()
+#rm(list=ls()); gc()
 set.seed(123)
 
 # Load libraries 
@@ -83,7 +83,7 @@ periods <- data.frame(period_counter = seq(min(covs$period_counter),
 # fill gaps
 for(i in 1:nrow(periods)){
   if(is.na(periods$season[i])){
-
+    
     # fix NAs in season
     if(as.character(periods$season[i-1]) == "Spring") {
       periods$season[i] <-  "Summer"
@@ -94,7 +94,7 @@ for(i in 1:nrow(periods)){
     } else {
       periods$season[i] <-  "Spring"
     }
-
+    
     # fix NAs in year
     if(as.character(periods$season[i-1]) == "Winter") {
       periods$year[i] = periods$year[i-1]+1
@@ -155,9 +155,10 @@ static_scaled <- static %>%
 
 ## NEED TO SCALE 
 
+UPDATE THE FOLLOWING WITH PREDICTED DATA: 
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
-crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop.csv", periods)
-gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
+crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
+evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
 gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
 precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas.csv", periods)
@@ -254,7 +255,7 @@ nrow(discrepancy_table)
 for (i in seq_along(det_cols)) {
   det_col <- det_cols[i]
   effort_col <- effort_cols[i]
-
+  
   idx <- !is.na(det_aligned[[det_col]]) & is.na(effort_aligned[[effort_col]])
   effort_aligned[[effort_col]][idx] <- 1
 }
@@ -366,7 +367,7 @@ naive_plot <- left_join(select(grid_shp, Cell, geometry), naive, by = 'Cell')
 
 TO DO -- native_plot would be bb around areas detected?? 
   TO DO -- what is grid_shp? 
-
+  
   # Plot 
   ggplot(naive_plot) +
   geom_sf() +
@@ -510,20 +511,15 @@ dat_ls <- list(y = yarray,
 
 ## Formulas -------------------------------------------------------------------
 
-ADD MORE IN LATER, JUST TESTING FOR NOW 
-DO NOT FORGET TO SCALE COVARIATES 
 # DO NOT FORGET TO SCALE COVARIATES 
 # note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
-occ.formula = ~ scale(crop) + cities_lg
-det.formula = ~ effort + minjul + minjul_sq + (1|proj)
 occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + 
   road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
 det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj)
 
 #svc.cols = c('(Intercept', 'crop') #update based on formulae 
-svc.cols = c(1,3)  
-svc.cols = c(1:10)  
+svc.cols = c(1:12)  #this could be wrong - test to see includes ALL + intercept 
 #svc.cols = used to specify the covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
@@ -822,7 +818,7 @@ psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
 WHY ARE ALL psi.0.samples NA? 
   sum(is.na(out.pred.occ$psi.0.samples))/length(out.pred.occ$psi.0.samples)
 something scaled covariates issue?? 
-
+  
   #prediction for occurance
   out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
                           t.cols = c(1, 4,7), #set 1 - monsoon
@@ -995,7 +991,7 @@ out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
 
 # Plot spatially varying trend across study region  
 **FIX THIS**
-
+  
   y <- yarray            #detection-nondetection data
 X <- dat$X             #occurrence design matrix for fixed effects
 X.p <- dat$X.p         #detection design matrix for fixed effets  
