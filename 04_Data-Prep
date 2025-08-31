@@ -8,10 +8,10 @@ setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 set.seed(123)
 
 # Snappy codec
-unlink("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/R/4.2/00LOCK-arrow", recursive = TRUE)
-Sys.setenv(ARROW_S3="ON")
-Sys.setenv(NOT_CRAN="true")
-install.packages("arrow", repos = "https://arrow-r-nightly.s3.amazonaws.com")
+#unlink("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/R/4.2/00LOCK-arrow", recursive = TRUE)
+#Sys.setenv(ARROW_S3="ON")
+#Sys.setenv(NOT_CRAN="true")
+#install.packages("arrow", repos = "https://arrow-r-nightly.s3.amazonaws.com")
 
 # Load libraries
 library(arrow)
@@ -57,39 +57,39 @@ dat_seq <- overview_seq |>
 dat_seq <- dat_seq %>%
   dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
                 sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
-      
+
 dat_images <- overview_images |>
   mutate(record_date = photo_date) |>
   mutate(sp_binomial = Accepted_MOL) |>
   dplyr::select(-c(photo_date, photo_datetime, Accepted_MOL)) |>
   collect()
-          
+
 dat_images <- dat_images[!dat_images$sp_binomial == "Accepted_MOL",] |> #header added as row
   mutate(latitude = as.numeric(latitude)) |>
   mutate(longitude = as.numeric(longitude)) 
-              
+
 # if loaded csv: 
 dat_images <- dat_images %>% 
   dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
                 sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
- 
+
 # Combine data 
 all_dat <- rbind(dat_images, dat_seq) %>% 
   mutate(sensor_start_date = as.Date(sensor_start_date_and_time),
          sensor_end_date = as.Date(sensor_end_date_and_time),
          record_date = as.Date(record_date)) %>% 
   dplyr::select(-c(sensor_start_date_and_time, sensor_end_date_and_time))
-                
+
 all_dat <- all_dat[!is.na(all_dat$record_date),] 
-                    
+
 rm(dat_seq, dat_images, overview_images, overview_seq)
 gc()
 
 # Define periods --------------------------------------------------------------
-                  
+
 # Define time in the year-week format 
 all_dat <- all_dat %>% mutate(record_yearweek = yearweek(record_date))
-                  
+
 # Create periods template
 min_year <- 2000  
 max_year <- 2024 
@@ -129,14 +129,14 @@ if(data_exploration){
     dplyr::select(latitude, longitude, project_id) %>% 
     distinct() %>% 
     mutate(project_id = as.factor(project_id))
-
+  
   # EXAMINE DATA -> manually update 
   #loc <- loc %>% filter(longitude != max(longitude)) #remove weird location
   
   # Create spatial object and set CRS (WGS84)
   loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
   st_crs(loc_sp) = 4326
-                            
+  
   # Map locations
   data("World")
   World <- st_transform(World, crs = 4326)
@@ -153,7 +153,7 @@ if(data_exploration){
     tm_borders() +
     tm_layout(legend.show = FALSE) #legend.outside = TRUE)      
   print(dat_map_range)
-                         
+  
   # Map locations --- NOT WORKING; HOW DIFFERENT FROM ABOVE? LOOK AT LATER 
   data("World")
   World <- st_transform(World, crs = 4326)
@@ -183,7 +183,7 @@ if(data_exploration){
                                    record_year = year(record_date),
                                    year_week = as.numeric(paste(record_year, record_week, sep = "")),
                                    proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-     dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
+    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
   
   ggplot(dat_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id))) +
     geom_point(aes(color = as.factor(project_id))) +
@@ -358,7 +358,7 @@ for(i in 1:length(cam_op_ls)) {
 cam_op <- list.rbind(cam_op_ls) 
 
 ## Julian date ----------------------------------------------------------------
-=
+
 # Prepare list to store juldat by period
 juldat_ls <- vector("list", length = nrow(periods))
 
@@ -384,7 +384,7 @@ for(i in 1:length(juldat_ls)){
 juldat_ls <- lapply(juldat_ls, function(v) { cbind(v, matrix(NA, nrow = nrow(v), ncol = max.length-ncol(v)))})
 
 # Check that all items in list have same dimensions
-~unlist(sapply(juldat_ls, dim))
+unlist(sapply(juldat_ls, dim))
 
 # Unlist detection histories
 juldat <- list.rbind(juldat_ls)  
@@ -487,7 +487,7 @@ if(data_exploration){
     facet_wrap(~season_year)
 }
 
-# Add period counter
+# Add period counter 
 covs <- left_join(covs, periods %>% 
                     dplyr::select("season", "year", "period_counter") %>% 
                     mutate(year = as.character(year)))
