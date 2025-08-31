@@ -212,6 +212,7 @@ if(data_exploration){
 
 # After doing checks, clean original data for outliers 
 #dat <- dat %>% filter(latitude != min(latitude)) #remove weird location
+#min(dat_sp$latitude) -> if also bad, remove
 
 ## Build camera operability matrix (effort) -----------------------------------
 
