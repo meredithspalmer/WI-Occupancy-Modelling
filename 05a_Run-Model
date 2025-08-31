@@ -159,11 +159,11 @@ UPDATE THE FOLLOWING WITH PREDICTED DATA:
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
 gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_predicted.csv.csv", periods) 
+precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_predicted.csv", periods)
+
 evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
-precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas.csv", periods)
 wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa.csv", periods)
-evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods)
 
 # Number of deployments 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
