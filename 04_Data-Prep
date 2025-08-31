@@ -211,8 +211,7 @@ if(data_exploration){
 }
 
 # After doing checks, clean original data for outliers 
-#dat_sp <- dat_sp %>% filter(longitude != max(longitude)) #remove weird location
-#dat <- dat %>% filter(longitude != max(longitude)) #remove weird location
+#dat <- dat %>% filter(latitude != min(latitude)) #remove weird location
 
 ## Build camera operability matrix (effort) -----------------------------------
 
