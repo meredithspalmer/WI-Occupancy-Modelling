@@ -1,0 +1,64 @@
+// ============================
+// 1) Load reference 10x10 km raster
+// ============================
+var refRaster = ee.Image("projects/ee-mspalmerzool/assets/raster_100km2")
+                .select(0)
+                .rename('cell_ID')
+                .toInt();
+
+// Mask ocean / missing cells
+refRaster = refRaster.updateMask(refRaster.neq(0));
+
+// ============================
+// 2) Load Hansen v1.12
+// ============================
+var gfc = ee.Image('UMD/hansen/global_forest_change_2024_v1_12');
+var lossArea = gfc.select('loss').multiply(ee.Image.pixelArea());
+var lossyear = gfc.select('lossyear'); // 1=2001 .. 24=2024
+
+var years = ee.List.sequence(1,24);
+var yearNames = years.map(function(y){ return ee.Number(y).add(2000).format(); });
+
+// ============================
+// 3) Compute per-cell yearly loss using reduceConnectedComponents
+// ============================
+var yearlyFCs = years.map(function(y){
+  var yearCode = ee.Number(y);
+
+  // Mask loss pixels for this year
+  var lossThisYear = lossArea.updateMask(lossyear.eq(yearCode));
+
+  // Sum loss per cell_ID using reduceConnectedComponents
+  var summed = lossThisYear.reduceConnectedComponents({
+    reducer: ee.Reducer.sum(),
+    labelBand: 'cell_ID'
+  });
+
+  // Convert summed raster to table
+  var fc = summed.reduceToVectors({
+    geometryType: 'polygon',
+    scale: 10000,
+    geometry: refRaster.geometry().bounds(),
+    labelProperty: 'cell_ID',
+    reducer: ee.Reducer.first()
+  });
+
+  // Add year as property
+  fc = fc.map(function(f){ return f.set(ee.Number(y).add(2000).format(), f.get('first')); });
+
+  return fc;
+});
+
+// ============================
+// 4) Merge all years
+// ============================
+var allFC = ee.FeatureCollection(yearlyFCs).flatten();
+
+// ============================
+// 5) Export CSV
+// ============================
+Export.table.toDrive({
+  collection: allFC,
+  description: 'Yearly_Forest_Loss_Per_Cell',
+  fileFormat: 'CSV'
+});
