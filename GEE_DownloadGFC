@@ -1,64 +1,99 @@
-// ============================
-// 1) Load reference 10x10 km raster
-// ============================
-var refRaster = ee.Image("projects/ee-mspalmerzool/assets/raster_100km2")
-                .select(0)
-                .rename('cell_ID')
-                .toInt();
+// Working across globe tile by tile - will need to combine CSVs after the fact
 
-// Mask ocean / missing cells
-refRaster = refRaster.updateMask(refRaster.neq(0));
+// ============================================================
+// 1) Load reference raster (10x10 km grid with cell_IDs)
+// ============================================================
+var refRaster = ee.Image("projects/ee-mspalmerzool/assets/raster_100km2");
 
-// ============================
-// 2) Load Hansen v1.12
-// ============================
+// ============================================================
+// 2) Load Hansen GFC v1.12
+// ============================================================
 var gfc = ee.Image('UMD/hansen/global_forest_change_2024_v1_12');
 var lossArea = gfc.select('loss').multiply(ee.Image.pixelArea());
-var lossyear = gfc.select('lossyear'); // 1=2001 .. 24=2024
+var lossyear = gfc.select('lossyear');
 
-var years = ee.List.sequence(1,24);
-var yearNames = years.map(function(y){ return ee.Number(y).add(2000).format(); });
+// ============================================================
+// 3) Generate global 10x10° tiles
+// ============================================================
+var lonStep = 10;
+var latStep = 10;
 
-// ============================
-// 3) Compute per-cell yearly loss using reduceConnectedComponents
-// ============================
-var yearlyFCs = years.map(function(y){
-  var yearCode = ee.Number(y);
+var tiles = [];
+for (var lon = -180; lon < 180; lon += lonStep) {
+  for (var lat = -90; lat < 90; lat += latStep) {
+    var rect = ee.Feature(ee.Geometry.Rectangle([lon, lat, lon + lonStep, lat + latStep]))
+                 .set('tileID', lon + '_' + lat);
+    tiles.push(rect);
+  }
+}
 
-  // Mask loss pixels for this year
-  var lossThisYear = lossArea.updateMask(lossyear.eq(yearCode));
+var tilesFC = ee.FeatureCollection(tiles);
 
-  // Sum loss per cell_ID using reduceConnectedComponents
-  var summed = lossThisYear.reduceConnectedComponents({
-    reducer: ee.Reducer.sum(),
-    labelBand: 'cell_ID'
-  });
+// ============================================================
+// 4) Function to process one tile
+// ============================================================
+var processTile = function(tileFeature) {
+  var tileGeom = tileFeature.geometry();
+  var tileID = tileFeature.get('tileID');
 
-  // Convert summed raster to table
-  var fc = summed.reduceToVectors({
-    geometryType: 'polygon',
+  // Clip raster to tile
+  var tileRaster = refRaster.clip(tileGeom);
+
+  // Skip empty tiles
+  var cellCount = tileRaster.reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: tileGeom,
     scale: 10000,
-    geometry: refRaster.geometry().bounds(),
-    labelProperty: 'cell_ID',
-    reducer: ee.Reducer.first()
-  });
+    maxPixels: 1e13
+  }).get('cell_ID');
 
-  // Add year as property
-  fc = fc.map(function(f){ return f.set(ee.Number(y).add(2000).format(), f.get('first')); });
+  return ee.Algorithms.If(
+    ee.Number(cellCount).gt(0),
+    // Process non-empty tile
+    ee.FeatureCollection(
+      ee.List.sequence(1, 24).map(function(y) {
+        var yr = ee.Number(y);
+        var yrLabel = yr.add(2000).format('%d');
 
-  return fc;
-});
+        // Mask loss for this year
+        var lossYear = lossArea.updateMask(lossyear.eq(yr));
 
-// ============================
-// 4) Merge all years
-// ============================
-var allFC = ee.FeatureCollection(yearlyFCs).flatten();
+        // Reduce per cell
+        var yearlyStats = lossYear.reduceRegions({
+          collection: tileRaster.reduceToVectors({
+            geometry: tileGeom,
+            scale: 10000,
+            geometryType: 'polygon',
+            labelProperty: 'cell_ID',
+            reducer: ee.Reducer.first(),
+            maxPixels: 1e13
+          }),
+          reducer: ee.Reducer.sum(),
+          scale: 10000,
+          tileScale: 4
+        }).map(function(f) {
+          return f.set('year', yrLabel)
+                  .set('tileID', tileID);
+        });
 
-// ============================
-// 5) Export CSV
-// ============================
+        return yearlyStats;
+      }).flatten()
+    ),
+    // Return empty collection if no cells
+    ee.FeatureCollection([])
+  );
+};
+
+// ============================================================
+// 5) Map over tiles
+// ============================================================
+var allTilesStats = tilesFC.map(processTile).flatten();
+
+// ============================================================
+// 6) Export to Drive (one CSV for all tiles)
+// ============================================================
 Export.table.toDrive({
-  collection: allFC,
-  description: 'Yearly_Forest_Loss_Per_Cell',
+  collection: allTilesStats,
+  description: 'ForestLoss_AllTiles',
   fileFormat: 'CSV'
 });
