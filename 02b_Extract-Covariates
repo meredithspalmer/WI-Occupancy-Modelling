@@ -490,21 +490,22 @@ names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
 extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
+df_long <- df %>%
+  pivot_longer(
+    cols = starts_with("evi_"),
+    names_to = "date",
+    values_to = "evi"
+  ) %>%
+  mutate(
+    year = as.integer(str_extract(date, "(?<=evi_)\\d{4}")),
+    doy  = as.integer(str_extract(date, "(?<=evi_\\d{4}_)\\d{3}")),
+    evi  = ifelse(is.nan(evi), NA, evi)
+  )
+
 # -> for sites 
 # Predict missing values 
-impute_evi_ridge <- function(df) {
-  df_long <- df %>%
-    pivot_longer(
-      cols = starts_with("evi_"),
-      names_to = "date",
-      values_to = "evi"
-    )
-  
-  df_long <- df_long %>%
-    mutate(year = as.integer(str_extract(date, "(?<=evi_)\\d{4}")),
-           doy  = as.integer(str_extract(date, "(?<=evi_\\d{4}_)\\d{3}")),
-           evi  = ifelse(is.nan(evi), NA, evi))  # treat NaN as NA
-  
+impute_evi_ridge <- function(df_long) {
+
   X <- model.matrix(~ year + doy, df_long)[, -1]  # drop intercept (glmnet adds one)
   y <- df_long$evi
   
@@ -527,7 +528,7 @@ impute_evi_ridge <- function(df) {
   df_long
 }
 
-result <- impute_evi_ridge(extracted) 
+result <- impute_evi_ridge(df_long) 
 
 EVI_long <- result %>% 
   filter(year %in% periods$year) %>%
@@ -558,19 +559,7 @@ write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites
 
 # -> for global (use this raster in all modelling and predicting)
 
-impute_evi_ridge_all_years <- function(df) {
-  
-  df_long <- df %>%
-    pivot_longer(
-      cols = starts_with("evi_"),
-      names_to = "date",
-      values_to = "evi"
-    ) %>%
-    mutate(
-      year = as.integer(str_extract(date, "(?<=evi_)\\d{4}")),
-      doy  = as.integer(str_extract(date, "(?<=evi_\\d{4}_)\\d{3}")),
-      evi  = ifelse(is.nan(evi), NA, evi)
-    )
+impute_evi_ridge_all_years <- function(df_long) {
   
   df_filled <- df_long %>%
     group_split(year) %>%
@@ -602,7 +591,7 @@ impute_evi_ridge_all_years <- function(df) {
   return(df_filled)
 }
 
-result_long <- impute_evi_ridge_all_years(extracted)
+result_long <- impute_evi_ridge_all_years(df_long)
 head(result_long)
 
 
