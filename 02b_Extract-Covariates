@@ -491,7 +491,7 @@ names(evi_stack) <- gsub('.{11}$', '', evi)
 
 # Extract mean values for each cell_ID across all rasters in the stack
 #extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 # Predict missing values 
@@ -557,7 +557,7 @@ EVI_mat <- EVI_joined %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-#write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_site.csv", row.names = F)
+#write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
 write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
 
 
