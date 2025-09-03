@@ -4,7 +4,7 @@
 
 # Set working directory
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
-#rm(list=ls()); gc()
+rm(list=ls()); gc()
 set.seed(123)
 
 # Load libraries 
@@ -49,7 +49,7 @@ cov_subset <- function(cov_dataframe_name, period_data){
 (filenames <- list.files("Data for modelling", full.names = TRUE))
 
 #CHANGE
-filename <- filenames[7]
+filename <- filenames[22]
 
 load(filename)
 print(target_species)
@@ -156,7 +156,7 @@ static_scaled <- static %>%
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
 ## NEED TO SCALE 
-## UPDATE THE FOLLOWING WITH PREDICTED DATA: 
+## UPDATE THE FOLLOWING WITH FULL DATA when generated 
 
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
@@ -1081,6 +1081,8 @@ ggplot(data = plottable_covs) +
 
 ## Save files -------------------------------------------------------------------
 
-filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
-save(yarray, covs, species, out, coords, file = filename)
-toc()
+(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", target_species, "_", Sys.Date(), "/", target_species, "_", Sys.Date(), "_svcTPGOcc_", ".RData", sep = ""))
+save(yarray, covs, target_species, out, coords, file = filename)
+#toc()
+
+## ------------------------------------------------------------------------------
