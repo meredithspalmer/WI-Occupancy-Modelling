@@ -30,6 +30,7 @@ library(arrow)
 library(purrr)
 library(parallel)
 library(glmnet)
+library(mgcv)
 
 
 # Set up reference raster -----------------------------------------------------
@@ -185,7 +186,7 @@ head(extracted)
 
 # Reshape and interpolate for 2000–2024
 cov_df <- extracted %>%
-  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% #WHY IS THIS NEGATIVE? HERE AND THROUGHOUT 
   mutate(year = as.numeric(str_remove(year, "precip_"))) %>%
   group_by(cell_ID) %>%
   summarise(
@@ -638,42 +639,61 @@ for(i in 1:length(gfc)){
 }
 gfc_stack <- rast(gfc_list_raster)
 
-test <- (gfc_stack[[1]])
-plot(test)
-test <- as.data.frame(gfc_stack[[1]]$GFC_v19_2001_mn_1km) %>%
-  filter(across(everything(), ~. != 0))
-hist(test$GFC_v19_2001_mn_1km) #compare to 2022:2023
-length(unique(test$GFC_v19_2001_mn_1km)) #excluding 9s, 49928237 unique values ... round these? 
-# honestly not sure how fabiola ended up with range from 0-10,000: dataset should be 0-22/23... 
-
+# Align GFC 
 gfc_stack_aligned <- project(gfc_stack, reference_sub, method = "near")
 extracted <- terra::zonal(gfc_stack_aligned, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-extracted_scaled <- extracted %>% mutate(across(-cell_ID, ~ round((.x / 10000) * 23))) %>% 
-  rename_with(~ sub(".*_(\\d{4})_.*", "\\1", .), -cell_ID)
+#extracted <- terra::zonal(gfc_stack_aligned, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
+head(extracted)
 
-# add gfc 2022:2023
-gfc_2022 <- read.csv("gfc_2022.csv") %>% rename(`2022` = spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX)
-gfc_2023 <- read.csv("gfc_2023.csv") %>% rename(`2023` = spat_1b436fdfa120c_1786735_zxzxx9jyyx6UnnI)
-extracted_scaled <- merge(extracted_scaled, gfc_2022, by="cell_ID")
-extracted_scaled <- merge(extracted_scaled, gfc_2023, by="cell_ID")
+# Format data frame 
+df_long <- extracted %>%
+  pivot_longer(
+    cols = starts_with("GFC_"),
+    names_to = "date",
+    values_to = "GFC") %>%
+  mutate(year = str_extract(date, "\\d{4}") %>% as.integer())
 
-# format dataframe 
-GFC_long <- extracted_scaled %>%
-  pivot_longer(cols = -cell_ID,
-               names_to = "year",
-               values_to = "cov_value") %>%
+# Add x & y coordinates
+coords <- as.data.frame(reference, xy=T)
+df_long <- merge(df_long, coords, all.x=T) %>% select(-date)
+
+# Fit GAM: smooth in x, y, and year
+gam_model <- gam(GFC ~ s(x, y) + s(year), data = df_long)
+
+# Predict for 2000, 2023, and 2024
+newdata <- expand.grid(
+  cell_ID = unique(df_long$cell_ID),
+  year = c(2000, 2023, 2024)
+)
+newdata <- merge(newdata, coords, by = "cell_ID", all.x = TRUE)
+newdata$cov_value <- predict(gam_model, newdata)
+newdata <- newdata %>% dplyr::select(cell_ID, year, cov_value) 
+
+df_long <- rbind(df_long, newdata) %>% 
   mutate(year = as.integer(year)) %>% 
-  filter(year %in% periods$year) %>% 
-  select(c(cell_ID, cov_value, year))
+  distinct()
 
-GFC_joined <- GFC_long %>%
+GFC_joined <- df_long %>%
   left_join(periods, relationship = "many-to-many") %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
-  arrange(cell_ID) %>% 
-  as.matrix()
+  drop_na()
 
-write.csv(GFC_joined, "primary_occ_covariates_GFC.csv")
+df_long %>%
+  dplyr::group_by(cell_ID, period_counter) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  dplyr::filter(n > 1L)
+
+
+
+df_wide <- GFC_joined %>%
+  pivot_wider(
+    id_cols = cell_ID,
+    names_from = period_counter,
+    values_from = cov_value
+  )
+
+write.csv(GFC_joined, "primary_occ_covariates_GFC_sites.csv")
+#write.csv(GFC_joined, "primary_occ_covariates_GFC_full.csv")
 
 
 # Read CROP proportions ---     
