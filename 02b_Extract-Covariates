@@ -500,8 +500,8 @@ evi_stack <- rast(evi_list_raster)
 names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
 
 # Extract mean values for each cell_ID across all rasters in the stack
-#extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+#extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
 df_long <- extracted %>%
@@ -518,10 +518,23 @@ df_long <- extracted %>%
 
 # -> for sites 
 # Predict missing values 
-impute_evi_ridge <- function(df_long) {
+impute_evi_ridge <- function(df) {
   
-  X <- model.matrix(~ year + doy, df_long)[, -1]  # drop intercept (glmnet adds one)
-  y <- df_long$evi
+  # Add 1999 rows with NA so glmnet can predict them
+  if (!1999 %in% df$year) {
+    doys <- unique(df$doy[!is.na(df$doy)])
+    new_rows <- data.frame(
+      cell_ID = df$cell_ID[1],
+      date = paste0("evi_1999_", doys),
+      evi = NA,
+      year = 1999,
+      doy = doys
+    )
+    df <- bind_rows(df, new_rows)
+  }
+  
+  X <- model.matrix(~ year + doy, df)[, -1]  # drop intercept (glmnet adds one)
+  y <- df$evi
   
   # Fit ridge regression on non-missing data
   fit <- cv.glmnet(
@@ -533,13 +546,13 @@ impute_evi_ridge <- function(df_long) {
   )
   
   # Predict for ALL cells (including NAs)
-  df_long$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
+  df$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
   
   # Replace original values where missing 
-  df_long <- df_long %>%
+  df <- df %>%
     mutate(evi_final = ifelse(is.na(evi), evi_filled, evi))
   
-  df_long
+  df
 }
 
 result <- impute_evi_ridge(df_long) 
@@ -557,7 +570,7 @@ EVI_long <- result %>%
 
 EVI_joined <- EVI_long %>%
   left_join(periods %>% mutate(dummy = 1), by = character()) %>% 
-  filter(date >= start_period & date <= end_period) %>% 
+  filter(date >= start_period & date <= end_period) %>%  #WAHAT IS THIS? 
   group_by(cell_ID, period_counter) %>% #for when multiple values per cell per period 
   summarise(
     cov_value = mean(cov_value, na.rm = TRUE),
@@ -701,8 +714,8 @@ df_wide <- GFC_joined %>%
   dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
-write.csv(GFC_joined, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
-#write.csv(GFC_joined, "primary_occ_covariates_GFC_full.csv")
+write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
+#write.csv(df_wide, "primary_occ_covariates_GFC_full.csv")
 
 
 # Read CROP proportions ---     
