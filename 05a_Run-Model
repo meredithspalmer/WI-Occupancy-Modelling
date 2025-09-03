@@ -34,6 +34,7 @@ scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 # Covariate formatting function 
 cov_subset <- function(cov_dataframe_name, period_data){
   covariate <- read.csv(cov_dataframe_name) %>% 
+    dplyr::select(-any_of("X")) %>% 
     filter(cell_ID %in% cell_IDs) %>% 
     arrange(cell_ID)
   keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
@@ -42,12 +43,13 @@ cov_subset <- function(cov_dataframe_name, period_data){
   return(df_subset)
 }
 
+
 ## Load prepped data ----------------------------------------------------------
 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
 
 #CHANGE
-filename <- filenames[8]
+filename <- filenames[7]
 
 load(filename)
 print(target_species)
@@ -136,7 +138,7 @@ coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.
 
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
 
-static <- read.csv("Covariates for modelling/site_level_covariates.csv") %>% 
+static <- read.csv("Covariates for modelling/site_level_covariates_site.csv") %>% 
   dplyr::select(-c(elevation, cities_md, cities_sm, x, y)) %>% #from Data-Explore code 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
@@ -154,16 +156,15 @@ static_scaled <- static %>%
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
 ## NEED TO SCALE 
+## UPDATE THE FOLLOWING WITH PREDICTED DATA: 
 
-UPDATE THE FOLLOWING WITH PREDICTED DATA: 
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
-gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_predicted.csv.csv", periods) 
-precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_predicted.csv", periods)
+precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_sites.csv", periods)
 wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", periods)
-evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI.csv", periods) #this is fine w/o pred
-
-gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC.csv", periods)
+evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_sites.csv", periods) 
+gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_sites.csv", periods)
+gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_sites.csv", periods) 
 
 # Number of deployments 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
@@ -1083,5 +1084,3 @@ ggplot(data = plottable_covs) +
 filename <- paste("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/output/model_results/", Sys.Date(), "_svcTPGOcc_", species, ".RData", sep = "")
 save(yarray, covs, species, out, coords, file = filename)
 toc()
-
-## ------------------------------------------------------------------------------
