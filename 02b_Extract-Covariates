@@ -487,8 +487,8 @@ df_mat <- df_long_combo %>%
   as.matrix()
 
 # Save 
-write.csv(GPW_matrix, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
-#write.csv(GPW_matrix, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
+write.csv(dat_mat, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
+#write.csv(dat_mat, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
 
 
 # Read TIF files for EVI ---
