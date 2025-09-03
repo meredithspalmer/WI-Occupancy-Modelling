@@ -490,7 +490,7 @@ names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
 extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
 head(extracted)
 
-df_long <- df %>%
+df_long <- extracted %>%
   pivot_longer(
     cols = starts_with("evi_"),
     names_to = "date",
@@ -593,17 +593,9 @@ impute_evi_ridge_all_years <- function(df_long) {
 
 result_long <- impute_evi_ridge_all_years(df_long)
 head(result_long)
+write.csv(result_long, "evi_save.csv", row.names=F)
 
-
-# ================================
-# 5. Optional: reshape back to wide format
-# ================================
-result_wide <- result_long %>%
-  select(cell_ID, date, evi_final) %>%
-  pivot_wider(names_from = date, values_from = evi_final)
-
-## adapt
-EVI_long <- result %>% 
+EVI_long <- result_long %>% 
   filter(year %in% periods$year) %>%
   mutate(year_str = str_extract(date, "(?<=evi_)\\d{4}"),
          doy_str  = str_extract(date, "(?<=evi_\\d{4}_)\\d{3}"),
@@ -622,6 +614,7 @@ EVI_joined <- EVI_long %>%
     cov_value = mean(cov_value, na.rm = TRUE),
     .groups = "drop"
   )
+write.csv(EVI_joined, "evi_save_2.csv", row.names=F)
 
 EVI_mat <- EVI_joined %>% 
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
