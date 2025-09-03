@@ -442,35 +442,48 @@ extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df
 #extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
 head(extracted)
 
-# to predict GPW for years between those with values (2000-2005-2010-2020-2024) with 95% CI 
-custom_predict_lm <- function(fit, years) {
-  pred <- predict(fit, newdata = data.frame(year = years))
-  tibble(year = years, mean_GPW = pred)
-}
+# pivot long 
+df_long <- extracted %>%
+  pivot_longer(cols = -cell_ID,
+               names_to = "year",
+               values_to = "cov_value") %>%
+  mutate(year = as.integer(sub("GPW_", "", year)))
 
-future_years <- 2000:2024   
+# Add x & y coordinates
+coords <- as.data.frame(reference, xy=T)
+df_long <- merge(df_long, coords, all.x=T) 
 
-GPW_matrix <- extracted %>%
-  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
-  mutate(year = as.numeric(str_remove(year, "GPW_"))) %>%
-  group_by(cell_ID) %>%
-  group_modify(~{
-    df <- filter(.x, !is.na(cov))
-    if (nrow(df) >= 2) {
-      fit <- lm(cov ~ year, data = df)
-      custom_predict_lm(fit, future_years)
-    } else if (nrow(df) == 1) {
-      # Not enough data for regression, return constant value
-      tibble(year = future_years, mean_GPW = rep(df$cov[1], length(future_years)))
-    } else {
-      # No data at all
-      tibble(year = future_years, mean_GPW = NA)
-    }
-  }) %>%
-  ungroup() %>%
-  dplyr::select(cell_ID, year, cov = mean_GPW) %>%
-  pivot_wider(id_cols = cell_ID, names_from = year, values_from = cov, values_fill = NA) %>%
+# Fit a smooth GAM model over space (x, y) and time (year)
+model <- gam(cov_value ~ s(x, y) + s(year, k=5),
+             data = df_long, na.action = na.exclude)
+
+# Make a full grid for prediction
+all_years <- c(1999, 2001:2004, 2006:2009, 2011:2014, 2016:2019, 2021:2024)
+newdata <- expand.grid(
+  cell_ID = unique(df_long$cell_ID),
+  year = all_years
+)
+
+missing_vals <- df_long[is.na(df_long$cov_value),] %>% 
+  dplyr::select(-cov_value)
+df_long <- df_long[!is.na(df_long$cov_value),]
+
+newdata <- merge(newdata, coords, all.x=T) 
+newdata <- rbind(newdata, missing_vals)
+
+# Predict missing + new years
+newdata$cov_value <- predict(model, newdata = newdata)
+
+# Combine
+df_long_combo <- rbind(df_long, newdata) %>%   
+  dplyr::select(-c(x,y)) %>% 
+  distinct() 
+
+# Pivot
+df_mat <- df_long_combo %>% 
+  pivot_wider(id_cols = cell_ID, names_from = year, values_from = cov_value, values_fill = NA) %>%
   arrange(cell_ID) %>%
+  dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
 # Save 
@@ -626,7 +639,7 @@ write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_full.
 
 
 
-# Read TIF files for GFC -- DO NOT DO YET! 
+# Read TIF files for GFC --  
 
 # GFC - 2001:2021 
 gfc_list_raster <- NULL 
