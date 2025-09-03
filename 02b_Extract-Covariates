@@ -582,7 +582,7 @@ EVI_long <- result %>%
   dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
-write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
+write.csv(EVI_long, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
 
 # -> for global (use this raster in all modelling and predicting)
 
