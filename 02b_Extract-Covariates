@@ -506,7 +506,7 @@ df_long <- extracted %>%
 # -> for sites 
 # Predict missing values 
 impute_evi_ridge <- function(df_long) {
-
+  
   X <- model.matrix(~ year + doy, df_long)[, -1]  # drop intercept (glmnet adds one)
   y <- df_long$evi
   
@@ -655,7 +655,7 @@ df_long <- extracted %>%
 
 # Add x & y coordinates
 coords <- as.data.frame(reference, xy=T)
-df_long <- merge(df_long, coords, all.x=T) %>% select(-date)
+df_long <- merge(df_long, coords, all.x=T) %>% dplyr::select(-date)
 
 # Fit GAM: smooth in x, y, and year
 gam_model <- gam(GFC ~ s(x, y) + s(year), data = df_long)
@@ -663,22 +663,20 @@ gam_model <- gam(GFC ~ s(x, y) + s(year), data = df_long)
 # Predict for 2000, 2023, and 2024
 newdata <- expand.grid(
   cell_ID = unique(df_long$cell_ID),
-  year = c(2000, 2023, 2024)
+  year = c(1999, 2000, 2023, 2024)
 )
 newdata <- merge(newdata, coords, by = "cell_ID", all.x = TRUE)
-newdata$cov_value <- predict(gam_model, newdata)
-newdata <- newdata %>% dplyr::select(cell_ID, year, cov_value) 
+newdata$GFC <- predict(gam_model, newdata)
 
-df_long <- rbind(df_long, newdata) %>% 
+df_long_combo <- rbind(df_long, newdata) %>% 
   mutate(year = as.integer(year)) %>% 
-  distinct()
+  rename(cov_value = GFC) %>% 
+  dplyr::select(-c(x,y)) %>% 
+  distinct(cell_ID, year, .keep_all = TRUE)
 
-df_long <- df_long %>% distinct(cell_ID, year, .keep_all = TRUE)
-
-GFC_joined <- df_long %>%
+GFC_joined <- df_long_combo %>%
   left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, cov_value) %>% 
-  drop_na()
+  dplyr::select(cell_ID, period_counter, cov_value) 
 
 df_wide <- GFC_joined %>%
   pivot_wider(
@@ -687,12 +685,10 @@ df_wide <- GFC_joined %>%
     values_from = cov_value
   ) %>%
   arrange(cell_ID) %>%
+  dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
-
-
-
-write.csv(GFC_joined, "primary_occ_covariates_GFC_sites.csv")
+write.csv(GFC_joined, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
 #write.csv(GFC_joined, "primary_occ_covariates_GFC_full.csv")
 
 
