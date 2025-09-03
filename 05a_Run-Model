@@ -49,7 +49,7 @@ cov_subset <- function(cov_dataframe_name, period_data){
 (filenames <- list.files("Data for modelling", full.names = TRUE))
 
 #CHANGE
-filename <- filenames[22]
+filename <- filenames[12]
 
 load(filename)
 print(target_species)
@@ -78,33 +78,42 @@ nweek <- 13
 (max_year <- max(covs$year))
 cell_IDs <- unique(ystack$cell_ID)
 
+# -> if identify outliers, remove period here
+# min(covs$period_counter)
 periods <- data.frame(period_counter = seq(min(covs$period_counter), 
                                            max(covs$period_counter), by = 1)) %>% 
-  left_join(covs %>% dplyr::select(period_counter, season, year) %>% distinct()) 
+  left_join(covs %>% dplyr::select(period_counter, season, year) %>% distinct()) %>% 
+  mutate(year = as.numeric(year))
+head(periods)
 
-# fill gaps
-for(i in 1:nrow(periods)){
-  if(is.na(periods$season[i])){
+## Fill in missing seasons and years
+# Define the order of seasons
+season_order <- c("Spring", "Summer", "Fall", "Winter")
+
+# If first row is NA, initialize
+if(is.na(periods$season[1])) periods$season[1] <- "Fall"
+if(is.na(periods$year[1])) periods$year[1] <- 2000  # choose a starting year
+head(periods)
+
+# Fill remaining rows
+for(i in 2:nrow(periods)) {
+  prev_season <- periods$season[i-1]
+  prev_year   <- periods$year[i-1]
+  
+  if(is.na(periods$season[i])) {
+    # Compute next season
+    next_season <- season_order[(match(prev_season, season_order) %% 4) + 1]
+    periods$season[i] <- next_season
     
-    # fix NAs in season
-    if(as.character(periods$season[i-1]) == "Spring") {
-      periods$season[i] <-  "Summer"
-    } else if(as.character(periods$season[i-1]) == "Summer") {
-      periods$season[i] <-  "Fall"
-    } else if(as.character(periods$season[i-1]) == "Fall") {
-      periods$season[i] <-  "Winter"
+    # Increment year if season wraps from Winter -> Spring
+    if(prev_season == "Winter") {
+      periods$year[i] <- prev_year + 1
     } else {
-      periods$season[i] <-  "Spring"
-    }
-    
-    # fix NAs in year
-    if(as.character(periods$season[i-1]) == "Winter") {
-      periods$year[i] = periods$year[i-1]+1
-    } else {
-      periods$year[i] = periods$year[i-1] 
+      periods$year[i] <- prev_year
     }
   }
 }
+head(periods)
 
 ## Observations ---------------------------------------------------------------
 ystack2 <- cbind(ystack, covs %>% dplyr::select(cell_ID, period_counter)) %>% 
@@ -115,7 +124,8 @@ ystack2 <- ystack2[order(ystack2$cell_ID),]
 
 yarray <- array(NA, dim = c(ncell, nperiod, nweek))
 rownames(yarray) <- unique(covs$cell_ID)
-colnames(yarray) <- paste0("p", seq(min(covs$period_counter), max(covs$period_counter), by = 1))
+colnames(yarray) <- paste0("p", seq(min(covs$period_counter), 
+                                    max(covs$period_counter), by = 1))
 
 for(i in 1:nrow(ystack2)){
   yarray[as.character(ystack2$cell_ID[i]),
@@ -242,7 +252,7 @@ if(length(det_cols) != length(effort_cols)) {
   stop("Detection and effort columns must be the same length.")
 }
 
-# Locate discrepancies 
+# If stopped, locate discrepancies 
 discrepancies <- (!is.na(det_aligned[det_cols])) & (is.na(effort_aligned[effort_cols]))
 which_discrepancies <- which(discrepancies, arr.ind = TRUE)
 discrepancy_table <- data.frame(
@@ -358,6 +368,31 @@ raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ
 file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
 ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
 
+## If outliers, remove --- 
+
+# yarray 
+cols_to_keep <- dimnames(yarray)[[2]] != "p3"
+yarray <- yarray[, cols_to_keep, ]
+
+# 3d covariates 
+cols_to_keep <- dimnames(effort)[[2]] != "p3"
+effort <- effort[, cols_to_keep, ]
+cols_to_keep <- dimnames(minjul)[[2]] != "p3"
+minjul <- minjul[, cols_to_keep, ]
+cols_to_keep <- dimnames(minjul_sq)[[2]] != "p3"
+minjul_sq <- minjul_sq[, cols_to_keep, ]
+
+# 2d covariates
+crop <- crop[, dimnames(crop)[[2]] != "X3"]
+precseas <- precseas[, dimnames(precseas)[[2]] != "X3"]
+wdpa <- wdpa[, dimnames(wdpa)[[2]] != "X3"]
+evi <- evi[, dimnames(evi)[[2]] != "X3"]
+gfc <- gfc[, dimnames(gfc)[[2]] != "X3"]
+gpw <- gpw[, dimnames(gpw)[[2]] != "X3"]
+ndepl <- ndepl[, dimnames(ndepl)[[2]] != "p3"]
+proj <- proj[, dimnames(proj)[[2]] != "p3"]
+trend <- trend[, dimnames(trend)[[2]] != "3"]
+
 # Naive plot of occurrence detections 
 #First derive naive occurrence for each cell (0 if a species is never observed, 1 if a species is observed):
 naive <- rowSums(yarray, na.rm = T)
@@ -452,7 +487,6 @@ dat_ls_test <- list(y = yarray_test,
                                     precseas = precseas_test,
                                     wdpa = wdpa_test,
                                     evi = evi_test, 
-                                    road.dist = static_test$road_dist,
                                     road_dist = static_test$road_dist,
                                     tri = static_test$tri,
                                     river_dist = static_test$river_dist,
@@ -474,7 +508,6 @@ dat_ls_split <- list(y = y.fit,
                                      precseas = precseas.fit,
                                      wdpa = wdpa.fit,
                                      evi = evi.fit,
-                                     road.dist = static.fit$road_dist,
                                      road_dist = static.fit$road_dist,
                                      tri = static.fit$tri,
                                      river_dist = static.fit$river_dist,
@@ -496,7 +529,6 @@ dat_ls <- list(y = yarray,
                                precseas = precseas,
                                wdpa = wdpa,
                                evi = evi, 
-                               road.dist = static_scaled$road_dist_scaled,
                                road_dist = static_scaled$road_dist_scaled,
                                tri = static_scaled$tri_scaled,
                                river_dist = static_scaled$river_dist_scaled,
@@ -519,9 +551,7 @@ occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale
   road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
 det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj)
 
-#svc.cols = c('(Intercept', 'crop') #update based on formulae 
-svc.cols = c(1:12)  #this could be wrong - test to see includes ALL + intercept 
-#svc.cols = used to specify the covariates whose effects are estimated as SVCs
+svc.cols = c(1:12)  #covariates whose effects are estimated as SVCs
 
 # Prep inits -------------------------------------------------------------------
 
@@ -1081,7 +1111,7 @@ ggplot(data = plottable_covs) +
 
 ## Save files -------------------------------------------------------------------
 
-(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", target_species, "_", Sys.Date(), "/", target_species, "_", Sys.Date(), "_svcTPGOcc_", ".RData", sep = ""))
+(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", target_species, "_", Sys.Date(), "/", target_species, "_", Sys.Date(), "_svcTPGOcc", ".RData", sep = ""))
 save(yarray, covs, target_species, out, coords, file = filename)
 #toc()
 
