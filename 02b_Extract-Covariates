@@ -31,6 +31,7 @@ library(purrr)
 library(parallel)
 library(glmnet)
 library(mgcv)
+library(fuzzyjoin)
 
 
 # Set up reference raster -----------------------------------------------------
@@ -477,18 +478,19 @@ newdata$cov_value <- predict(model, newdata = newdata)
 # Combine
 df_long_combo <- rbind(df_long, newdata) %>%   
   dplyr::select(-c(x,y)) %>% 
-  distinct() 
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(-c(period, start_period, end_period, season))
 
 # Pivot
 df_mat <- df_long_combo %>% 
-  pivot_wider(id_cols = cell_ID, names_from = year, values_from = cov_value, values_fill = NA) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
   arrange(cell_ID) %>%
   dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
 # Save 
-write.csv(dat_mat, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
-#write.csv(dat_mat, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
+write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
+#write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
 
 
 # Read TIF files for EVI ---
@@ -513,28 +515,43 @@ df_long <- extracted %>%
   mutate(
     year = as.integer(str_extract(date, "(?<=evi_)\\d{4}")),
     doy  = as.integer(str_extract(date, "(?<=evi_\\d{4}_)\\d{3}")),
-    evi  = ifelse(is.nan(evi), NA, evi)
+    evi  = ifelse(is.nan(evi), NA, evi), 
+    obs_date = as.Date(doy - 1, origin = paste0(year, "-01-01"))
   )
 
 # -> for sites 
-# Predict missing values 
+
+# Join with periods
+df_joined <- df_long %>%
+  mutate(dummy = 1) %>%
+  left_join(periods %>% mutate(dummy = 1), by = "dummy") %>%
+  filter(obs_date >= start_period & obs_date <= end_period) %>%
+  dplyr::select(-dummy)
+
+# Aggregate per site per period
+df_aggregated <- df_joined %>%
+  group_by(cell_ID, period_counter) %>%
+  summarise(mean_evi = mean(evi, na.rm = TRUE), .groups = "drop")
+
+# Ensure all sites have all periods 
+df_filled <- df_aggregated %>%
+  group_by(cell_ID) %>%
+  complete(period_counter = 1:101) %>%
+  ungroup()
+df_filled <- merge(df_filled, periods[, c("period_counter", "year")], all.x=T)
+
+# Add x & y coordinates
+coords <- as.data.frame(reference, xy=T)
+df_filled <- merge(df_filled, coords, all.x=T) 
+
 impute_evi_ridge <- function(df) {
   
-  # Add 1999 rows with NA so glmnet can predict them
-  if (!1999 %in% df$year) {
-    doys <- unique(df$doy[!is.na(df$doy)])
-    new_rows <- data.frame(
-      cell_ID = df$cell_ID[1],
-      date = paste0("evi_1999_", doys),
-      evi = NA,
-      year = 1999,
-      doy = doys
-    )
-    df <- bind_rows(df, new_rows)
-  }
+  # Replace NaN with NA for consistency
+  df <- df %>% mutate(mean_evi = ifelse(is.nan(mean_evi), NA, mean_evi))
   
-  X <- model.matrix(~ year + doy, df)[, -1]  # drop intercept (glmnet adds one)
-  y <- df$evi
+  # Create model matrix with year, x, y as predictors
+  X <- model.matrix(~ year + x + y, df)[, -1]  # drop intercept (glmnet adds one)
+  y <- df$mean_evi
   
   # Fit ridge regression on non-missing data
   fit <- cv.glmnet(
@@ -545,41 +562,24 @@ impute_evi_ridge <- function(df) {
     standardize = TRUE
   )
   
-  # Predict for ALL cells (including NAs)
+  # Predict for ALL rows
   df$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
   
-  # Replace original values where missing 
+  # Replace missing values with predictions
   df <- df %>%
-    mutate(evi_final = ifelse(is.na(evi), evi_filled, evi))
+    mutate(mean_evi_final = ifelse(is.na(mean_evi), evi_filled, mean_evi))
   
   df
 }
 
-result <- impute_evi_ridge(df_long) 
+result <- impute_evi_ridge(df_filled) 
 
 EVI_long <- result %>% 
-  filter(year %in% periods$year) %>%
-  mutate(year_str = str_extract(date, "(?<=evi_)\\d{4}"),
-         doy_str  = str_extract(date, "(?<=evi_\\d{4}_)\\d{3}"),
-         obs_date = as.Date(as.numeric(doy_str) - 1, 
-                            origin = paste0(year_str, "-01-01"))) %>%
-  dplyr::select(-year_str, -doy_str) %>% 
-  dplyr::select(c(cell_ID, evi_final, obs_date)) %>% 
-  rename(cov_value = evi_final, 
-         date = obs_date)
-
-EVI_joined <- EVI_long %>%
-  left_join(periods %>% mutate(dummy = 1), by = character()) %>% 
-  filter(date >= start_period & date <= end_period) %>%  #WAHAT IS THIS? 
-  group_by(cell_ID, period_counter) %>% #for when multiple values per cell per period 
-  summarise(
-    cov_value = mean(cov_value, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-EVI_mat <- EVI_joined %>% 
+  dplyr::select(c(cell_ID, period_counter, mean_evi_final)) %>% 
+  rename(cov_value = mean_evi_final) %>% 
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
   arrange(cell_ID) %>% 
+  dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
 write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
