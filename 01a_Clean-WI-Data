@@ -37,6 +37,8 @@ sequence <- sequence %>% filter(!project_id %in% rm_project_id)
 nrow(sequence) #4350128
 head(sequence) 
 
+# NOTE: also remove CAWP-UCB Wolf Wildlife Insights by request 
+
 # Fix shifted columns --------------------------------------------------------------------
 
 # Examine data 
@@ -702,6 +704,8 @@ nrow(image) #59911862
 image <- image %>% filter(!project_id %in% rm_project_id)
 nrow(image) #59872157
 head(image) 
+
+# NOTE: also remove CAWP-UCB Wolf Wildlife Insights by request 
 
 # Fix shifted columns --------------------------------------------------------------------
 
