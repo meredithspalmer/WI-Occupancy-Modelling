@@ -161,7 +161,7 @@ cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
 crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, cell_IDs)
 gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, cell_IDs)
 precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, cell_IDs)
-wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_warmseas_full.csv", primary.periods, cell_IDs)
+wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", primary.periods, cell_IDs) 
 gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, cell_IDs)
 evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, cell_IDs) #EVI FULL DOESN'T EXIST YET! 
 
@@ -181,102 +181,72 @@ X.0 <- cbind(1, crop.0, gpw.0, gfc.0, precseas.0, wdpa.0, evi.0, road_dist.0, tr
 t.cols <- primary.periods
 out.pred <- predict(out, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
 
+TEST FROM HERE 
+
+# ------------------------
+# 3. Collapse to average occupancy per year
+# ------------------------
+
+# out.pred$psi.samples has dimension: [iterations × sites × years]
+psi.samples <- out.pred$psi.samples
+
+# Average across sites for each iteration and year
+psi.mean.by.year <- apply(psi.samples, c(1, 3), mean)  # [iterations × years]
+
+# Summarize posterior mean & CI per year
+occ.summary <- data.frame(
+  year = years,
+  mean = apply(psi.mean.by.year, 2, mean),
+  lower = apply(psi.mean.by.year, 2, quantile, 0.025),
+  upper = apply(psi.mean.by.year, 2, quantile, 0.975)
+)
+
+# ------------------------
+# 4. Plot occupancy vs year
+# ------------------------
+
+ggplot(occ.summary, aes(x = year, y = mean)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "gray80", alpha = 0.6) +
+  geom_line(color = "blue", size = 1) +
+  labs(x = "Year", y = "Occupancy probability (ψ)", 
+       title = "Predicted occupancy across sites") +
+  theme_minimal()
 
 
 
 
 
 
+# Number of prediction sites
+J.pred <- nrow(static_covs)
 
+# Number of prediction years 
+n.years.pred <- 25 
 
-# Predict occupancy across all sites in the original data list 
-
-svc.out <- out #this contain trends 
-static.out <- out #this contains only spatially (not temporally) varying 
-
-I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!! vignette not helpful - does not consider replicates? adapt for primary periods and replicates
-
-# Parameters 
-(n.sites <- length(unique(covs$cell_ID))) 
-(n.period <- length(seq(min(covs$period_counter), max(covs$period_counter), by = 1)))
-n.rep <- 13 
-(n.beta <- ncol(out$beta.samples)) #number of occupancy regression parameters 
-
-# Create and fill an empty array with the proper dimensions
-X.0 <- array(NA, dim = c(n.sites, n.period, n.beta))
-X.0[, , 1] <- 1 #intercept
-
-# Primary period (standardized by values used to fit the model)
-period.pred <- (as.numeric(dat_ls$occ.covs$trend))
-X.0[, , 2] <- period.pred
-
-# Crops (standardized by values used to fit the model) --- PULL THESE FROM DAT_LS? 
-crop.pred <- (as.numeric(dat_ls$occ.covs$crop) - mean(as.numeric(fit.data$occ.covs$crop)) / sd(as.numeric(fit.data$occ.covs$crop)))
-X.0[, , 3] <- crop.pred
-
-## WHAT IS FIT DATA?? 
-
-# Cities 
-cities.pred <- (as.numeric(dat_ls$occ.covs$cities_lg) - mean(as.numeric(fit.data$occ.covs$cities_lg)) / sd(as.numeric(fit.data$occ.covs$cities_lg)))
-X.0[, , 4] <- cities.pred
-
-# Give names to X.0 just to make things clear
-dimnames(X.0)[[3]] <- c('(Intercept)', 'periods', 'crop', 'cities')
-
-# Prediction coordinates
-coords.0 <- full.data$coords
-# Predict across all years and sites in the original data set
-out.pred.occ <- predict(svc.out, X.0, coords.0, t.cols = 1:n.years, type = 'occupancy')
-str(out.pred.occ)
-
-# Can then manipulate the objects in out.pred.occ as desired
-# e.g., calculate mean occupancy probability for each site/period
-psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
-
-WHY ARE ALL psi.0.samples NA? 
-  sum(is.na(out.pred.occ$psi.0.samples))/length(out.pred.occ$psi.0.samples)
-something scaled covariates issue?? 
+# Number of occupancy predictors (including intercept) 
+p.occ <- ncol(out$beta.samples)
   
-  #prediction for occurance
-  out.pred_occ <- predict(modelout.sp_1, X.0_occ, predict_coords,
-                          t.cols = c(1, 4,7), #set 1 - monsoon
-                          n.omp.threads = 8, type = 'occupancy')
-summary(out.pred_occ)
-
-mean.psi <- apply(out.pred_occ$psi.0.samples, 2, mean)
-sd.psi <- apply(out.pred_occ$psi.0.samples, 2, sd)
-
-
-
-
-# Number of prediction sites.
-J.pred <- nrow(hbefElev)
-# Number of prediction years.
-n.years.pred <- 2
-# Number of predictors (including intercept)
-p.occ <- ncol(out.ar1$beta.samples)
 # Get covariates and standardize them using values used to fit the model
-elev.pred <- (hbefElev$val - mean(revi.data$occ.covs$elev)) / sd(revi.data$occ.covs$elev)
-year.pred <- matrix(rep((c(2010, 2018) - mean(revi.data$occ.covs$years)) / 
-                          sd(revi.data$occ.covs$years), 
-                        length(elev.pred)), J.pred, n.years.pred, byrow = TRUE)
+tri.pred <- (static_covs$tri - mean(dat_ls$occ.covs$tri)) / sd(dat_ls$occ.covs$tri) #shouldn't need?
+year_1999_scaled <- (1999 - mean(dat_ls$occ.covs$years)) / sd(dat_ls$occ.covs$years)
+year.pred <- matrix(year_1999_scaled, nrow = J.pred, ncol = 1)
+
 # Create three-dimensional array
 X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
+
 # Fill in the array
-# Years
-X.0[, , 2] <- year.pred
-# Elevation
-X.0[, , 3] <- elev.pred
-# Elevation^2
-X.0[, , 4] <- elev.pred^2
-# Check out the structure
+X.0[, , 2] <- year.pred #years
+X.0[, , 3] <- tri.pred #elevation
 str(X.0)
+
 # Indicate which primary time periods (years) we are predicting for
 t.cols <- c(1, 9)
-# Approx. run time: < 30 sec
-out.pred <- predict(out.ar1, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
-# Check out the structure
+
+# Predict 
+out.pred <- predict(out, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
 str(out.pred)
+
+
 #we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
 plot.dat <- data.frame(x = hbefElev$Easting, y = hbefElev$Northing, 
                        mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
@@ -294,7 +264,6 @@ ggplot() + geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi))
   labs(x = 'Easting', y = 'Northing', fill = '', 
        title = 'Mean REVI occurrence probability 2009') +
   theme_bw()  
-
 
 
 
