@@ -94,34 +94,117 @@ ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "i
 #        covariate results in a decrease in the probability of occurrence, when 
 #        all other covariate values are held constant.
 
+
 ## Predictions ----------------------------------------------------------------
+
+## Predict 
+# from: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+# hbefElev --- make this is a bounding box of sites (later, update to MOL range map)
+
+# load and format reference ---------------------------------------------------
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# get bounding box for species detection sites
+plot_coords <- as.data.frame(coords) 
+crs <- crs(ref)
+plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
+bbox_sf <- st_as_sfc(st_bbox(plot_coords_sf))
+
+# Plot detection sites --------------------------------------------------------
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- st_transform(world, crs = crs)
+
+ggplot() +
+  geom_sf(data = world, fill = "gray90", color = "gray60") +
+  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+  theme_minimal() +
+  labs(title = "Species Detection Sites")
+
+# Plot zoomed to bbox ---------------------------------------------------------
+world_cropped <- st_crop(world, bbox_sf) 
+
+ggplot() +
+  geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
+  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+  geom_sf(data = bbox_sf, fill = NA, color = "red", size = 1) +
+  theme_minimal() +
+  labs(title = "Species Detection Sites [Zoomed]")
+
+# Crop raster to bbox to get cell_IDs within bounding box ---------------------
+r_cropped <- crop(ref, bbox_sf)
+r_df <- as.data.frame(r_cropped, xy = TRUE)
+
+# Format static covs ----------------------------------------------------------
+static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
+  filter(cell_ID %in% r_df$cell_ID)
+road_dist.0 <- static_covs$road_dist
+tri.0 <- static_covs$tri
+river_dist.0 <- static_covs$river_dist
+coeff_var.0 <- static_covs$coeff_var
+cities_lg.0 <- static_covs$cities_lg
+
+# Format dynamic covariates ---------------------------------------------------
+cell_IDs <- unique(r_df$cell_ID)
+primary.periods <- seq(min(dat_ls$occ.covs$trend), max(dat_ls$occ.covs$trend), by=1)
+
+cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
+  covariate <- read.csv(cov_dataframe_name) %>% 
+    dplyr::select(-any_of("X")) %>% 
+    filter(cell_ID %in% cell_IDs) %>% 
+    arrange(cell_ID) %>% 
+    select(cell_ID, matches(paste0("^X(", paste(primary.periods, collapse="|"), ")$"))) %>% 
+    as.matrix() 
+  return(covariate)
+}
+
+crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, cell_IDs)
+gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, cell_IDs)
+precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, cell_IDs)
+wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_warmseas_full.csv", primary.periods, cell_IDs)
+gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, cell_IDs)
+evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, cell_IDs) #EVI FULL DOESN'T EXIST YET! 
+
+QUESTION: do we need to scale them if they are already scaled in the formula? try first without ... 
+
+trend.0 <- matrix(rep(primary.periods, each = length(cell_IDs)),
+                  nrow = length(cell_IDs),
+                  ncol = length(primary.periods),
+                  byrow = FALSE)
+colnames(trend.0) <- as.character(primary.periods)
+
+# Create prediction design matrix (1 = intercept)
+X.0 <- cbind(1, crop.0, gpw.0, gfc.0, precseas.0, wdpa.0, evi.0, road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, trend.0)
+
+# Predict occupancy for all years
+#t.cols <- 1:n.trend.pred #n.trend.pred <- 100     
+t.cols <- primary.periods
+out.pred <- predict(out, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
+
+
+
+
+
+
+
+
 
 # Predict occupancy across all sites in the original data list 
 
 svc.out <- out #this contain trends 
-static.out <- out #this contains only spatially varying 
+static.out <- out #this contains only spatially (not temporally) varying 
 
 I DO NOT THINK THIS HANDLES SVC VARYING COVARIATES --- FIX!!! vignette not helpful - does not consider replicates? adapt for primary periods and replicates
 
-# Number of sites 
-(n.sites <- length(unique(covs$cell_ID)))
-
-# Number of primary periods  
+# Parameters 
+(n.sites <- length(unique(covs$cell_ID))) 
 (n.period <- length(seq(min(covs$period_counter), max(covs$period_counter), by = 1)))
-
-# Number of replicates 
 n.rep <- 13 
+(n.beta <- ncol(out$beta.samples)) #number of occupancy regression parameters 
 
-# Number of occupancy regression parameters -- CHANGE THE OUT 
-(n.beta <- ncol(svc.out$beta.samples))
-
-# Create and fill an empty array with the proper dimensions --- NEED TO ADD REPLICATES? try without first? 
+# Create and fill an empty array with the proper dimensions
 X.0 <- array(NA, dim = c(n.sites, n.period, n.beta))
-
-# Intercept
-X.0[, , 1] <- 1
-
-QUESTION -- if variables are already standardized in dat_ls, no need to repeat here -- examine input data
+X.0[, , 1] <- 1 #intercept
 
 # Primary period (standardized by values used to fit the model)
 period.pred <- (as.numeric(dat_ls$occ.covs$trend))
@@ -130,6 +213,8 @@ X.0[, , 2] <- period.pred
 # Crops (standardized by values used to fit the model) --- PULL THESE FROM DAT_LS? 
 crop.pred <- (as.numeric(dat_ls$occ.covs$crop) - mean(as.numeric(fit.data$occ.covs$crop)) / sd(as.numeric(fit.data$occ.covs$crop)))
 X.0[, , 3] <- crop.pred
+
+## WHAT IS FIT DATA?? 
 
 # Cities 
 cities.pred <- (as.numeric(dat_ls$occ.covs$cities_lg) - mean(as.numeric(fit.data$occ.covs$cities_lg)) / sd(as.numeric(fit.data$occ.covs$cities_lg)))
@@ -244,8 +329,43 @@ predicted_occupancy <- predict(svc_model, X.0 = new_data)
 
 # ## Predict -------
 
-# ?predict.stPGOcc()
-# REVISIT: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
+# load and format reference ---------------------------------------------------
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# get bounding box for species detection sites
+plot_coords <- as.data.frame(coords) 
+crs <- crs(ref)
+plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
+bbox_sf <- st_as_sfc(st_bbox(plot_coords_sf))
+
+# Plot detection sites --------------------------------------------------------
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- st_transform(world, crs = crs)
+
+ggplot() +
+  geom_sf(data = world, fill = "gray90", color = "gray60") +
+  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+  theme_minimal() +
+  labs(title = "Species Detection Sites")
+
+# Plot zoomed to bbox ---------------------------------------------------------
+world_cropped <- st_crop(world, bbox_sf) 
+
+ggplot() +
+  geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
+  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+  geom_sf(data = bbox_sf, fill = NA, color = "red", size = 1) +
+  theme_minimal() +
+  labs(title = "Species Detection Sites [Zoomed]")
+
+# Crop raster to bbox to get cell_IDs within bounding box ---------------------
+r_cropped <- crop(ref, bbox_sf)
+r_df <- as.data.frame(r_cropped, xy = TRUE)
+
+# Format static covs ----------------------------------------------------------
+static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
+  filter(cell_ID %in% r_df$cell_ID)
 
 
 
