@@ -31,7 +31,6 @@ library(purrr)
 library(parallel)
 library(glmnet)
 library(mgcv)
-library(fuzzyjoin)
 
 
 # Set up reference raster -----------------------------------------------------
@@ -670,8 +669,8 @@ gfc_stack <- rast(gfc_list_raster)
 
 # Align GFC 
 gfc_stack_aligned <- project(gfc_stack, reference_sub, method = "near")
-extracted <- terra::zonal(gfc_stack_aligned, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-#extracted <- terra::zonal(gfc_stack_aligned, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
+#extracted <- terra::zonal(gfc_stack_aligned, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
+extracted <- terra::zonal(gfc_stack_aligned, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
 head(extracted)
 
 # Format data frame 
@@ -695,7 +694,8 @@ gam_model <- gam(cov_value ~ s(x, y) + s(year), data = df_long)
 df_filled <- df_long %>%
   group_by(cell_ID) %>%
   complete(year = 2001:2021) %>%
-  ungroup()
+  ungroup() ## this includes the 2013, right?? 
+df_filled <- df_filled %>% filter(year != 2013) #remove, add below 
 
 # Predict for 1999:2000, 2013, 2022:2024 and for missing data 
 newdata <- expand.grid(
@@ -733,8 +733,8 @@ df_wide <- GFC_joined %>%
   dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
-write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
-#write.csv(df_wide, "primary_occ_covariates_GFC_full.csv")
+#write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
+write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_full.csv") 
 
 
 # Read CROP proportions ---     
