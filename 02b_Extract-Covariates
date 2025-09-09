@@ -668,7 +668,8 @@ for(i in 1:length(gfc)){
 gfc_stack <- rast(gfc_list_raster)
 
 # Align GFC 
-gfc_stack_aligned <- project(gfc_stack, reference_sub, method = "near")
+#gfc_stack_aligned <- project(gfc_stack, reference_sub, method = "near")
+gfc_stack_aligned <- project(gfc_stack, reference_land, method = "near")
 #extracted <- terra::zonal(gfc_stack_aligned, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
 extracted <- terra::zonal(gfc_stack_aligned, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
 head(extracted)
@@ -688,16 +689,15 @@ df_long <- merge(df_long, coords, all.x=T) %>%
   rename(cov_value = GFC)
 
 # Fit GAM: smooth in x, y, and year
-gam_model <- gam(cov_value ~ s(x, y) + s(year), data = df_long)
+gam_model <- gam(cov_value ~ s(x, y) + s(year), data = df_long, na.action = na.exclude)
 
-# Ensure all cell_ids have all years
+# Ensure all cell_ids have all years 
 df_filled <- df_long %>%
   group_by(cell_ID) %>%
-  complete(year = 2001:2021) %>%
-  ungroup() ## this includes the 2013, right?? 
-df_filled <- df_filled %>% filter(year != 2013) #remove, add below 
+  complete(year = setdiff(2001:2021, 2013)) %>%
+  ungroup()
 
-# Predict for 1999:2000, 2013, 2022:2024 and for missing data 
+# Create prediction df for 1999:2000, 2013, 2022:2024 and for missing data 
 newdata <- expand.grid(
   cell_ID = unique(df_filled$cell_ID),
   year = c(1999:2000, 2013, 2022:2024)
