@@ -27,55 +27,72 @@ load(filename)
 
 ## Results --------------------------------------------------------------------
 
-# Basic summary
+## Basic summary
 summary(out)
 
-# Parameter plots: Occurrence 
+## Parameter plots: Occurrence 
 occ.samps <- out$beta.samples 
 occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps), 6)) 
 colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
 occ_quantiles$covariate <- colnames(occ.samps)
-DO WANT TO RENAME -- FROM HERE 
+occ_quantiles$covariate <- c("Intercept", "Crop", "GPW", "Precip", "WDPA", "EVI", "Road Dist", "TRI", "River Dist", "CV", "City Dist", "Trend") #update as appropriate 
+desired_order <- c("TRI", "Road Dist", "River Dist", "City Dist", "CV",
+                   "Crop", "GPW", "Precip", "WDPA", "EVI", "Trend", "Intercept")
+occ_quantiles$covariate <- factor(occ_quantiles$covariate, levels = desired_order)
 occ_quantiles$mean <- colMeans(occ.samps)
 occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
 
-ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
+(occParams <- ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
   geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
   geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
                 linewidth = 1.5, show.legend = FALSE) +
   geom_point() +
   theme_bw() +
   geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariate') +
+  xlab('Covariates (scaled)') +
   ylab('Posterior Distribution') +
-  ggtitle('Occurrence coefficients', 'Multi-season, single-species model')
+  ggtitle('Occurrence coefficients', 'Multi-season, single-species model') + 
+  coord_flip())
 
+file_name <- paste(file_path, "/", target_species, "_occurrenceParams.jpg", sep="")
+ggsave(filename = file_name, plot = occParams, width = 6, height = 5, units = "in")
 
-
-# -> Interpretations:
-# • Coefficients are estimated for the logit(ψ) = βX model and thus must be interpreted on the logit scale
-# • Positive beta coefficents imply that an increase in the value of that covariate results in an increase in the probability of occurrence, when all other covariate values are held constant.
-# • Negative beta coefficents imply that an increase in the value of that covariate results in a decrease in the probability of occurrence, when all other covariate values are held constant.
-
-## Detection: Access the full samples of the occurrence paramaters and save their quantiles within det_quantiles
+## Parameter plots: Detection 
 det.samps <- out$alpha.samples
-det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps),6))
+det_quantiles <- as.data.frame(matrix(NA, ncol(det.samps), 6))
 colnames(det_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
 det_quantiles$covariate <- colnames(det.samps)
+det_quantiles$covariate <- c("Intercept", "Effort", "Julian Day", "Julian Day Sq", "N. Depl") #update as appropriate
+desired_order <- c("Effort", "N. Depl", "Julian Day", "Julian Day Sq", "Intercept")
+det_quantiles$covariate <- factor(det_quantiles$covariate, levels = desired_order)
 det_quantiles$mean <- colMeans(det.samps)
 det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
 
-ggplot(det_quantiles, aes(x = covariate, y = mean)) +
+(detParams <- ggplot(det_quantiles, aes(x = covariate, y = mean)) +
   geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
   geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
                 linewidth = 1.5, show.legend = FALSE) +
   geom_point() +
   theme_bw() +
   geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariate') +
+  xlab('Covariates (scaled)') +
   ylab('Posterior Distribution') +
-  ggtitle('Detection coefficients', 'Multi-season, single-species model')
+  ggtitle('Detection coefficients', 'Multi-season, single-species model') + 
+  coord_flip())
 
+file_name <- paste(file_path, "/", target_species, "_detectionParams.jpg", sep="")
+ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "in")
+
+
+# -> Interpretations:
+#      - Coefficients are estimated for the logit(ψ) = βX model and thus must be 
+#        interpreted on the logit scale
+#      - Positive beta coefficents imply that an increase in the value of that 
+#        covariate results in an increase in the probability of occurrence, when
+#        all other covariate values are held constant.
+#      - Negative beta coefficents imply that an increase in the value of that 
+#        covariate results in a decrease in the probability of occurrence, when 
+#        all other covariate values are held constant.
 
 ## Predictions ----------------------------------------------------------------
 
