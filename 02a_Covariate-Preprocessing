@@ -418,22 +418,24 @@ library(rnaturalearth)
 library(dplyr)
 library(tidyr)
 
-# load reference raster
-ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif") #clipped
+# load terrestrial reference raster
+#ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif") 
+ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif") 
+
 
 # create 1km2 raster
-#r1 <- rast(ref_100km, resolution = 0.01)
 ref_1km <- rast("../../Raw spatial layers/Global_1km_CEA_reference_raster.tif") 
-land <- ne_countries(scale = "medium", returnclass = "sf") 
-land_vect <- vect(land)
-ref_1km_land <- mask(ref_1km, land_vect)
+#land <- ne_countries(scale = "medium", returnclass = "sf") 
+#land_vect <- vect(land)
+#ref_1km_land <- mask(ref_1km, land_vect) ## CRS DO NOT MATCH 
 
 # load reference polygons 
 shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
 shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
 shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
 wdpa <- rbind(shape1, shape2, shape3)
-wdpa <- st_transform(wdpa, crs(ref_1km_land))
+#wdpa <- st_transform(wdpa, crs(ref_1km_land))
+wdpa <- st_transform(wdpa, crs(ref_1km))
 
 # rasterize protected areas
 years <- 1999:2024
@@ -447,7 +449,8 @@ for (i in seq_along(years)) {
   r1_pa[is.na(r1_pa)] <- 0  # convert NA to 0
   
   # Use nearest assignment: each 1km cell inherits ID of 10km cell it falls in
-  r1_id <- resample(ref_100km, ref_1km_land, method="near")
+  #r1_id <- resample(ref_100km, ref_1km_land, method="near")
+  r1_id <- resample(ref_100km, ref_1km, method="near")
   
   # Extract values as data frame
   df <- data.frame(
@@ -466,7 +469,7 @@ for (i in seq_along(years)) {
 
 results_df <- dplyr::bind_rows(results_list)
 head(results_df); unique(results_df$year)
-write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full.csv", row.names=F)
+write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full_new.csv", row.names=F)
 
 
 ################################################################################
