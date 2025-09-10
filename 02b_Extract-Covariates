@@ -518,7 +518,7 @@ df_long <- extracted %>%
     obs_date = as.Date(doy - 1, origin = paste0(year, "-01-01"))
   )
 
-# -> for sites 
+# -> for sites: DISREGARD BELOW; RE-EXTRACTED SITES FROM FULL 
 
 # Join with periods
 df_joined <- df_long %>%
