@@ -583,73 +583,102 @@ EVI_long <- result %>%
 
 write.csv(EVI_long, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
 
-# -> for global (use this raster in all modelling and predicting)
+## -> for global (use this raster in all modelling and predicting)
 
-impute_evi_ridge_all_years <- function(df_long) {
+# Convert to long
+extracted <- as.data.table(extracted)
+dt_long <- melt(extracted,
+                id.vars = "cell_ID",
+                variable.name = "date",
+                value.name = "cov_value")
+dt_long[, c("year", "doy") := tstrsplit(gsub("evi_", "", date), "_", fixed = TRUE)]
+dt_long[, year := as.integer(year)]
+dt_long[, doy  := as.integer(doy)]
+dt_long[, obs_date := as.Date(doy - 1, origin = paste0(year, "-01-01"))]
+dt_long[, date := NULL]
+head(dt_long)
+
+# Match with periods 
+periods <- as.data.table(periods)
+dt_long[, `:=`(obs_start = obs_date, obs_end = obs_date)] #dummy variables
+setkey(periods, start_period, end_period)
+dt_joined <- foverlaps(
+  x = dt_long,
+  y = periods,
+  by.x = c("obs_start", "obs_end"),
+  by.y = c("start_period", "end_period"),
+  type = "within",
+  nomatch = 0L
+)
+
+# Consolidate to one obs per period 
+dt_period <- dt_joined[, .(
+  cov_value = mean(cov_value, na.rm = TRUE)
+), by = .(cell_ID, period_counter, year)]
+
+# Ensure one row per cell_ID per period 
+all_ids     <- dt_period[, unique(cell_ID)]
+all_periods <- dt_period[, unique(period_counter)]
+grid <- CJ(cell_ID = all_ids, period_counter = all_periods)
+grid <- merge(grid, unique(periods[, .(period_counter, year)]), by = "period_counter")
+dt_complete <- grid[dt_period, on = .(cell_ID, period_counter, year)]
+
+# Add coordinates
+coords <- as.data.table(reference, xy=T)
+dt_complete <- coords[dt_complete, on = "cell_ID"]
+
+# Ridge regression imputation per year 
+impute_ridge_by_year <- function(dt) {
+  dt[, cov_value := as.numeric(cov_value)]
   
-  df_filled <- df_long %>%
-    group_split(year) %>%
-    map_dfr(function(chunk) {
+  dt_imputed <- dt[, {
+    this <- copy(.SD)   # make a modifiable copy
+    train <- this[!is.na(cov_value) & !is.nan(cov_value)]
+    
+    if (nrow(train) >= 3 && length(unique(train$cov_value)) > 1) {
+      # design matrices
+      X_train <- model.matrix(~ period_counter + x + y, train)[, -1]
+      y_train <- train$cov_value
       
-      # Build model matrix and response
-      X <- model.matrix(~ year + doy, chunk)[, -1]
-      y <- chunk$evi
+      fit <- cv.glmnet(
+        X_train, y_train,
+        alpha = 0,
+        nfolds = min(5, nrow(train)),
+        standardize = TRUE
+      )
       
-      # Fit ridge regression only if enough variation
-      if(sum(!is.na(y)) >= 3 && length(unique(y[!is.na(y)])) > 1) {
-        fit <- cv.glmnet(
-          X[!is.na(y), ],
-          y[!is.na(y)],
-          alpha = 0,
-          nfolds = min(5, sum(!is.na(y))),
-          standardize = TRUE
-        )
-        chunk$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
-      } else {
-        # Not enough data or no variation — leave as-is
-        chunk$evi_filled <- chunk$evi
-      }
+      X_all <- model.matrix(~ period_counter + x + y, this)[, -1]
+      preds <- as.numeric(predict(fit, newx = X_all, s = "lambda.min"))
       
-      chunk %>%
-        mutate(evi_final = ifelse(is.na(evi), evi_filled, evi))
-    })
+      # replace only missing
+      this$cov_value <- fifelse(is.na(this$cov_value) | is.nan(this$cov_value),
+                                preds, this$cov_value)
+    }
+    
+    this  # return updated data.table for this group
+  }, by = year]
   
-  return(df_filled)
+  return(dt_imputed[])
 }
 
-result_long <- impute_evi_ridge_all_years(df_long)
-head(result_long)
-write.csv(result_long, "evi_save.csv", row.names=F)
+start_time <- Sys.time()
+dt_imputed <- impute_ridge_by_year(dt_complete)
+end_time <- Sys.time()
+end_time - start_time 
 
-EVI_long <- result_long %>% 
-  filter(year %in% periods$year) %>%
-  mutate(year_str = str_extract(date, "(?<=evi_)\\d{4}"),
-         doy_str  = str_extract(date, "(?<=evi_\\d{4}_)\\d{3}"),
-         obs_date = as.Date(as.numeric(doy_str) - 1, 
-                            origin = paste0(year_str, "-01-01"))) %>%
-  dplyr::select(-year_str, -doy_str) %>% 
-  dplyr::select(c(cell_ID, evi_final, obs_date)) %>% 
-  rename(cov_value = evi_final, 
-         date = obs_date)
+# Pivot to final matrix
+setkey(dt_imputed, cell_ID, period_counter)
+EVI_mat <- dcast(
+  dt_imputed,
+  cell_ID ~ period_counter,
+  value.var = "cov_value",
+  fill = NA_real_
+)
+EVI_mat_matrix <- as.matrix(EVI_mat[, -"cell_ID"])
+rownames(EVI_mat_matrix) <- EVI_mat$cell_ID
+head(EVI_mat_matrix)
 
-EVI_joined <- EVI_long %>%
-  left_join(periods %>% mutate(dummy = 1), by = character()) %>% 
-  filter(date >= start_period & date <= end_period) %>% 
-  group_by(cell_ID, period_counter) %>% #for when multiple values per cell per period 
-  summarise(
-    cov_value = mean(cov_value, na.rm = TRUE),
-    .groups = "drop"
-  )
-write.csv(EVI_joined, "evi_save_2.csv", row.names=F)
-
-EVI_mat <- EVI_joined %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
-  arrange(cell_ID) %>% 
-  as.matrix()
-
-write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
-
-
+write.csv(EVI_mat_matrix, "Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
 
 # Read TIF files for GFC --  
 
