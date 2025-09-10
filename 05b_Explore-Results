@@ -48,9 +48,9 @@ occ.samps <- out$beta.samples
 occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps), 6)) 
 colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
 occ_quantiles$covariate <- colnames(occ.samps)
-occ_quantiles$covariate <- c("Intercept", "Crop", "GPW", "Precip", "WDPA", "EVI", "Road Dist", "TRI", "River Dist", "CV", "City Dist", "Trend") #update as appropriate 
+occ_quantiles$covariate <- c("Intercept", "Crop", "GPW", "Precip", "WDPA", "EVI", "GFC", "Road Dist", "TRI", "River Dist", "CV", "City Dist", "Trend") #update as appropriate 
 desired_order <- c("TRI", "Road Dist", "River Dist", "City Dist", "CV",
-                   "Crop", "GPW", "Precip", "WDPA", "EVI", "Trend", "Intercept")
+                   "Crop", "GPW", "Precip", "WDPA", "EVI", "GFC", "Trend", "Intercept")
 occ_quantiles$covariate <- factor(occ_quantiles$covariate, levels = desired_order)
 occ_quantiles$mean <- colMeans(occ.samps)
 occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
@@ -183,8 +183,9 @@ cities_lg.0 <- static_covs$cities_lg
 
 
 # Format dynamic covariates ---------------------------------------------------
-primary.periods <- seq(min(dat_ls$occ.covs$trend), max(dat_ls$occ.covs$trend), by=1)
+primary.periods <- seq(min(covs$period_counter), max(covs$period_counter), by = 1)
 
+# extraction function
 cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
   covariate <- read.csv(cov_dataframe_name) %>% 
     dplyr::select(-any_of("X")) %>% 
@@ -195,21 +196,25 @@ cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
   return(covariate)
 }
 
-crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, mmd_cellIDs)
-gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, mmd_cellIDs)
-precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, mmd_cellIDs)
-wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", primary.periods, mmd_cellIDs) 
-gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, mmd_cellIDs)
-evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs) #EVI FULL DOESN'T EXIST YET! 
-
--> exxtract EVI live in code 
-
-
+# processed values 
+crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, mmd_cellIDs$cell_ID)
+gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, mmd_cellIDs$cell_ID)
+precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, mmd_cellIDs$cell_ID)
+wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
+gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, mmd_cellIDs$cell_ID)
 trend.0 <- matrix(rep(primary.periods, each = length(cell_IDs)),
                   nrow = length(cell_IDs),
                   ncol = length(primary.periods),
                   byrow = FALSE)
 colnames(trend.0) <- as.character(primary.periods)
+
+# extract evi live 
+evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs) #EVI FULL DOESN'T EXIST YET! 
+
+-> exxtract EVI live in code 
+
+
+
 
 # Create prediction design matrix (1 = intercept)
 X.0 <- cbind(1, crop.0, gpw.0, gfc.0, precseas.0, wdpa.0, evi.0, road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, trend.0)
