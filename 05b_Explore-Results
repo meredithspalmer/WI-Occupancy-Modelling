@@ -8,21 +8,34 @@ rm(list=ls()); gc()
 set.seed(123)
 
 # Load libraries
+library(tidyterra)
 library(terra)
 library(spOccupancy)
 library(coda)
 library(stringr)
 library(ggplot2)
 library(rasterVis)
+library(rnaturalearth)
+library(sf)
 
 
 ## Load data ------------------------------------------------------------------
+
 filenames <- list.files("Model outputs", full.names = TRUE) 
 species <- "Panthera pardus"
+
+# Model outputs 
 file_path <- filenames[grep(species, filenames)]
 file_name_only <- basename(file_path)
 filename <- paste0(file_path, "/", file_name_only, "_svcTPGOcc.RData")
 load(filename)
+
+# MOL range maps 
+species_file <- gsub(" ", "_", species)
+mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map <- rast(mmd_map_path)
+plot(mmd_map)
+str(mmd_map)
 
 
 ## Results --------------------------------------------------------------------
@@ -43,16 +56,16 @@ occ_quantiles$mean <- colMeans(occ.samps)
 occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
 
 (occParams <- ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
-  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
-  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
-                linewidth = 1.5, show.legend = FALSE) +
-  geom_point() +
-  theme_bw() +
-  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariates (scaled)') +
-  ylab('Posterior Distribution') +
-  ggtitle('Occurrence coefficients', 'Multi-season, single-species model') + 
-  coord_flip())
+    geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+    geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                  linewidth = 1.5, show.legend = FALSE) +
+    geom_point() +
+    theme_bw() +
+    geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+    xlab('Covariates (scaled)') +
+    ylab('Posterior Distribution') +
+    ggtitle('Occurrence coefficients', 'Multi-season, single-species model') + 
+    coord_flip())
 
 file_name <- paste(file_path, "/", target_species, "_occurrenceParams.jpg", sep="")
 ggsave(filename = file_name, plot = occParams, width = 6, height = 5, units = "in")
@@ -69,16 +82,16 @@ det_quantiles$mean <- colMeans(det.samps)
 det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 0.975)))
 
 (detParams <- ggplot(det_quantiles, aes(x = covariate, y = mean)) +
-  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
-  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
-                linewidth = 1.5, show.legend = FALSE) +
-  geom_point() +
-  theme_bw() +
-  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
-  xlab('Covariates (scaled)') +
-  ylab('Posterior Distribution') +
-  ggtitle('Detection coefficients', 'Multi-season, single-species model') + 
-  coord_flip())
+    geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+    geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                  linewidth = 1.5, show.legend = FALSE) +
+    geom_point() +
+    theme_bw() +
+    geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+    xlab('Covariates (scaled)') +
+    ylab('Posterior Distribution') +
+    ggtitle('Detection coefficients', 'Multi-season, single-species model') + 
+    coord_flip())
 
 file_name <- paste(file_path, "/", target_species, "_detectionParams.jpg", sep="")
 ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "in")
@@ -111,25 +124,46 @@ crs <- crs(ref)
 plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
 bbox_sf <- st_as_sfc(st_bbox(plot_coords_sf))
 
+# get bounding box for expert range maps 
+bbox_mmd <- ext(mmd_map)
+bbox_sf_mmd <- st_as_sfc(st_bbox(mmd_map))
+
 # Plot detection sites --------------------------------------------------------
 world <- ne_countries(scale = "medium", returnclass = "sf")
 world <- st_transform(world, crs = crs)
 
-ggplot() +
-  geom_sf(data = world, fill = "gray90", color = "gray60") +
+ggplot() + 
+  geom_sf(data = world, fill = "gray90", color = "gray60", linewidth = 0.3) +
+  geom_spatraster(data = mmd_map) + 
   geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
-  theme_minimal() +
+  scale_fill_viridis_c(na.value = NA) +
+  theme_minimal() + theme(legend.position = "none") + 
   labs(title = "Species Detection Sites")
 
 # Plot zoomed to bbox ---------------------------------------------------------
 world_cropped <- st_crop(world, bbox_sf) 
-
 ggplot() +
   geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
+  geom_spatraster(data = mmd_map) + 
   geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
   geom_sf(data = bbox_sf, fill = NA, color = "red", size = 1) +
-  theme_minimal() +
+  scale_fill_viridis_c(na.value = NA) +
+  theme_minimal() + theme(legend.position = "none") + 
   labs(title = "Species Detection Sites [Zoomed]")
+
+world_cropped_mmd <- st_crop(world, bbox_mmd)
+(speciesDet <- ggplot() +
+  geom_sf(data = world_cropped_mmd, fill = "gray90", color = "gray60") +
+  geom_spatraster(data = mmd_map) + 
+  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+  #geom_sf(data = bbox_sf_mmd, fill = NA, color = "red", size = 1) +
+  scale_fill_viridis_c(na.value = NA) +
+  theme_minimal() + theme(legend.position = "none") + 
+  labs(title = "Species Detection Sites [Zoomed]"))
+
+file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
+ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in")
+
 
 # Crop raster to bbox to get cell_IDs within bounding box ---------------------
 r_cropped <- crop(ref, bbox_sf)
@@ -225,7 +259,7 @@ n.years.pred <- 25
 
 # Number of occupancy predictors (including intercept) 
 p.occ <- ncol(out$beta.samples)
-  
+
 # Get covariates and standardize them using values used to fit the model
 tri.pred <- (static_covs$tri - mean(dat_ls$occ.covs$tri)) / sd(dat_ls$occ.covs$tri) #shouldn't need?
 year_1999_scaled <- (1999 - mean(dat_ls$occ.covs$years)) / sd(dat_ls$occ.covs$years)
