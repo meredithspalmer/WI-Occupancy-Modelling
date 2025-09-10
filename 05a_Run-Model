@@ -165,13 +165,10 @@ static_scaled <- static %>%
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
-## NEED TO SCALE 
-## UPDATE THE FOLLOWING WITH FULL DATA when generated 
-
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
 crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
 precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_sites.csv", periods)
-wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", periods)
+wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full_new.csv", periods)
 evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_sites.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_sites.csv", periods)
 gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_sites.csv", periods) 
@@ -315,8 +312,6 @@ hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
 ## Plot covariates ------------------------------------------------------------
 
-
-
 # static coordinates  
 plottable_coords <- cbind(static_scaled, coords) 
 plottable_coords <- st_as_sf(
@@ -324,17 +319,10 @@ plottable_coords <- st_as_sf(
   coords = c("x", "y"),     
   crs = crs(ref))
 
-
 # dynamic coordinates 
 year <- 
-
-
-
-
-
-
-# optional: plot to check
-plot(r)
+  # optional: plot to check
+  plot(r)
 plot(r_cropped, add = TRUE, border = "red")
 
 
@@ -342,9 +330,6 @@ TO DO -- this needs to be done for FULL coords but cropped to bb of species proj
 
 # what want to do here is create a bounding box around monitored area, and crop 
 # full raster of cov values to this bb and plot over
-
-
-
 
 
 # Map covariates across study area: static  
@@ -440,6 +425,7 @@ ggplot(naive_plot, aes(x = x, y = y, fill = naive_occupancy)) +
   theme_bw(base_size = 16) +
   labs(title = "Naive occurrence", fill = "") +
   scale_fill_viridis_d(option = "plasma", na.value = "grey80")
+
 
 ## Subset data if appropriate -------------------------------------------------
 
@@ -571,11 +557,10 @@ dat_ls <- list(y = yarray,
 # DO NOT FORGET TO SCALE COVARIATES 
 # note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
 
-occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + 
-  road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
+occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + scale(gfc) + road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
 det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj)
 
-svc.cols = c(1:12)  #covariates whose effects are estimated as SVCs
+svc.cols = c(1:13)  #covariates whose effects are estimated as SVCs, including intercept
 
 # Prep inits -------------------------------------------------------------------
 
@@ -591,10 +576,10 @@ inits.list <- list(beta = 0,            #occurrence coefficients
                    alpha = 0,           #detection coefficients
                    z = z.init,          #latent occurrence values
                    phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
-                   sigma.sq = 0.5, #fabiola had as 2... 
+                   sigma.sq = 0.5,      #fabiola had as 2... 
                    w = matrix(0, length(svc.cols), nrow(y_dat)),  #fabiola had rep(0, ncell) 
                    #rho = 0,  
-                   sigma.sq.t = 0.5)    #occurrence random effect variances (not in tutorial?)
+                   sigma.sq.t = 0.5)    #occurrence random effect variances 
 
 # Note: don't have to specify priors, can use svcPGOcc() defaults 
 priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
@@ -619,6 +604,11 @@ if(testing){
   n.thin = 10 
   n.report = 40 #tutorial has 100
 }
+
+n.batch <- 800 #tutorial has 800
+n.burn = 10000 #tutorial has 10000
+n.thin = 10 
+n.report = 100 #tutorial has 100
 
 batch.length <- 25
 n.iter <- n.batch * batch.length 
@@ -655,7 +645,7 @@ out <- svcTPGOcc(occ.formula = occ.formula,
 #str(k.fold.sp)
 
 end_time <- Sys.time()
-end_time - start_time #model run time 
+end_time - start_time 
 
 ## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
@@ -764,6 +754,5 @@ plogis(2.13) #convert logit values to probability scale
 
 (filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", target_species, "_", Sys.Date(), "/", target_species, "_", Sys.Date(), "_svcTPGOcc", ".RData", sep = ""))
 save(yarray, covs, target_species, out, coords, file = filename)
-#toc()
 
 ## ------------------------------------------------------------------------------
