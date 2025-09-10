@@ -60,6 +60,16 @@ if (crs(reference) != crs(land_terra)) {
 # Mask to land
 reference_land <- mask(reference, land_terra)
 
+# NOTE some sites not captured in land mask -- add manually 
+existing_ids <- reference_land$cell_ID
+missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
+
+# Create a raster layer with only the missing site_cells
+add_raster <- reference
+add_raster[!values(add_raster) %in% missing_ids] <- NA
+reference_land <- cover(reference_land, add_raster)
+
+
 ## Static layers --------------------------------------------------------------
 
 # Read TIF files for static layers 
