@@ -174,15 +174,15 @@ mmd_cellIDs <- unique(masked_ref$cell_ID)
 
 # Format static covs ----------------------------------------------------------
 static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
-  filter(cell_ID %in% mmd_cellIDs)
+  filter(cell_ID %in% mmd_cellIDs$cell_ID)
 road_dist.0 <- static_covs$road_dist
 tri.0 <- static_covs$tri
 river_dist.0 <- static_covs$river_dist
 coeff_var.0 <- static_covs$coeff_var
 cities_lg.0 <- static_covs$cities_lg
 
+
 # Format dynamic covariates ---------------------------------------------------
-cell_IDs <- unique(r_df$cell_ID)
 primary.periods <- seq(min(dat_ls$occ.covs$trend), max(dat_ls$occ.covs$trend), by=1)
 
 cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
@@ -195,14 +195,15 @@ cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
   return(covariate)
 }
 
-crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, cell_IDs)
-gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, cell_IDs)
-precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, cell_IDs)
-wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", primary.periods, cell_IDs) 
-gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, cell_IDs)
-evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, cell_IDs) #EVI FULL DOESN'T EXIST YET! 
+crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, mmd_cellIDs)
+gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, mmd_cellIDs)
+precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, mmd_cellIDs)
+wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", primary.periods, mmd_cellIDs) 
+gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, mmd_cellIDs)
+evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs) #EVI FULL DOESN'T EXIST YET! 
 
-QUESTION: do we need to scale them if they are already scaled in the formula? try first without ... 
+-> exxtract EVI live in code 
+
 
 trend.0 <- matrix(rep(primary.periods, each = length(cell_IDs)),
                   nrow = length(cell_IDs),
