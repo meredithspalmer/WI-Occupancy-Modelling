@@ -165,13 +165,16 @@ file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in")
 
 
-# Crop raster to bbox to get cell_IDs within bounding box ---------------------
-r_cropped <- crop(ref, bbox_sf)
-r_df <- as.data.frame(r_cropped, xy = TRUE)
+# Crop to get cell_IDs within MMD ---------------------------------------------
+mmd_repro <- project(mmd_map, ref)
+masked_ref <- mask(ref, mmd_repro)
+plot(masked_ref)
+mmd_cellIDs <- unique(masked_ref$cell_ID)
+
 
 # Format static covs ----------------------------------------------------------
 static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
-  filter(cell_ID %in% r_df$cell_ID)
+  filter(cell_ID %in% mmd_cellIDs)
 road_dist.0 <- static_covs$road_dist
 tri.0 <- static_covs$tri
 river_dist.0 <- static_covs$river_dist
