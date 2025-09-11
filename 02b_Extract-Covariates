@@ -760,9 +760,10 @@ df_wide <- GFC_joined %>%
 
 head(df_wide)
 
-# Plot to check -- FROM HERE 
-selected_year <- "2007"
-plot_subset <- dt_imputed %>% filter(year == selected_year)
+# Plot to check  
+selected_period <- 1
+plot_subset <- GFC_joined %>% filter(period_counter == selected_period) %>% 
+  left_join(coords, by = "cell_ID")
 
 ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
@@ -772,15 +773,13 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
 write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_full.csv") 
 
 # Subset to sites -- NEED TO REDO THIS 
-subset_mat <- EVI_mat_matrix[rownames(EVI_mat_matrix) %in% site_cells$cell_ID, ] FIX THIS 
+subset_mat <- df_wide[df_wide[, 1] %in% site_cells$cell_ID, ]
 write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
 
 
+## Proportion crop/urban ------------------------------------------------------
 
-
-
-
-# Read CROP proportions ---     
+# Read crop file 
 crop <- read.csv("crop_proportion_all_years_predicted.csv") %>% 
   filter(year %in% periods$year) %>% 
   rename(cov_value = crop_prop) %>% 
@@ -796,8 +795,7 @@ CROP_joined <- crop %>%
 
 write.csv(CROP_joined, "primary_occ_covariates_crop_predicted.csv", row.names=F)
 
-
-# Read URBAN proportions ---     
+# Read urban file 
 urban <- read.csv("urban_proportion_all_years.csv") %>% 
   filter(year %in% periods$year) %>% 
   rename(cov_value = proportion) %>% 
@@ -814,7 +812,9 @@ URBAN_joined <- urban %>%
 write.csv(URBAN_joined, "primary_occ_covariates_urban.csv", row.names=F)
 
 
-# propWDPA --- 
+## Proportion of cell in protected area (WDPA) --------------------------------
+
+# Read WDPA file  
 wdpa <- read.csv("prop_wdpa_full.csv")
 
 WDPA_joined <- wdpa %>%
