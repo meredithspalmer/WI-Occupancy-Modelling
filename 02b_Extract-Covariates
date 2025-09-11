@@ -13,7 +13,7 @@
 # Run ONCE but note: this extracts values for cell_IDs present in the WI dataset;
 # if you add sites to the dataset, you will need to re-extract the covariates 
 
-# set workspace -----------------------------------------------------------------
+# Set workspace -----------------------------------------------------------------
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers")
 rm(list=ls()); gc()
 
@@ -33,7 +33,7 @@ library(glmnet)
 library(mgcv)
 
 
-# Set up reference raster -----------------------------------------------------
+## Set up reference raster ----------------------------------------------------
 
 # Load reference
 reference <- rast("raster_100km2_with_cellID.tif")
@@ -69,6 +69,28 @@ add_raster <- reference
 add_raster[!values(add_raster) %in% missing_ids] <- NA
 reference_land <- cover(reference_land, add_raster)
 
+# Create coordinate dataframe 
+coords <- as.data.frame(reference, xy=T)
+
+
+## Create period template -----------------------------------------------------
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
+head(periods)
+
 
 ## Static layers --------------------------------------------------------------
 
@@ -86,9 +108,7 @@ static_layers <- list(
 r_c <- rast(static_layers)
 
 # Extract cell_IDs
-#extracted <- terra::zonal(r_c, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
 extracted <- terra::zonal(r_c, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
-coords <- as.data.frame(reference, xy=T)
 extracted <- merge(extracted, coords, all.x=T) %>% distinct()
 
 # Extrapolate missing values (using linear models; fills in mean when unable to model)
@@ -156,29 +176,21 @@ for (cov in covariate_cols) {
 }
 
 # Save 
-#write.csv(extracted, "../Covariates for modelling/site_level_covariates.csv", row.names = FALSE)
 write.csv(extracted, "../Covariates for modelling/site_level_covariates_full.csv", row.names = FALSE)
 
+# Subset site-level covariates
+extracted_sub <- extracted[extracted$cell_ID %in% unique(site_cells$cell_ID), ]
+write.csv(extracted, "../Covariates for modelling/site_level_covariates.csv", row.names = FALSE)
 
-## Dynamic layers -------------------------------------------------------------
+## Plot to check 
+cov_value <- "elevation"
 
-# Create period template ------------------------------------------------------
-min_year <- 2000  
-max_year <- 2024 
-range_year <- c(min_year, max_year)
-min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
-max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
-end_period <-  c(start_period[-1] - 1, NA)
+ggplot(extracted, aes(x = x, y = y, fill = .data[[cov_value]])) +
+  geom_tile() +   
+  scale_fill_viridis_c(option = "magma") +
+  coord_equal() +
+  theme_minimal()
 
-periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
-                      start_period = start_period, 
-                      end_period = end_period) 
-periods <- periods[-nrow(periods),]
-periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
-periods$year <- year(periods$start_period)
-periods$period_counter <- 1:nrow(periods)
-head(periods)
 
 ## Annual dynamic layers ------------------------------------------------------
 
