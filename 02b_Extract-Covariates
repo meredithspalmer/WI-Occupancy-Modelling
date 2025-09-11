@@ -183,7 +183,8 @@ extracted_sub <- extracted[extracted$cell_ID %in% unique(site_cells$cell_ID), ]
 write.csv(extracted, "../Covariates for modelling/site_level_covariates.csv", row.names = FALSE)
 
 ## Plot to check 
-cov_value <- "elevation"
+names(extracted)
+cov_value <- "cities_lg"
 
 ggplot(extracted, aes(x = x, y = y, fill = .data[[cov_value]])) +
   geom_tile() +   
@@ -194,147 +195,15 @@ ggplot(extracted, aes(x = x, y = y, fill = .data[[cov_value]])) +
 
 ## Annual dynamic layers ------------------------------------------------------
 
-## Read TIF files for ANNUAL PRECIP ---    
-r_list <- list(
-  precip_1999 = rast("annprec_2010_100km2.tif"),
-  precip_2011 = rast("annprec_2040_100km2.tif")
-)
+## Seasonal precipitation -----------------------------------------------------
+
+# Load TIF files 
+r_list <- list(precseas_1999 = rast("precseas_2010_100km2.tif"),
+               precseas_2011 = rast("precseas_2040_100km2.tif"))
 r_stack <- rast(r_list)
 
 # Extract cell_IDs
-#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
 extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
-head(extracted)
-
-# Reshape and interpolate for 2000–2024
-cov_df <- extracted %>%
-  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>% #WHY IS THIS NEGATIVE? HERE AND THROUGHOUT 
-  mutate(year = as.numeric(str_remove(year, "precip_"))) %>%
-  group_by(cell_ID) %>%
-  summarise(
-    start_year = min(year, na.rm = TRUE),
-    end_year   = max(year, na.rm = TRUE),
-    start_cov  = cov[year == min(year, na.rm = TRUE)],
-    end_cov    = cov[year == max(year, na.rm = TRUE)],
-    .groups = "drop"
-  ) %>%
-  rowwise() %>%
-  mutate(preds = list({
-    if (is.na(start_cov) || is.na(end_cov)) {
-      tibble(year = periods$year, cov = NA_real_)
-    } else {
-      tibble(
-        year = periods$year,
-        cov  = approx(
-          x = c(start_year, end_year),
-          y = c(start_cov, end_cov),
-          xout = periods$year,
-          rule = 2
-        )$y
-      )
-    }
-  })) %>%
-  unnest(preds) %>%
-  ungroup() %>% 
-  distinct()
-
-# Expand to seasons (4 rows per year) 
-cov_df <- cov_df %>%
-  left_join(periods %>% dplyr::select(year, period_counter), by = "year", relationship = "many-to-many") %>%
-  dplyr::select(cell_ID, period_counter, cov)
-
-# Pivot to final matrix 
-cov_df <- cov_df %>%
-  pivot_wider(
-    id_cols = cell_ID,
-    names_from = period_counter,
-    values_from = cov,
-    values_fill = NA
-  ) %>%
-  arrange(cell_ID) %>%
-  as.matrix()
-
-# Save 
-#write.csv(cov_df, ../Covariates for modelling/"primary_occ_covariates_annprec_sites.csv", row.names = F)
-write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_annprec_full.csv", row.names = F)
-
-
-## Read TIF files for ANNUAL TEMP ---    
-r_list <- list(
-  temp_1999 = rast("anntemp_2010_100km2.tif"),
-  temp_2011 = rast("anntemp_2040_100km2.tif")
-)
-r_stack <- rast(r_list)
-
-# Extract cell_IDs
-#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
-extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
-head(extracted)
-
-# Reshape and interpolate for 2000–2024
-cov_df <- extracted %>%
-  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
-  mutate(year = as.numeric(str_remove(year, "temp_"))) %>% 
-  group_by(cell_ID) %>%
-  summarise(
-    start_year = min(year, na.rm = TRUE),
-    end_year   = max(year, na.rm = TRUE),
-    start_cov  = cov[year == min(year, na.rm = TRUE)],
-    end_cov    = cov[year == max(year, na.rm = TRUE)],
-    .groups = "drop"
-  ) %>%
-  rowwise() %>%
-  mutate(preds = list({
-    if (is.na(start_cov) || is.na(end_cov)) {
-      tibble(year = periods$year, cov = NA_real_)
-    } else {
-      tibble(
-        year = periods$year,
-        cov  = approx(
-          x = c(start_year, end_year),
-          y = c(start_cov, end_cov),
-          xout = periods$year,
-          rule = 2
-        )$y
-      )
-    }
-  })) %>%
-  unnest(preds) %>%
-  ungroup() %>% 
-  distinct()
-
-# Expand to seasons (4 rows per year) 
-cov_df <- cov_df %>%
-  left_join(periods %>% dplyr::select(year, period_counter), by = "year", relationship = "many-to-many") %>%
-  dplyr::select(cell_ID, period_counter, cov)
-
-# Pivot to final matrix 
-cov_df <- cov_df %>%
-  pivot_wider(
-    id_cols = cell_ID,
-    names_from = period_counter,
-    values_from = cov,
-    values_fill = NA
-  ) %>%
-  arrange(cell_ID) %>%
-  as.matrix()
-
-# Save 
-#write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_temp_sites.csv", row.names = F)
-write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_temp_full.csv", row.names = F)
-
-
-## Read TIF files for SEASONAL PRECIP ---    
-r_list <- list(
-  precseas_1999 = rast("precseas_2010_100km2.tif"),
-  precseas_2011 = rast("precseas_2040_100km2.tif")
-)
-r_stack <- rast(r_list)
-
-# Extract cell_IDs
-#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
-extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
-head(extracted)
 
 # Reshape and interpolate for 2000–2024
 cov_df <- extracted %>%
@@ -368,13 +237,11 @@ cov_df <- extracted %>%
   ungroup() %>% 
   distinct()
 
-# Expand to seasons (4 rows per year) ---
+# Expand and pivot 
 cov_df <- cov_df %>%
-  left_join(periods %>% dplyr::select(year, period_counter), by = "year", relationship = "many-to-many") %>%
-  dplyr::select(cell_ID, period_counter, cov)
-
-# Pivot to final matrix ---
-cov_df <- cov_df %>%
+  left_join(periods %>% dplyr::select(year, period_counter), 
+            by = "year", relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, cov) %>%
   pivot_wider(
     id_cols = cell_ID,
     names_from = period_counter,
@@ -384,27 +251,39 @@ cov_df <- cov_df %>%
   arrange(cell_ID) %>%
   as.matrix()
 
-# Save 
-#write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_precseas_sites.csv", row.names = F)
+# Plot to test 
+period <- "X67"
+
+plot_df <- cov_df %>%
+  dplyr::select(cell_ID, value = all_of(period)) %>%
+  left_join(coords, by = "cell_ID")
+
+ggplot(plot_df, aes(x = x, y = y, fill = value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+  
+# Save full dataframe 
 write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_precseas_full.csv", row.names = F)
 
+# Subset to sites 
+sub_cov_df <- cov_df[cov_df$cell_ID %in% site_cells$cell_ID,]
+write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_precseas_sites.csv", row.names = F)
 
-# Read TIF files for WARMEST SEASON PRECIP ---    
-r_list <- list(
-  warmseas_1999 = rast("precwarm_2010_100km2.tif"),
-  warmseas_2011 = rast("precwarm_2040_100km2.tif")
-)
+
+## Annual precipitation -------------------------------------------------------
+
+# Load TIF files 
+r_list <- list(precseas_1999 = rast("annprec_2010_100km2.tif"),
+               precseas_2011 = rast("annprec_2040_100km2.tif"))
 r_stack <- rast(r_list)
 
 # Extract cell_IDs
-#extracted <- terra::zonal(r_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
 extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
-head(extracted)
 
 # Reshape and interpolate for 2000–2024
 cov_df <- extracted %>%
   pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
-  mutate(year = as.numeric(str_remove(year, "warmseas_"))) %>% 
+  mutate(year = as.numeric(str_remove(year, "precseas_"))) %>%
   group_by(cell_ID) %>%
   summarise(
     start_year = min(year, na.rm = TRUE),
@@ -433,13 +312,11 @@ cov_df <- extracted %>%
   ungroup() %>% 
   distinct()
 
-# Expand to seasons (4 rows per year) 
+# Expand and pivot 
 cov_df <- cov_df %>%
-  left_join(periods %>% dplyr::select(year, period_counter), by = "year", relationship = "many-to-many") %>%
-  dplyr::select(cell_ID, period_counter, cov)
-
-# Pivot to final matrix 
-cov_df <- cov_df %>%
+  left_join(periods %>% dplyr::select(year, period_counter), 
+            by = "year", relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, cov) %>%
   pivot_wider(
     id_cols = cell_ID,
     names_from = period_counter,
@@ -449,22 +326,185 @@ cov_df <- cov_df %>%
   arrange(cell_ID) %>%
   as.matrix()
 
-# Save 
-#write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_warmseas_sites.csv", row.names = F)
+# Plot to test 
+period <- "X67"
+
+plot_df <- cov_df %>%
+  dplyr::select(cell_ID, value = all_of(period)) %>%
+  left_join(coords, by = "cell_ID")
+
+ggplot(plot_df, aes(x = x, y = y, fill = value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe 
+write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_annprec_full.csv", row.names = F)
+
+# Subset to sites 
+sub_cov_df <- cov_df[cov_df$cell_ID %in% site_cells$cell_ID,]
+write.csv(cov_df, ../Covariates for modelling/"primary_occ_covariates_annprec_sites.csv", row.names = F)
+
+
+## Annual temperature ---------------------------------------------------------
+
+# Load TIF files 
+r_list <- list(precseas_1999 = rast("anntemp_2010_100km2.tif"),
+               precseas_2011 = rast("anntemp_2040_100km2.tif"))
+r_stack <- rast(r_list)
+
+# Extract cell_IDs
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+
+# Reshape and interpolate for 2000–2024
+cov_df <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
+  mutate(year = as.numeric(str_remove(year, "precseas_"))) %>%
+  group_by(cell_ID) %>%
+  summarise(
+    start_year = min(year, na.rm = TRUE),
+    end_year   = max(year, na.rm = TRUE),
+    start_cov  = cov[year == min(year, na.rm = TRUE)],
+    end_cov    = cov[year == max(year, na.rm = TRUE)],
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(preds = list({
+    if (is.na(start_cov) || is.na(end_cov)) {
+      tibble(year = periods$year, cov = NA_real_)
+    } else {
+      tibble(
+        year = periods$year,
+        cov  = approx(
+          x = c(start_year, end_year),
+          y = c(start_cov, end_cov),
+          xout = periods$year,
+          rule = 2
+        )$y
+      )
+    }
+  })) %>%
+  unnest(preds) %>%
+  ungroup() %>% 
+  distinct()
+
+# Expand and pivot 
+cov_df <- cov_df %>%
+  left_join(periods %>% dplyr::select(year, period_counter), 
+            by = "year", relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, cov) %>%
+  pivot_wider(
+    id_cols = cell_ID,
+    names_from = period_counter,
+    values_from = cov,
+    values_fill = NA
+  ) %>%
+  arrange(cell_ID) %>%
+  as.matrix()
+
+# Plot to test 
+period <- "X67"
+
+plot_df <- cov_df %>%
+  dplyr::select(cell_ID, value = all_of(period)) %>%
+  left_join(coords, by = "cell_ID")
+
+ggplot(plot_df, aes(x = x, y = y, fill = value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe 
+write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_temp_full.csv", row.names = F)
+
+# Subset to sites 
+sub_cov_df <- cov_df[cov_df$cell_ID %in% site_cells$cell_ID,]
+write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_temp_sites.csv", row.names = F)
+
+
+## Warmest season precipitation -----------------------------------------------
+
+# Load TIF files 
+r_list <- list(precseas_1999 = rast("precwarm_2010_100km2.tif"),
+               precseas_2011 = rast("precwarm_2040_100km2.tif"))
+r_stack <- rast(r_list)
+
+# Extract cell_IDs
+extracted <- terra::zonal(r_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+
+# Reshape and interpolate for 2000–2024
+cov_df <- extracted %>%
+  pivot_longer(-cell_ID, names_to = "year", values_to = "cov") %>%
+  mutate(year = as.numeric(str_remove(year, "precseas_"))) %>%
+  group_by(cell_ID) %>%
+  summarise(
+    start_year = min(year, na.rm = TRUE),
+    end_year   = max(year, na.rm = TRUE),
+    start_cov  = cov[year == min(year, na.rm = TRUE)],
+    end_cov    = cov[year == max(year, na.rm = TRUE)],
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(preds = list({
+    if (is.na(start_cov) || is.na(end_cov)) {
+      tibble(year = periods$year, cov = NA_real_)
+    } else {
+      tibble(
+        year = periods$year,
+        cov  = approx(
+          x = c(start_year, end_year),
+          y = c(start_cov, end_cov),
+          xout = periods$year,
+          rule = 2
+        )$y
+      )
+    }
+  })) %>%
+  unnest(preds) %>%
+  ungroup() %>% 
+  distinct()
+
+# Expand and pivot 
+cov_df <- cov_df %>%
+  left_join(periods %>% dplyr::select(year, period_counter), 
+            by = "year", relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, cov) %>%
+  pivot_wider(
+    id_cols = cell_ID,
+    names_from = period_counter,
+    values_from = cov,
+    values_fill = NA
+  ) %>%
+  arrange(cell_ID) %>%
+  as.matrix()
+
+# Plot to test 
+period <- "X67"
+
+plot_df <- cov_df %>%
+  dplyr::select(cell_ID, value = all_of(period)) %>%
+  left_join(coords, by = "cell_ID")
+
+ggplot(plot_df, aes(x = x, y = y, fill = value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe 
 write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_warmseas_full.csv", row.names = F)
 
+# Subset to sites 
+sub_cov_df <- cov_df[cov_df$cell_ID %in% site_cells$cell_ID,]
+write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_warmseas_sites.csv", row.names = F)
 
-## Read TIF files for GPW --- 
 
-# Load files 
+## Global world population (GPW) ----------------------------------------------
+
+# Load TIF files 
 gwp_stack <- rast(list.files("GWP", full.names = TRUE))
 
-# extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(gwp_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-#extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
+# Extract cell_IDs
+extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
 head(extracted)
 
-# pivot long 
+# Pivot long 
 df_long <- extracted %>%
   pivot_longer(cols = -cell_ID,
                names_to = "year",
@@ -509,9 +549,23 @@ df_mat <- df_long_combo %>%
   dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
   as.matrix()
 
-# Save 
+# Plot to check 
+period <- "X67"
+
+plot_df <- dt_mat %>%  
+  dplyr::select(cell_ID, value = all_of(period)) %>%
+  left_join(coords, by = "cell_ID")
+
+ggplot(plot_df, aes(x = x, y = y, fill = value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe
+write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
+
+# Subset to sites
 write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
-#write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
+
 
 
 # Read TIF files for EVI ---
