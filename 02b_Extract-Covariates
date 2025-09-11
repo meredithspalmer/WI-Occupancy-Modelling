@@ -31,6 +31,7 @@ library(purrr)
 library(parallel)
 library(glmnet)
 library(mgcv)
+library(data.table)
 
 
 ## Set up reference raster ----------------------------------------------------
@@ -550,119 +551,37 @@ df_mat <- df_long_combo %>%
   as.matrix()
 
 # Plot to check 
-period <- "X67"
+plot_df <- df_long_combo %>%  left_join(coords, by = "cell_ID")
 
-plot_df <- dt_mat %>%  
-  dplyr::select(cell_ID, value = all_of(period)) %>%
-  left_join(coords, by = "cell_ID")
+selected_year <- "2007"
+plot_subset <- plot_df %>% filter(year == selected_year)
 
-ggplot(plot_df, aes(x = x, y = y, fill = value)) +
+ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
   coord_equal() + theme_minimal()
 
 # Save full dataframe
 write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_full.csv", row.names = F)
 
-# Subset to sites
-write.csv(df_mat, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
+# Subset to sites  
+sub_cov_df <- df_mat[df_mat[, "cell_ID"] %in% site_cells$cell_ID, ]
+write.csv(sub_cov_df, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
 
 
+## Enhanced vegetation index (EVI) --------------------------------------------
 
-# Read TIF files for EVI ---
+# Load TIF files 
 evi_files <- list.files("EVI", full.names = TRUE)
 evi_list_raster <- lapply(evi_files, rast)
 evi_stack <- rast(evi_list_raster)
-
-# Name layers based on files (remove last 11 characters if needed)
 names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
 
 # Extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(evi_stack, reference_sub, fun = mean, na.rm = TRUE, df = TRUE)
-#extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+extracted <- as.data.table(extracted)
 head(extracted)
 
-df_long <- extracted %>%
-  pivot_longer(
-    cols = starts_with("evi_"),
-    names_to = "date",
-    values_to = "evi"
-  ) %>%
-  mutate(
-    year = as.integer(str_extract(date, "(?<=evi_)\\d{4}")),
-    doy  = as.integer(str_extract(date, "(?<=evi_\\d{4}_)\\d{3}")),
-    evi  = ifelse(is.nan(evi), NA, evi), 
-    obs_date = as.Date(doy - 1, origin = paste0(year, "-01-01"))
-  )
-
-# -> for sites: DISREGARD BELOW; RE-EXTRACTED SITES FROM FULL 
-
-# Join with periods
-df_joined <- df_long %>%
-  mutate(dummy = 1) %>%
-  left_join(periods %>% mutate(dummy = 1), by = "dummy") %>%
-  filter(obs_date >= start_period & obs_date <= end_period) %>%
-  dplyr::select(-dummy)
-
-# Aggregate per site per period
-df_aggregated <- df_joined %>%
-  group_by(cell_ID, period_counter) %>%
-  summarise(mean_evi = mean(evi, na.rm = TRUE), .groups = "drop")
-
-# Ensure all sites have all periods 
-df_filled <- df_aggregated %>%
-  group_by(cell_ID) %>%
-  complete(period_counter = 1:101) %>%
-  ungroup()
-df_filled <- merge(df_filled, periods[, c("period_counter", "year")], all.x=T)
-
-# Add x & y coordinates
-coords <- as.data.frame(reference, xy=T)
-df_filled <- merge(df_filled, coords, all.x=T) 
-
-impute_evi_ridge <- function(df) {
-  
-  # Replace NaN with NA for consistency
-  df <- df %>% mutate(mean_evi = ifelse(is.nan(mean_evi), NA, mean_evi))
-  
-  # Create model matrix with year, x, y as predictors
-  X <- model.matrix(~ year + x + y, df)[, -1]  # drop intercept (glmnet adds one)
-  y <- df$mean_evi
-  
-  # Fit ridge regression on non-missing data
-  fit <- cv.glmnet(
-    X[!is.na(y), ], 
-    y[!is.na(y)], 
-    alpha = 0,            # ridge regression
-    nfolds = 5,
-    standardize = TRUE
-  )
-  
-  # Predict for ALL rows
-  df$evi_filled <- as.numeric(predict(fit, newx = X, s = "lambda.min"))
-  
-  # Replace missing values with predictions
-  df <- df %>%
-    mutate(mean_evi_final = ifelse(is.na(mean_evi), evi_filled, mean_evi))
-  
-  df
-}
-
-result <- impute_evi_ridge(df_filled) 
-
-EVI_long <- result %>% 
-  dplyr::select(c(cell_ID, period_counter, mean_evi_final)) %>% 
-  rename(cov_value = mean_evi_final) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, values_fill = NA) %>%
-  arrange(cell_ID) %>% 
-  dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
-  as.matrix()
-
-write.csv(EVI_long, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
-
-## -> for global (use this raster in all modelling and predicting)
-
 # Convert to long
-extracted <- as.data.table(extracted)
 dt_long <- melt(extracted,
                 id.vars = "cell_ID",
                 variable.name = "date",
@@ -700,8 +619,8 @@ grid <- merge(grid, unique(periods[, .(period_counter, year)]), by = "period_cou
 dt_complete <- grid[dt_period, on = .(cell_ID, period_counter, year)]
 
 # Add coordinates
-coords <- as.data.table(reference, xy=T)
-dt_complete <- coords[dt_complete, on = "cell_ID"]
+coords_dt <- as.data.table(coords)
+dt_complete <- coords_dt[dt_complete, on = "cell_ID"]
 
 # Ridge regression imputation per year 
 impute_ridge_by_year <- function(dt) {
@@ -737,10 +656,7 @@ impute_ridge_by_year <- function(dt) {
   return(dt_imputed[])
 }
 
-start_time <- Sys.time()
 dt_imputed <- impute_ridge_by_year(dt_complete)
-end_time <- Sys.time()
-end_time - start_time 
 
 # Pivot to final matrix
 setkey(dt_imputed, cell_ID, period_counter)
@@ -752,9 +668,28 @@ EVI_mat <- dcast(
 )
 EVI_mat_matrix <- as.matrix(EVI_mat[, -"cell_ID"])
 rownames(EVI_mat_matrix) <- EVI_mat$cell_ID
+
 head(EVI_mat_matrix)
 
+# Plot to check
+plot_df <- df_long_combo %>%  left_join(coords, by = "cell_ID")
+
+selected_year <- "2007"
+plot_subset <- plot_df %>% filter(year == selected_year)
+
+ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe 
 write.csv(EVI_mat_matrix, "Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
+
+# Subset to sites
+sub_cov_df <- EVI_mat_matrix[EVI_mat_matrix[, "cell_ID"] %in% site_cells$cell_ID, ]
+write.csv(sub_cov_df, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
+
+
+
 
 # Read TIF files for GFC --  
 
