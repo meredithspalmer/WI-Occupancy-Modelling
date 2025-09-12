@@ -562,14 +562,9 @@ crop_list <- lapply(seq_along(lc_files), function(i) {
 })
 
 crop_all <- bind_rows(crop_list)
-head(crop_all)
-
-# FROM HERE! 
 write.csv(crop_all, "../10x10 km spatial layers/crop_proportion_all_years.csv", row.names=F)
-^ currently, crop_prop_all_years is only sites; need full raster... 
 
 # Predict values for 2023, 2024 
-#crop_all <- read.csv("../10x10 km spatial layers/crop_proportion_all_years.csv")
 crop_all <- merge(crop_all, coords, all.x=T) %>% 
   rename(crop_prop = proportion)
 
@@ -582,18 +577,11 @@ crop_all <- crop_all %>%
   )
 
 # Fit a spatio-temporal GAM with Beta regression.
-#    - s(x,y): smooth spatial surface
-#    - s(year): smooth temporal trend
-#    - ti(x,y,year): space-time interaction (requires the main effects above)
-#    - s(cell_ID, bs="re"): random intercept per cell to capture persistent differences
-fit <- bam(
-  crop_prop_beta ~ s(x, y, bs = "tp", k = 150) +
-    s(year, bs = "cr", k = 12) +
-    s(cell_ID, bs = "re"),
-  data    = df,
+fit <- bam(crop_prop_beta ~ s(x, y, bs = "ds", k = 30) + s(year, bs = "cr", k = 6),
+  data    = crop_all,
   family  = betar(link = "logit"),
   method  = "fREML",
-  discrete = TRUE   # works again without ti()
+  discrete = TRUE
 )
 
 # Predict on the response scale (already in (0,1) because of betar + logit)
