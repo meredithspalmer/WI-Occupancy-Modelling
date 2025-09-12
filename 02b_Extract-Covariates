@@ -773,7 +773,7 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
 # Save full dataframe 
 write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_full.csv") 
 
-# Subset to sites -- NEED TO REDO THIS 
+# Subset to sites
 subset_mat <- df_wide[df_wide[, 1] %in% site_cells$cell_ID, ]
 write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
 
@@ -781,7 +781,7 @@ write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_GFC_si
 ## Proportion crop/urban ------------------------------------------------------
 
 # Read crop file 
-crop <- read.csv("crop_proportion_all_years.csv") %>% 
+crop <- read.csv("crop_proportion_all_years_full_new.csv") %>% 
   filter(year %in% periods$year) %>% 
   rename(cov_value = crop_prop) %>% 
   distinct()
@@ -809,7 +809,7 @@ write.csv(CROP_joined, "../Covariates for modelling/primary_occ_covariates_crop_
 subset_mat <- CROP_joined[CROP_joined[, "cell_ID"] %in% site_cells$cell_ID,]
 write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_crop_sites.csv", row.names=F)
 
-# Read urban file 
+## Read urban file 
 urban <- read.csv("urban_proportion_all_years.csv") %>% 
   filter(year %in% periods$year) %>% 
   rename(cov_value = proportion) %>% 
