@@ -32,6 +32,7 @@ library(parallel)
 library(glmnet)
 library(mgcv)
 library(data.table)
+library(ggplot2)
 
 
 ## Set up reference raster ----------------------------------------------------
@@ -262,7 +263,7 @@ plot_df <- cov_df %>%
 ggplot(plot_df, aes(x = x, y = y, fill = value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
   coord_equal() + theme_minimal()
-  
+
 # Save full dataframe 
 write.csv(cov_df, "../Covariates for modelling/primary_occ_covariates_precseas_full.csv", row.names = F)
 
@@ -780,7 +781,7 @@ write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_GFC_si
 ## Proportion crop/urban ------------------------------------------------------
 
 # Read crop file 
-crop <- read.csv("crop_proportion_all_years_predicted.csv") %>% 
+crop <- read.csv("crop_proportion_all_years_full_new.csv") %>% 
   filter(year %in% periods$year) %>% 
   rename(cov_value = crop_prop) %>% 
   distinct()
@@ -793,7 +794,20 @@ CROP_joined <- crop %>%
   arrange(cell_ID) %>% 
   as.matrix()
 
-write.csv(CROP_joined, "primary_occ_covariates_crop_predicted.csv", row.names=F)
+# Plot to check  
+selected_year <- 1999
+
+plot_subset <- crop %>% filter(year == selected_year) 
+ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe 
+write.csv(CROP_joined, "../Covariates for modelling/primary_occ_covariates_crop_full.csv", row.names=F)
+
+# Subset to sites 
+subset_mat <- CROP_joined[CROP_joined[, "cell_ID"] %in% site_cells$cell_ID,]
+write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_crop_sites.csv", row.names=F)
 
 # Read urban file 
 urban <- read.csv("urban_proportion_all_years.csv") %>% 
@@ -826,4 +840,20 @@ WDPA_joined <- wdpa %>%
   as.matrix()
 
 head(WDPA_joined)
-write.csv(WDPA_joined, "primary_occ_covariates_wdpa_full.csv", row.names=F)
+
+# Plot to check  
+selected_year <- 2006
+plot_subset <- wdpa %>% filter(year == selected_year) %>% 
+  left_join(coords, by = "cell_ID")
+
+ggplot(plot_subset, aes(x = x, y = y, fill = prop_in_PA)) +
+  geom_tile() + scale_fill_viridis_c(option = "magma") +
+  coord_equal() + theme_minimal()
+
+# Save full dataframe 
+write.csv(WDPA_joined, "../Covariates for modelling/primary_occ_covariates_WDPA_full.csv", row.names=F)
+
+# Subset to sites 
+head(WDPA_joined)
+subset_mat <- WDPA_joined[WDPA_joined[, "cell_ID"] %in% site_cells$cell_ID, ]
+write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_WDPA_sites.csv", row.names=F)
