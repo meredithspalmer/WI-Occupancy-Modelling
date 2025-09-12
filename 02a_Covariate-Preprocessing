@@ -498,6 +498,7 @@ library(dplyr)
 library(stringr)
 library(mgcv)     
 library(tidyr)
+library(rnaturalearth)
 
 # All terrestrial areas 
 reference <- reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif")
@@ -597,7 +598,7 @@ pred_df <- crop_all %>%
   group_by(cell_ID, x, y) %>%
   nest() %>%
   mutate(
-    fit = map(data, ~ lm(crop_prop ~ splines::ns(year, df = 4), data = .x)),  # flexible but extrapolates
+    fit = map(data, ~ lm(crop_prop ~ splines::ns(year, df = 4), data = .x)), 
     preds = map(fit, ~ {
       tibble(
         year = future_years$year,
@@ -613,11 +614,9 @@ head(pred_df)
 crop_all <- crop_all %>% select(-crop_prop_beta)
 crop_all <- rbind(crop_all, pred_df)
 
-PLOT TO CHECK 
-
 #write.csv(crop_all,  "crop_proportion_all_years_predicted.csv",  row.names=FALSE)
 #write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
-write.csv(crop_all,  "crop_proportion_all_years_full.csv",  row.names=FALSE)
+write.csv(crop_all,  "crop_proportion_all_years_full_new.csv",  row.names=FALSE)
 
 
 ############################################################################
