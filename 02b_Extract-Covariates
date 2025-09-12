@@ -781,7 +781,7 @@ write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_GFC_si
 ## Proportion crop/urban ------------------------------------------------------
 
 # Read crop file 
-crop <- read.csv("crop_proportion_all_years_full_new.csv") %>% 
+crop <- read.csv("crop_proportion_all_years.csv") %>% 
   filter(year %in% periods$year) %>% 
   rename(cov_value = crop_prop) %>% 
   distinct()
