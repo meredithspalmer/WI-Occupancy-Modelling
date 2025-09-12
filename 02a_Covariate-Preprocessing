@@ -418,26 +418,34 @@ library(rnaturalearth)
 library(dplyr)
 library(tidyr)
 
-# load terrestrial reference raster
-#ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif") 
-ref_100km <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif") 
+# Create and load reference rasters with all site ids -------------------------
 
+# All terrestrial areas 
+reference <- reference <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif")
+land <- ne_countries(scale = "medium", returnclass = "sf")
+land_terra <- vect(land)
+if (crs(reference) != crs(land_terra)) {land_terra <- project(land_terra, crs(reference))}
+reference_land <- mask(reference, land_terra)
 
-# create 1km2 raster
+# NOTE some sites not captured in land mask -- add manually 
+site_cells <- read.csv("../../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+existing_ids <- reference_land$cell_ID
+missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
+add_raster <- reference
+add_raster[!values(add_raster) %in% missing_ids] <- NA
+reference_land <- cover(reference_land, add_raster)
+
+# Create 1km2 raster
 ref_1km <- rast("../../Raw spatial layers/Global_1km_CEA_reference_raster.tif") 
-#land <- ne_countries(scale = "medium", returnclass = "sf") 
-#land_vect <- vect(land)
-#ref_1km_land <- mask(ref_1km, land_vect) ## CRS DO NOT MATCH 
 
-# load reference polygons 
+# Load and format WDPA polygons -----------------------------------------------
 shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
 shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
 shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
 wdpa <- rbind(shape1, shape2, shape3)
-#wdpa <- st_transform(wdpa, crs(ref_1km_land))
 wdpa <- st_transform(wdpa, crs(ref_1km))
 
-# rasterize protected areas
+# Rasterize and extract protected area proportions ----------------------------
 years <- 1999:2024
 results_list <- vector("list", length(years))
 
@@ -449,8 +457,7 @@ for (i in seq_along(years)) {
   r1_pa[is.na(r1_pa)] <- 0  # convert NA to 0
   
   # Use nearest assignment: each 1km cell inherits ID of 10km cell it falls in
-  #r1_id <- resample(ref_100km, ref_1km_land, method="near")
-  r1_id <- resample(ref_100km, ref_1km, method="near")
+  r1_id <- resample(reference_land, ref_1km, method="near")
   
   # Extract values as data frame
   df <- data.frame(
@@ -469,6 +476,7 @@ for (i in seq_along(years)) {
 
 results_df <- dplyr::bind_rows(results_list)
 head(results_df); unique(results_df$year)
+
 write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full_new.csv", row.names=F)
 
 
@@ -486,17 +494,26 @@ rm(list = ls()); gc()
 library(terra)
 library(dplyr)
 library(stringr)
+library(mgcv)     
+library(tidyr)
 
-# Load reference data -- sites 
-reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif") 
-site_cells <- read.csv("../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
-reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+# All terrestrial areas 
+reference <- reference <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif")
+land <- ne_countries(scale = "medium", returnclass = "sf")
+land_terra <- vect(land)
+if (crs(reference) != crs(land_terra)) {land_terra <- project(land_terra, crs(reference))}
+reference_land <- mask(reference, land_terra)
 
-# Load reference data -- all terrestrial land 
-reference_sub <- rast("../10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
+# NOTE some sites not captured in land mask -- add manually 
+site_cells <- read.csv("../../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+existing_ids <- reference_land$cell_ID
+missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
+add_raster <- reference
+add_raster[!values(add_raster) %in% missing_ids] <- NA
+reference_land <- cover(reference_land, add_raster)
 
 # Load coordinates
-coords <- as.data.frame(rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif"), xy=T) 
+coords <- as.data.frame(reference, xy=T) 
 
 # Classes
 crop_class <- c(10,11,12,20,30,40)
@@ -528,7 +545,7 @@ calculate_proportion <- function(class_values, lc_raster, grid_raster) {
 lc_files <- list.files("CCI landcover 1km2", pattern="\\.tif$", full.names=TRUE)
 
 crop_all <- data.frame()
-#urban_all <- data.frame()
+urban_all <- data.frame()
 
 for (file in lc_files) {
   
@@ -545,23 +562,19 @@ for (file in lc_files) {
   
   # Calculate proportions at native resolution
   crop_prop  <- calculate_proportion(crop_class,  landcover, reference_sub)
-  #urban_prop <- calculate_proportion(urban_class, landcover, reference_sub)
+  urban_prop <- calculate_proportion(urban_class, landcover, reference_sub)
   
   # Add year column
   crop_prop$year  <- year
-  #urban_prop$year <- year
+  urban_prop$year <- year
   
   # Append
   crop_all  <- bind_rows(crop_all, crop_prop)
-  #urban_all <- bind_rows(urban_all, urban_prop)
+  urban_all <- bind_rows(urban_all, urban_prop)
 }
 
 # Predict values for 2023, 2024 
-library(mgcv)     
-library(dplyr)
-library(tidyr)
-
-crop_all <- read.csv("../10x10 km spatial layers/crop_proportion_all_years.csv")
+#crop_all <- read.csv("../10x10 km spatial layers/crop_proportion_all_years.csv")
 crop_all <- merge(crop_all, coords, all.x=T) %>% 
   rename(crop_prop = proportion)
 
@@ -593,8 +606,7 @@ newdata$pred_crop_prop <- predict(fit, newdata = newdata, type = "response")
 newdata$pred_crop_prop <- pmin(pmax(newdata$pred_crop_prop, 0), 1)
 head(newdata)
 
-
-# ^ this takes a LONG time to run; do short version for now: 
+# The above can take a LONG time to run; do short version for now: 
 library(purrr)
 future_years <- data.frame(year = c(2023, 2024))
 
