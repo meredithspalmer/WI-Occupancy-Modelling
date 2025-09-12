@@ -1,4 +1,6 @@
+################################################################################
 #################### Covariate download and pre-processing #####################
+################################################################################
 
 # Some data downloaded manually, others through following code
 # Code also contains scripts for aggregating and summarizing values at 10x10km2 scale 
@@ -486,7 +488,7 @@ write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km sp
 
 # Calculates the proportion of each grid cell containing crop or urban landscape
 
-# Set wd 
+# Set working directory
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers")
 rm(list = ls()); gc()
 
@@ -498,14 +500,14 @@ library(mgcv)
 library(tidyr)
 
 # All terrestrial areas 
-reference <- reference <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif")
+reference <- reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif")
 land <- ne_countries(scale = "medium", returnclass = "sf")
 land_terra <- vect(land)
 if (crs(reference) != crs(land_terra)) {land_terra <- project(land_terra, crs(reference))}
 reference_land <- mask(reference, land_terra)
 
 # NOTE some sites not captured in land mask -- add manually 
-site_cells <- read.csv("../../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+site_cells <- read.csv("../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
 existing_ids <- reference_land$cell_ID
 missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
 add_raster <- reference
@@ -517,7 +519,7 @@ coords <- as.data.frame(reference, xy=T)
 
 # Classes
 crop_class <- c(10,11,12,20,30,40)
-urban_class <- 190
+#urban_class <- 190
 
 # Function to calculate proportions using extract()
 calculate_proportion <- function(class_values, lc_raster, grid_raster) {
@@ -541,44 +543,37 @@ calculate_proportion <- function(class_values, lc_raster, grid_raster) {
   return(na.omit(prop_df))
 }
 
-# Input files
-lc_files <- list.files("CCI landcover 1km2", pattern="\\.tif$", full.names=TRUE)
+years <- as.numeric(str_extract(basename(lc_files), "\\d{4}"))
 
-crop_all <- data.frame()
-urban_all <- data.frame()
-
-for (file in lc_files) {
-  
-  message("\n--- Processing: ", file)
+# Process all files 
+crop_list <- lapply(seq_along(lc_files), function(i) {
+  file <- lc_files[i]
   landcover <- rast(file)
   
-  # Reproject CRS if needed but keep native resolution
-  if (crs(landcover) != crs(reference_sub)) {
-    landcover <- project(landcover, crs(reference_sub), method="near")
+  # Reproject if CRS differs
+  if (!compareGeom(landcover, reference_land, stopOnError = FALSE)) {
+    landcover <- project(landcover, crs(reference_land), method="near")
   }
   
-  # Extract year
-  year <- as.numeric(str_extract(basename(file), "\\d{4}"))
+  crop_prop <- calculate_proportion(crop_class, landcover, reference_land)
+  crop_prop$year <- years[i]
   
-  # Calculate proportions at native resolution
-  crop_prop  <- calculate_proportion(crop_class,  landcover, reference_sub)
-  urban_prop <- calculate_proportion(urban_class, landcover, reference_sub)
-  
-  # Add year column
-  crop_prop$year  <- year
-  urban_prop$year <- year
-  
-  # Append
-  crop_all  <- bind_rows(crop_all, crop_prop)
-  urban_all <- bind_rows(urban_all, urban_prop)
-}
+  crop_prop
+})
+
+crop_all <- bind_rows(crop_list)
+head(crop_all)
+
+# FROM HERE! 
+write.csv(crop_all, "../10x10 km spatial layers/crop_proportion_all_years.csv", row.names=F)
+^ currently, crop_prop_all_years is only sites; need full raster... 
 
 # Predict values for 2023, 2024 
 #crop_all <- read.csv("../10x10 km spatial layers/crop_proportion_all_years.csv")
 crop_all <- merge(crop_all, coords, all.x=T) %>% 
   rename(crop_prop = proportion)
 
-# Ensure response is in (0,1). If you truly have 0/1s, shrink slightly toward the interior Beta regression requires open interval).
+# Ensure response is in (0,1). If you truly have 0/1s, shrink slightly toward the interior (Beta regression requires open interval).
 eps <- 1e-6
 crop_all <- crop_all %>%
   mutate(
@@ -629,6 +624,8 @@ head(pred_df)
 
 crop_all <- crop_all %>% select(-crop_prop_beta)
 crop_all <- rbind(crop_all, pred_df)
+
+PLOT TO CHECK 
 
 #write.csv(crop_all,  "crop_proportion_all_years_predicted.csv",  row.names=FALSE)
 #write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
