@@ -614,9 +614,8 @@ head(pred_df)
 crop_all <- crop_all %>% select(-crop_prop_beta)
 crop_all <- rbind(crop_all, pred_df)
 
-#write.csv(crop_all,  "crop_proportion_all_years_predicted.csv",  row.names=FALSE)
 #write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
-write.csv(crop_all,  "crop_proportion_all_years_full_new.csv",  row.names=FALSE)
+write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
 
 
 ############################################################################
