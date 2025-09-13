@@ -49,7 +49,7 @@ cov_subset <- function(cov_dataframe_name, period_data){
 (filenames <- list.files("Data for modelling", full.names = TRUE))
 
 #CHANGE
-filename <- filenames[15]
+filename <- filenames[1]
 
 load(filename)
 print(target_species)
@@ -166,9 +166,9 @@ static_scaled <- static %>%
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
 
 # Environmental: retain crop, gpw, gfc, precseas, wdpa, evi (from Data-Explore code)
-crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", periods)
+crop <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_sites.csv", periods)
 precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_sites.csv", periods)
-wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full_new.csv", periods)
+wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_WDPA_sites.csv", periods)
 evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_sites.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_sites.csv", periods)
 gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_sites.csv", periods) 
@@ -310,51 +310,6 @@ str(minjul_sq)
 hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
 
-## Plot covariates ------------------------------------------------------------
-
-# static coordinates  
-plottable_coords <- cbind(static_scaled, coords) 
-plottable_coords <- st_as_sf(
-  plottable_coords, 
-  coords = c("x", "y"),     
-  crs = crs(ref))
-
-# dynamic coordinates 
-year <- 
-  # optional: plot to check
-  plot(r)
-plot(r_cropped, add = TRUE, border = "red")
-
-
-TO DO -- this needs to be done for FULL coords but cropped to bb of species projects 
-
-# what want to do here is create a bounding box around monitored area, and crop 
-# full raster of cov values to this bb and plot over
-
-
-# Map covariates across study area: static  
-names(static_scaled)
-cov <- "river_dist_scaled" #change as appropriate
-
-ggplot(data = plottable_coords) +
-  geom_sf(aes(fill = river_dist_scaled), lwd = 0.05) +
-  theme_bw() +
-  viridis::scale_fill_viridis(limits = c(0, 1))
-
-#join the covariates to the spatial grid, using the plot name
-plottable_covs <- left_join(select(grid_shp,Cell, geometry),
-                            plot_covs_all,
-                            by = 'Cell')
-
-#there are some NA grid cells that didn't have covariate values and don't have predictions
-#remove them:
-plottable_covs <- na.omit(plottable_covs)
-ggplot(data = plottable_covs) +
-  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
-  theme_bw() +
-  viridis::scale_fill_viridis(limits = c(0, 1))
-
-
 ## Modelling ------------------------------------------------------------------
 
 # Following vignette found at: 
@@ -415,8 +370,7 @@ naive_df <- data.frame(
   naive_occupancy = factor(ifelse(naive_vals == 0, 0, 1))
 )
 
-naive_plot <- r_df %>%
-  left_join(naive_df, by = "cell_ID")
+naive_plot <- r_df %>% left_join(naive_df, by = "cell_ID")
 
 # Plot 
 ggplot(naive_plot, aes(x = x, y = y, fill = naive_occupancy)) +
@@ -593,17 +547,17 @@ priors.list <- list(alpha.normal = list(mean = 0, var = 2.72),
 n.chains <- 3
 tuning.list <- list(phi = 1, rho = 1)
 
-if(testing){
+# testing 
   n.batch <- 10
   n.burn = 50
   n.thin = 1
   n.report = 10 
-}else{
-  n.batch <- 400 #tutorial has 800
-  n.burn = 2000 #tutorial has 10000
-  n.thin = 10 
-  n.report = 40 #tutorial has 100
-}
+
+# otherwise 
+n.batch <- 400  
+n.burn = 2000  
+n.thin = 10 
+n.report = 40  
 
 n.batch <- 800 #tutorial has 800
 n.burn = 10000 #tutorial has 10000
