@@ -22,7 +22,7 @@ library(sf)
 ## Load data ------------------------------------------------------------------
 
 filenames <- list.files("Model outputs", full.names = TRUE) 
-species <- "Panthera pardus"
+species <- "Acinonyx jubatus"
 
 # Model outputs 
 file_path <- filenames[grep(species, filenames)]
@@ -34,8 +34,6 @@ load(filename)
 species_file <- gsub(" ", "_", species)
 mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
-plot(mmd_map)
-str(mmd_map)
 
 
 ## Results --------------------------------------------------------------------
@@ -141,25 +139,15 @@ ggplot() +
   labs(title = "Species Detection Sites")
 
 # Plot zoomed to bbox ---------------------------------------------------------
-world_cropped <- st_crop(world, bbox_sf) 
-ggplot() +
-  geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
-  geom_spatraster(data = mmd_map) + 
-  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
-  geom_sf(data = bbox_sf, fill = NA, color = "red", size = 1) +
-  scale_fill_viridis_c(na.value = NA) +
-  theme_minimal() + theme(legend.position = "none") + 
-  labs(title = "Species Detection Sites [Zoomed]")
-
 world_cropped_mmd <- st_crop(world, bbox_mmd)
 (speciesDet <- ggplot() +
-  geom_sf(data = world_cropped_mmd, fill = "gray90", color = "gray60") +
-  geom_spatraster(data = mmd_map) + 
-  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
-  #geom_sf(data = bbox_sf_mmd, fill = NA, color = "red", size = 1) +
-  scale_fill_viridis_c(na.value = NA) +
-  theme_minimal() + theme(legend.position = "none") + 
-  labs(title = "Species Detection Sites [Zoomed]"))
+    geom_sf(data = world_cropped_mmd, fill = "gray90", color = "gray60") +
+    geom_spatraster(data = mmd_map) + 
+    geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+    #geom_sf(data = bbox_sf_mmd, fill = NA, color = "red", size = 1) +
+    scale_fill_viridis_c(na.value = NA) +
+    theme_minimal() + theme(legend.position = "none") + 
+    labs(title = "Species Detection Sites [Zoomed]"))
 
 file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in")
@@ -190,41 +178,41 @@ cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
   covariate <- read.csv(cov_dataframe_name) %>% 
     dplyr::select(-any_of("X")) %>% 
     filter(cell_ID %in% cell_IDs) %>% 
-    arrange(cell_ID) %>% 
-    select(cell_ID, matches(paste0("^X(", paste(primary.periods, collapse="|"), ")$"))) %>% 
+    arrange(cell_ID)
+  cols <- grep(
+    paste0("^X(", paste(primary.periods, collapse = "|"), ")$"),
+    names(covariate),
+    value = TRUE
+  )
+  cols <- cols[order(as.numeric(sub("X", "", cols)))]
+  covariate <- covariate %>% 
+    select(all_of(cols)) %>% 
     as.matrix() 
   return(covariate)
 }
 
 # processed values 
-crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_predicted.csv", primary.periods, mmd_cellIDs$cell_ID)
+crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
+evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs$cell_ID)
 gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, mmd_cellIDs$cell_ID)
 precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, mmd_cellIDs$cell_ID)
-wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_wdpa_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
+wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_WDPA_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
 gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, mmd_cellIDs$cell_ID)
-trend.0 <- matrix(rep(primary.periods, each = length(cell_IDs)),
-                  nrow = length(cell_IDs),
+trend.0 <- matrix(rep(primary.periods, each = length(mmd_cellIDs$cell_ID)),
+                  nrow = length(mmd_cellIDs$cell_ID),
                   ncol = length(primary.periods),
                   byrow = FALSE)
 colnames(trend.0) <- as.character(primary.periods)
 
-# extract evi live 
-evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs) #EVI FULL DOESN'T EXIST YET! 
 
--> exxtract EVI live in code 
+## Create prediction design matrix (1 = intercept) ----------------------------
+X.0 <- cbind(1, crop.0, gpw.0, precseas.0, wdpa.0, evi.0, gfc.0, road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, trend.0)
 
-
-
-
-# Create prediction design matrix (1 = intercept)
-X.0 <- cbind(1, crop.0, gpw.0, gfc.0, precseas.0, wdpa.0, evi.0, road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, trend.0)
-
-# Predict occupancy for all years
-#t.cols <- 1:n.trend.pred #n.trend.pred <- 100     
+## Predict occupancy for all years --------------------------------------------
 t.cols <- primary.periods
-out.pred <- predict(out, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
+coords.0 <- static_covs[,c("x","y")] %>% distinct()  # BUT NEED TO MAKE LIKE AN ARRAY 
+out.pred <- predict(out, X.0, coords.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
 
-TEST FROM HERE 
 
 # ------------------------
 # 3. Collapse to average occupancy per year
