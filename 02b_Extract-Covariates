@@ -667,8 +667,6 @@ EVI_mat <- dcast(
   value.var = "cov_value",
   fill = NA_real_
 )
-EVI_mat_matrix <- as.matrix(EVI_mat[, -"cell_ID"])
-rownames(EVI_mat_matrix) <- EVI_mat$cell_ID
 
 head(EVI_mat_matrix)
 
