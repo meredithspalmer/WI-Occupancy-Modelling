@@ -162,7 +162,15 @@ mmd_cellIDs <- unique(masked_ref$cell_ID)
 
 # Format static covs ----------------------------------------------------------
 static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
+  mutate(across(
+    .cols = c(road_dist, tri, river_dist, coeff_var, cities_lg),
+    .fns = ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE),
+    .names = "{.col}_scaled"
+  )) %>% 
+  dplyr::select(-c(road_dist, tri, river_dist, coeff_var, cities_lg)) %>% 
   filter(cell_ID %in% mmd_cellIDs$cell_ID)
+
+# these are now scaled: 
 road_dist.0 <- static_covs$road_dist
 tri.0 <- static_covs$tri
 river_dist.0 <- static_covs$river_dist
@@ -206,7 +214,19 @@ colnames(trend.0) <- as.character(primary.periods)
 
 
 ## Create prediction design matrix (1 = intercept) ----------------------------
-X.0 <- cbind(1, crop.0, gpw.0, precseas.0, wdpa.0, evi.0, gfc.0, road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, trend.0)
+X.0 <- cbind(1, 
+             crop.0, 
+             gpw.0, 
+             precseas.0, 
+             wdpa.0, 
+             evi.0, 
+             gfc.0, 
+             road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, 
+             trend.0)
+
+SCALE THESE ^^ 
+  occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + scale(gfc) + road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
+
 
 ## Predict occupancy for all years --------------------------------------------
 t.cols <- primary.periods
