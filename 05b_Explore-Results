@@ -171,11 +171,11 @@ static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv
   filter(cell_ID %in% mmd_cellIDs$cell_ID)
 
 # these are now scaled: 
-road_dist.0 <- static_covs$road_dist
-tri.0 <- static_covs$tri
-river_dist.0 <- static_covs$river_dist
-coeff_var.0 <- static_covs$coeff_var
-cities_lg.0 <- static_covs$cities_lg
+road_dist.0 <- static_covs$road_dist_scaled
+tri.0 <- static_covs$tri_scaled
+river_dist.0 <- static_covs$river_dist_scaled
+coeff_var.0 <- static_covs$coeff_var_scaled
+cities_lg.0 <- static_covs$cities_lg_scaled
 
 
 # Format dynamic covariates ---------------------------------------------------
@@ -206,8 +206,8 @@ gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.cs
 precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, mmd_cellIDs$cell_ID)
 wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_WDPA_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
 gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, mmd_cellIDs$cell_ID)
-trend.0 <- matrix(rep(primary.periods, each = length(mmd_cellIDs$cell_ID)),
-                  nrow = length(mmd_cellIDs$cell_ID),
+trend.0 <- matrix(rep(primary.periods, each = nrow(static_covs)),
+                  nrow = nrow(static_covs),
                   ncol = length(primary.periods),
                   byrow = FALSE)
 colnames(trend.0) <- as.character(primary.periods)
@@ -215,22 +215,19 @@ colnames(trend.0) <- as.character(primary.periods)
 
 ## Create prediction design matrix (1 = intercept) ----------------------------
 X.0 <- cbind(1, 
-             crop.0, 
-             gpw.0, 
-             precseas.0, 
-             wdpa.0, 
-             evi.0, 
-             gfc.0, 
-             road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, 
-             trend.0)
-
-SCALE THESE ^^ 
-  occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + scale(gfc) + road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
-
+             (crop.0 - mean(crop.0))/sd(crop.0), 
+             (gpw.0 - mean(gpw.0))/sd(gpw.0), 
+             (precseas.0 - mean(precseas.0))/sd(precseas.0), 
+             (wdpa.0 - mean(wdpa.0))/sd(wdpa.0),
+             (evi.0 - mean(evi.0))/sd(evi.0), 
+             (gfc.0 - mean(gfc.0))/sd(gfc.0), 
+             road_dist.0, tri.0, river_dist.0, coeff_var.0, cities_lg.0, #already sacled
+             (trend.0 - mean(trend.0))/sd(trend.0))
 
 ## Predict occupancy for all years --------------------------------------------
 t.cols <- primary.periods
-coords.0 <- static_covs[,c("x","y")] %>% distinct()  # BUT NEED TO MAKE LIKE AN ARRAY 
+coords.0 <- static_covs[,c("x","y")] %>% distinct() %>% as.matrix()
+
 out.pred <- predict(out, X.0, coords.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
 
 
