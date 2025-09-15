@@ -592,38 +592,64 @@ dt_long[, year := as.integer(year)]
 dt_long[, doy  := as.integer(doy)]
 dt_long[, obs_date := as.Date(doy - 1, origin = paste0(year, "-01-01"))]
 dt_long[, date := NULL]
-head(dt_long)
 
 # Match with periods 
+dt_long[, obs_start := as.IDate(obs_date)]
+dt_long[, obs_end   := as.IDate(obs_date)]   
+dt_long_test <- dt_long %>% select(-doy)
+setcolorder(dt_long_test, c("obs_start", "obs_end", setdiff(names(dt_long_test), c("obs_start","obs_end"))))
+
 periods <- as.data.table(periods)
-dt_long[, `:=`(obs_start = obs_date, obs_end = obs_date)] #dummy variables
-setkey(periods, start_period, end_period)
-dt_joined <- foverlaps(
-  x = dt_long,
-  y = periods,
+periods[, start_period := as.IDate(start_period)]
+periods[, end_period   := as.IDate(end_period)]
+periods_test <- periods %>% select(-season, -period)
+
+setkey(periods_test, start_period, end_period)
+setkey(dt_long_test, obs_start, obs_end)
+
+dt_long_test <- foverlaps(
+  dt_long_test,     # y table
+  periods_test,     # x table
   by.x = c("obs_start", "obs_end"),
   by.y = c("start_period", "end_period"),
-  type = "within",
-  nomatch = 0L
+  type = "within",  # only matches where obs_date is inside the period
+  nomatch = NA     # keep unmatched rows as NA
 )
+dt_long_test <- dt_long_test %>% select(period_counter, year, cell_ID, cov_value)
 
-# Consolidate to one obs per period 
-dt_period <- dt_joined[, .(
+dt_period <- dt_long_test[, .(
   cov_value = mean(cov_value, na.rm = TRUE)
 ), by = .(cell_ID, period_counter, year)]
 
+save <- dt_period
+
 # Ensure one row per cell_ID per period 
-all_ids     <- dt_period[, unique(cell_ID)]
-all_periods <- dt_period[, unique(period_counter)]
-grid <- CJ(cell_ID = all_ids, period_counter = all_periods)
-grid <- merge(grid, unique(periods[, .(period_counter, year)]), by = "period_counter")
-dt_complete <- grid[dt_period, on = .(cell_ID, period_counter, year)]
+all_ids <- dt_period[, unique(cell_ID)]
+all_periods <- unique(periods[, .(period_counter)])
+
+# Use cross join with CJ() safely
+full_grid <- CJ(cell_ID = unique(dt_period$cell_ID),        
+                period_counter = unique(periods$period_counter))
+
+# Add data
+dt_complete <- merge(full_grid, dt_period,
+                     by = c("cell_ID", "period_counter"),
+                     all.x = TRUE)
+dt_complete <- dt_complete[!is.na(dt_complete$cell_ID),]
+
+head(dt_complete)
+write.csv(dt_complete, "evi_save.csv", row.names=F)
+
+periods[periods$period_counter == 55,]
+dt_complete[dt_complete$period_counter == 55,]$year <- 2013
+#I don't know why this doesn't just work...
+dt_complete[is.na(dt_complete$year),] 
 
 # Add coordinates
 coords_dt <- as.data.table(coords)
 dt_complete <- coords_dt[dt_complete, on = "cell_ID"]
 
-# Ridge regression imputation per year 
+# Ridge regression imputation per year
 impute_ridge_by_year <- function(dt) {
   dt[, cov_value := as.numeric(cov_value)]
   
@@ -668,7 +694,7 @@ EVI_mat <- dcast(
   fill = NA_real_
 )
 
-head(EVI_mat_matrix)
+head(EVI_mat)
 
 # Plot to check
 selected_year <- "2007"
@@ -678,12 +704,12 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
   coord_equal() + theme_minimal()
 
-# Save full dataframe 
-write.csv(EVI_mat_matrix, "../Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
+# Save full dataframe --- DO THIS! 
+write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
 
-# Subset to sites -- NEED TO REDO THIS 
-subset_mat <- EVI_mat_matrix[rownames(EVI_mat_matrix) %in% site_cells$cell_ID, ]
-write.csv(sub_cov_df, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
+# Subset to sites --- DO THIS! 
+subset_mat <- EVI_mat[EVI_mat$cell_ID %in% site_cells$cell_ID, ]
+write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
 
 
 ## Global Forest Cover (GFC) --------------------------------------------------
