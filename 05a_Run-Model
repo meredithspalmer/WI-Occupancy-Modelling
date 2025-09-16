@@ -78,22 +78,20 @@ nweek <- 13
 (max_year <- max(covs$year))
 cell_IDs <- unique(ystack$cell_ID)
 
-# -> if identify outliers, remove period here
-# min(covs$period_counter)
+# Create periods table 
+# NOTE: if outliers are identified, remove here as well 
 periods <- data.frame(period_counter = seq(min(covs$period_counter), 
                                            max(covs$period_counter), by = 1)) %>% 
   left_join(covs %>% dplyr::select(period_counter, season, year) %>% distinct()) %>% 
   mutate(year = as.numeric(year))
-head(periods)
 
-## Fill in missing seasons and years
-# Define the order of seasons
-season_order <- c("Spring", "Summer", "Fall", "Winter")
+# Fill in missing seasons and years
+season_order <- c("Spring", "Summer", "Fall", "Winter")    # order of seasons 
 
-# If first row is NA, initialize
-if(is.na(periods$season[1])) periods$season[1] <- "Fall"
-if(is.na(periods$year[1])) periods$year[1] <- 2000  # choose a starting year
+# If first row is NA, initialize: 
 head(periods)
+if(is.na(periods$season[1])) periods$season[1] <- "Fall"   # chose start season
+if(is.na(periods$year[1])) periods$year[1] <- 2000         # chose start year 
 
 # Fill remaining rows
 for(i in 2:nrow(periods)) {
@@ -142,10 +140,6 @@ coords <- as.data.frame(rast("10x10 km spatial layers/raster_100km2_with_cellID.
   as.matrix()
 
 
-## Covariates (all) -----------------------------------------------------------
-
-# We scale continuous occurrence and detection covariates to have mean 0 and standard deviation of 1 for model fitting, with occurrence covariates scaled across the entire study area. Scaling facilitates selection of priors and manages possible differences in scales of covariate measurements. Scaling was performed in the data formatting section. Scale before inclusion in model to make easier to scale full covariates for prediction. 
-
 ## Covariates: spatial (dim: ncell) ------------------------------------------- 
 
 static <- read.csv("Covariates for modelling/site_level_covariates_site.csv") %>% 
@@ -153,14 +147,6 @@ static <- read.csv("Covariates for modelling/site_level_covariates_site.csv") %>
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
 nrow(static) #select out each column want as a vector 
-
-static_scaled <- static %>% 
-  mutate(across(
-    .cols = c(road_dist, tri, river_dist, coeff_var, cities_lg),
-    .fns = ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE),
-    .names = "{.col}_scaled"
-  )) %>% 
-  dplyr::select(-c(road_dist, tri, river_dist, coeff_var, cities_lg))
 
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
@@ -226,53 +212,6 @@ for(i in 1:nrow(effort_temp)){
 str(effort)  
 hist(effort[,,3]) #data is pre-scaled: no need to scale further
 
-### NOTE #### 
-
-# There are some "effort" values in covs that are NA when there are detection 
-# values in ystack; this code identifies and throws a quick patch on these issues
-# HOWEVER, need to go back to review how effort is generated to understand underlying
-# issue 
-
-## Detect issues 
-
-# Ensure rows align by cell_ID
-common_cells <- intersect(ystack$cell_ID, covs$cell_ID)
-det_aligned <- ystack[match(common_cells, ystack$cell_ID), ]
-effort_aligned <- covs[match(common_cells, covs$cell_ID), ]
-
-# Columns of interest
-det_cols <- paste0("V", 1:13)
-effort_cols <- paste0("effort_w", 1:13)
-
-# Make sure the number of columns match
-if(length(det_cols) != length(effort_cols)) {
-  stop("Detection and effort columns must be the same length.")
-}
-
-# If stopped, locate discrepancies 
-discrepancies <- (!is.na(det_aligned[det_cols])) & (is.na(effort_aligned[effort_cols]))
-which_discrepancies <- which(discrepancies, arr.ind = TRUE)
-discrepancy_table <- data.frame(
-  cell_ID = det_aligned$cell_ID[which_discrepancies[, "row"]],
-  period  = det_cols[which_discrepancies[, "col"]],
-  stringsAsFactors = FALSE
-)
-nrow(discrepancy_table)
-
-## Patch effort: set NA to 1 wherever a detection exists
-for (i in seq_along(det_cols)) {
-  det_col <- det_cols[i]
-  effort_col <- effort_cols[i]
-  
-  idx <- !is.na(det_aligned[[det_col]]) & is.na(effort_aligned[[effort_col]])
-  effort_aligned[[effort_col]][idx] <- 1
-}
-
-# Replace the original effort_df rows for these cell_IDs
-covs[match(common_cells, covs$cell_ID), effort_cols] <- effort_aligned[effort_cols]
-
-#########
-
 # Minjul 
 minjul_temp <- covs %>% 
   dplyr::select(cell_ID, period_counter, starts_with("minjul_w")) %>% 
@@ -317,8 +256,7 @@ hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 
 ## Look at raw occupancy data -------------------------------------------------
 
-# Raw occurrence proprortions -------------------------------------------------
-# How adequate is a linear trend for our analysis?
+# Raw occurrence proprortions  
 raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
 raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
 raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
@@ -328,32 +266,34 @@ raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ
 file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
 ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
 
-## If outliers, remove --- 
+# If outliers, remove: 
 
 # yarray 
-cols_to_keep <- dimnames(yarray)[[2]] != "p3"
-yarray <- yarray[, cols_to_keep, ]
+#cols_to_keep <- dimnames(yarray)[[2]] != "p3"
+#yarray <- yarray[, cols_to_keep, ]
 
 # 3d covariates 
-cols_to_keep <- dimnames(effort)[[2]] != "p3"
-effort <- effort[, cols_to_keep, ]
-cols_to_keep <- dimnames(minjul)[[2]] != "p3"
-minjul <- minjul[, cols_to_keep, ]
-cols_to_keep <- dimnames(minjul_sq)[[2]] != "p3"
-minjul_sq <- minjul_sq[, cols_to_keep, ]
+#cols_to_keep <- dimnames(effort)[[2]] != "p3"
+#effort <- effort[, cols_to_keep, ]
+#cols_to_keep <- dimnames(minjul)[[2]] != "p3"
+#minjul <- minjul[, cols_to_keep, ]
+#cols_to_keep <- dimnames(minjul_sq)[[2]] != "p3"
+#minjul_sq <- minjul_sq[, cols_to_keep, ]
 
 # 2d covariates
-crop <- crop[, dimnames(crop)[[2]] != "X3"]
-precseas <- precseas[, dimnames(precseas)[[2]] != "X3"]
-wdpa <- wdpa[, dimnames(wdpa)[[2]] != "X3"]
-evi <- evi[, dimnames(evi)[[2]] != "X3"]
-gfc <- gfc[, dimnames(gfc)[[2]] != "X3"]
-gpw <- gpw[, dimnames(gpw)[[2]] != "X3"]
-ndepl <- ndepl[, dimnames(ndepl)[[2]] != "p3"]
-proj <- proj[, dimnames(proj)[[2]] != "p3"]
-trend <- trend[, dimnames(trend)[[2]] != "3"]
+#crop <- crop[, dimnames(crop)[[2]] != "X3"]
+#precseas <- precseas[, dimnames(precseas)[[2]] != "X3"]
+#wdpa <- wdpa[, dimnames(wdpa)[[2]] != "X3"]
+#evi <- evi[, dimnames(evi)[[2]] != "X3"]
+#gfc <- gfc[, dimnames(gfc)[[2]] != "X3"]
+#gpw <- gpw[, dimnames(gpw)[[2]] != "X3"]
+#ndepl <- ndepl[, dimnames(ndepl)[[2]] != "p3"]
+#proj <- proj[, dimnames(proj)[[2]] != "p3"]
+#trend <- trend[, dimnames(trend)[[2]] != "3"]
 
 # Naive plot of occurrence detections -----------------------------------------
+
+# FIX THIS 
 
 # Bounding box
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
@@ -381,31 +321,22 @@ ggplot(naive_plot, aes(x = x, y = y, fill = naive_occupancy)) +
   scale_fill_viridis_d(option = "plasma", na.value = "grey80")
 
 
+## Model formulas -------------------------------------------------------------
+# Note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
+
+occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + 
+  scale(evi) + scale(gfc) + scale(road_dist) + scale(tri) + scale(river_dist) + 
+  scale(coeff_var) + scale(cities_lg) + scale(trend)
+det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
+
+svc.cols = c(1:13)  #covariates whose effects are estimated as SVCs, including intercept
+
+
 ## Subset data if appropriate -------------------------------------------------
 
-# IF TESTING: for speed  
-ncell = 200
-
-yarray_test <- yarray[1:ncell,,]
-coords_test <- coords[1:ncell,]
-
-static_test <- static[1:ncell,]
-gpw_test <- gpw[1:ncell,]
-evi_test <- evi[1:ncell,]
-crop_test <- crop[1:ncell,]
-gfc_test <- gfc[1:ncell,]
-precseas_test <- precseas[1:ncell,]
-wdpa_test <- wdpa[1:ncell,]
-
-ndepl_test <- ndepl[1:ncell,]
-proj_test <- proj[1:ncell,]
-trend_test <- trend[1:ncell,]
-effort_test <- effort[1:ncell,,]  
-minjul_test <- minjul[1:ncell,,]  
-minjul_sq_test <- minjul_sq[1:ncell,,]
-
-# If SPLITTING: fit model with 75% of locations to train, remaining 25% to predict 
-J <- length(unique(covs$cell_ID)) #1102 sites
+# If splitting (for k-fold cross validation): 
+# Fit model with 75% of locations to train, remaining 25% to predict 
+J <- length(unique(covs$cell_ID))  
 pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
 
 y.fit <- yarray[-pred.indx,,]
@@ -443,28 +374,7 @@ minjul_sq.pred <- minjul_sq[pred.indx,,]
 
 # Organize data for svcTPGOcc -------------------------------------------------
 
-# if TEST 
-dat_ls_test <- list(y = yarray_test,
-                    occ.covs = list(crop = crop_test, 
-                                    gpw = gpw_test,
-                                    gfc = gfc_test, 
-                                    precseas = precseas_test,
-                                    wdpa = wdpa_test,
-                                    evi = evi_test, 
-                                    road_dist = static_test$road_dist,
-                                    tri = static_test$tri,
-                                    river_dist = static_test$river_dist,
-                                    coeff_var = static_test$coeff_var,
-                                    cities_lg = static_test$cities_lg,
-                                    trend = trend_test),
-                    det.covs = list(effort = effort_test, #already scaled! 
-                                    minjul = minjul_test, #already scaled! 
-                                    minjul_sq = minjul_sq_test, #already scaled! 
-                                    ndepl = ndepl_test, 
-                                    proj = proj_test),
-                    coords = coords_test)
-
-# if SPLITTNG 
+# If splitting  
 dat_ls_split <- list(y = y.fit,
                      occ.covs = list(crop = crop.fit, 
                                      gpw = gpw.fit,
@@ -478,14 +388,14 @@ dat_ls_split <- list(y = y.fit,
                                      coeff_var = static.fit$coeff_var,
                                      cities_lg = static.fit$cities_lg,
                                      trend = trend.fit),
-                     det.covs = list(effort = effort.fit, #already scaled! 
-                                     minjul = minjul.fit, #already scaled! 
-                                     minjul_sq = minjul_sq.fit, #already scaled! 
+                     det.covs = list(effort = effort.fit,       # already scaled! 
+                                     minjul = minjul.fit,       # already scaled! 
+                                     minjul_sq = minjul_sq.fit, # already scaled! 
                                      ndepl = ndepl.fit, 
                                      proj = proj.fit),
                      coords = coords.fit)
 
-# if RUNNING FULL MODEL
+# If running full model 
 dat_ls <- list(y = yarray,
                occ.covs = list(crop = crop, 
                                gpw = gpw,
@@ -493,49 +403,38 @@ dat_ls <- list(y = yarray,
                                precseas = precseas,
                                wdpa = wdpa,
                                evi = evi, 
-                               road_dist = static_scaled$road_dist_scaled,
-                               tri = static_scaled$tri_scaled,
-                               river_dist = static_scaled$river_dist_scaled,
-                               coeff_var = static_scaled$coeff_var_scaled,
-                               cities_lg = static_scaled$cities_lg_scaled,
+                               road_dist = static$road_dist,
+                               tri = static$tri,
+                               river_dist = static$river_dist,
+                               coeff_var = static$coeff_var,
+                               cities_lg = static$cities_lg,
                                trend = trend),
-               det.covs = list(effort = effort, #already scaled! 
-                               minjul = minjul, #already scaled! 
-                               minjul_sq = minjul_sq, #already scaled! 
+               det.covs = list(effort = effort,        # already scaled! 
+                               minjul = minjul,        # already scaled! 
+                               minjul_sq = minjul_sq,  # already scaled! 
                                ndepl = ndepl, 
                                proj = proj),
                coords = coords)
 
-## Formulas -------------------------------------------------------------------
-
-# DO NOT FORGET TO SCALE COVARIATES 
-# note: because renamed covariates in list, don't need to rename (e.g., "crop_test") here 
-
-occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) + scale(evi) + scale(gfc) + road_dist + tri + river_dist + coeff_var + cities_lg + scale(trend)
-det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj)
-
-svc.cols = c(1:13)  #covariates whose effects are estimated as SVCs, including intercept
 
 # Prep inits -------------------------------------------------------------------
 
-y_dat <- yarray #as yarray, yarray_test, or y.fit 
-coord_dat <- coords #as coords, coords_test, or coord.fit 
+y_dat <- yarray      # choose yarray or y.fit 
+coord_dat <- coords  # choose coords or coord.fit 
 
 z.init <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
-#z <- apply(data.list$y, 1, max, na.rm = TRUE)  if what is in tutorial... 
 
-dist.data <- dist(coord_dat)           #pairwise distance between all sites 
+dist.data <- dist(coord_dat)            # pairwise distance between all sites 
 
-inits.list <- list(beta = 0,            #occurrence coefficients
-                   alpha = 0,           #detection coefficients
-                   z = z.init,          #latent occurrence values
-                   phi = 3 / mean(dist.data), #instead of mean, fabiola has 0.5... 
-                   sigma.sq = 0.5,      #fabiola had as 2... 
-                   w = matrix(0, length(svc.cols), nrow(y_dat)),  #fabiola had rep(0, ncell) 
+inits.list <- list(beta = 0,            # occurrence coefficients
+                   alpha = 0,           # detection coefficients
+                   z = z.init,          # latent occurrence values
+                   phi = 3 / mean(dist.data),  
+                   sigma.sq = 0.5,      
+                   w = matrix(0, length(svc.cols), nrow(y_dat)),  
                    #rho = 0,  
-                   sigma.sq.t = 0.5)    #occurrence random effect variances 
+                   sigma.sq.t = 0.5)    # occurrence random effect variances 
 
-# Note: don't have to specify priors, can use svcPGOcc() defaults 
 priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
                     beta.normal = list(mean = 0, var = 2.72),
                     sigma.sq.ig = list(a = 2, b = 0.5),
@@ -544,33 +443,19 @@ priors.list <- list(alpha.normal = list(mean = 0, var = 2.72),
 
 
 # Tuning ----------------------------------------------------------------------
+
 n.chains <- 3
 tuning.list <- list(phi = 1, rho = 1)
-
-# testing 
-  n.batch <- 10
-  n.burn = 50
-  n.thin = 1
-  n.report = 10 
-
-# otherwise 
 n.batch <- 400  
 n.burn = 2000  
 n.thin = 10 
 n.report = 40  
-
-n.batch <- 800 #tutorial has 800
-n.burn = 10000 #tutorial has 10000
-n.thin = 10 
-n.report = 100 #tutorial has 100
-
 batch.length <- 25
 n.iter <- n.batch * batch.length 
 
-
 ## Run model ------------------------------------------------------------------
 
-dat <- dat_ls #CHANGE FOR EACH training, split, regular 
+dat <- dat_ls  # choose dat_ls or dat_ls_split 
 
 start_time <- Sys.time()
 out <- svcTPGOcc(occ.formula = occ.formula, 
@@ -589,10 +474,10 @@ out <- svcTPGOcc(occ.formula = occ.formula,
                  n.burn = n.burn,
                  n.thin = n.thin,
                  n.chains = n.chains,
-                 #search.type = 'cb', #in fabiola's code, not in tutorial? 
                  verbose = TRUE,
                  ar1 = TRUE) 
-# would add k-fold parameters to this model if using k-fold cross validation ... 
+
+# if using k-fold cross validation, would add k-fold parameters to the model: 
 #k.fold = 4, 
 #k.fold.threads = 4,
 #k.fold.only = TRUE) 
@@ -603,17 +488,17 @@ end_time - start_time
 
 ## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
-# where is there detection but missing effort? 
+# Where is there detection but missing effort? 
 discrepancies <- !is.na(yarray) & is.na(effort)
 (idx <- which(discrepancies, arr.ind = TRUE)) #three instances 
 length(idx)
 
-# for now, add 1 to effort where there is a detection; 
+# For now, add 1 to effort where there is a detection; 
 # HOWEVER, working on backtracking to figure out where this issue is coming from
 effort[discrepancies] <- 1
 sum(!is.na(yarray) & is.na(effort))  # should be 0
 
-# now, rerun code from line 378 ('organize data') 
+# Now, rerun code from line 380 ('Organize data') 
 
 
 ## Convergence assessment -----------------------------------------------------
@@ -621,8 +506,8 @@ sum(!is.na(yarray) & is.na(effort))  # should be 0
 # Visually examine trace plots
 # -> We can first visually examine trace plots for convergence by plotting chains for each parameter. Trace plots indicative of convergence look like random scatter around a mean value and do not display any trends. For these reasons, trace plots indicative of convergence are often described as looking like “fuzzy caterpillars.” Below, the trace plots for both the occurrence and detection coefficients are consistent with model convergence.
 
-# -> Occurrence parameters:
-# the spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
+# Occurrence parameters:
+# The spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
 occ.samps <- as.data.frame(out$beta.samples)
 occ.samps$x <- rep(1:(nrow(occ.samps)/n.chains), n.chains)
 occ.samps$chain <- as.factor(rep(1:3, each =nrow(occ.samps)/n.chains))
@@ -640,8 +525,8 @@ ggplot(occ.samps.long) +
   facet_wrap(~ parameter, nrow = length(unique(occ.samps.long$parameter)), scales = "free_y") +
   theme_bw()
 
-# -> Detection parameters:
-# the spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
+# Detection parameters:
+# The spocc sampling did sample 3 chains, but then stacked them on top of each other; to plot them separately we have to divide them back into chains:
 det.samps <- as.data.frame(out$alpha.samples)
 det.samps$x <- rep(1:(nrow(det.samps)/n.chains), n.chains)
 det.samps$chain <- as.factor(rep(1:3, each =nrow(det.samps)/n.chains))
@@ -656,18 +541,18 @@ ggplot(det.samps.long) +
   facet_wrap(~ parameter, nrow = length(unique(det.samps.long$parameter)), scales = "free_y") +
   theme_bw()
 
-# Gelman-Rubin diagnostics
-# -> The Gelman-Rubin diagnostic, rˆ (r-hate), formally assesses model convergence by comparing variance of parameter estimates among chains to variance of parameter estimates within chains. A large rˆ means variance among chains is greater than within chains, implying lack of convergence. When assessing convergence it is standard to accept rˆ values below 1.1 (Hobbs and Hooten 2015). The rˆ value can be found for each parameter in the summary output under Rhat.
+# Gelman-Rubin diagnostics:
+# The Gelman-Rubin diagnostic, rˆ (r-hate), formally assesses model convergence by comparing variance of parameter estimates among chains to variance of parameter estimates within chains. A large rˆ means variance among chains is greater than within chains, implying lack of convergence. When assessing convergence it is standard to accept rˆ values below 1.1 (Hobbs and Hooten 2015). The rˆ value can be found for each parameter in the summary output under Rhat.
 plot(out, 'beta', density = FALSE) #occupancy convergence
 plot(out, 'alpha', density = FALSE) #detection convergence
 
-# Effective Sample Size (ESS)
-# -> ESS estimates the number of samples the MCMC sample would contain if correlated samples were removed, providing a measure of the information contained in the MCMC sample. If ESS is low compared to the MCMC sample size this may imply poor mixing and high autocorrelation, and thinning may help to address this. Larger ESS indicates a better sample, but there is no distinct rule for a “large enough” ESS.
-# -> We compare the ESS (denoted as ESS in the summary output) to the MCMC sample size and confirm there is a large ESS for each parameter.
+# Effective Sample Size (ESS):
+# ESS estimates the number of samples the MCMC sample would contain if correlated samples were removed, providing a measure of the information contained in the MCMC sample. If ESS is low compared to the MCMC sample size this may imply poor mixing and high autocorrelation, and thinning may help to address this. Larger ESS indicates a better sample, but there is no distinct rule for a “large enough” ESS.
+# We compare the ESS (denoted as ESS in the summary output) to the MCMC sample size and confirm there is a large ESS for each parameter.
 summary(out) 
 
-# Set sampling parameters to reach satisfactory diagnostics
-# -> If any of the three diagnostics (trace plots, Gelman-Rubin Diagnostics, and ESS) are not satisfactory for any of the parameters, adjust the sampling parameters (n.thin and n.samples) and resample. For example, we first ran this model with n.thin = 2 and n.samples = 9000 and got unsatisfactory trace plots and ESSs for the occurrence coefficients. Trace plots were showing spikes indicating high autocorrelation and poor mixing, so we increased the thinning interval and total number of posterior samples.
+# Set sampling parameters to reach satisfactory diagnostics:
+# If any of the three diagnostics (trace plots, Gelman-Rubin Diagnostics, and ESS) are not satisfactory for any of the parameters, adjust the sampling parameters (n.thin and n.samples) and resample. For example, we first ran this model with n.thin = 2 and n.samples = 9000 and got unsatisfactory trace plots and ESSs for the occurrence coefficients. Trace plots were showing spikes indicating high autocorrelation and poor mixing, so we increased the thinning interval and total number of posterior samples.
 
 
 ## Model fit ------------------------------------------------------------------
@@ -675,7 +560,7 @@ summary(out)
 # Widely Applicable Information Criterion (WAIC)
 waicOcc(out)
 
-# Goodness of Fit: posterior predictive checks
+# Goodness of Fit: Posterior predictive checks
 
 # -> A Bayesian p-value can be used to measure the significance of the deviation of the data from the model predictions, i.e., summarize the previous posterior predictive distribution plots in a single value (Gelman et al. 1995). To evaluate the level to which the distribution of predicted values aligns with the data, the Bayesian p-value relies on a test statistic or discrepency measure, which provides a scalar value that can be compared for observed data versus the posterior predictive distribution. The Bayesian p-value is then defined as the probability that the test statistic for the predicted data is more extreme than the test statistic for the observed data, given the observed data. Multiple test statistics can be used to evaluate model fit, and we use the Freeman-Tukey statistic recommended by Kéry and Royle (2016) and included within the Spocc package. Grouping or binning the binary data based on cells (group=1) or site-nights (group=2) provides two test statistics that may reveal different shortcomings of the model (i.e., problems of model fit in occurrence versus detection)
 
@@ -692,7 +577,7 @@ summary(ppc.out.2)
 summary(out)
 plogis(2.13) #convert logit values to probability scale
 
-# [IF PERFORMED] K-fold cross validation (want lower values):
+# If performed K-fold cross validation (want lower values):
 #k.fold.non.sp$k.fold.deviance
 #k.fold.sp$k.fold.deviance
 
@@ -707,6 +592,4 @@ plogis(2.13) #convert logit values to probability scale
 ## Save files -------------------------------------------------------------------
 
 (filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", target_species, "_", Sys.Date(), "/", target_species, "_", Sys.Date(), "_svcTPGOcc", ".RData", sep = ""))
-save(yarray, covs, target_species, out, coords, file = filename)
-
-## ------------------------------------------------------------------------------
+save(yarray, covs, target_species, out, coords, periods, file = filename)
