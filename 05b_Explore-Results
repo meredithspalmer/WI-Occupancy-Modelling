@@ -9,6 +9,7 @@ set.seed(123)
 
 # Load libraries
 library(tidyterra)
+library(tidyverse)
 library(terra)
 library(spOccupancy)
 library(coda)
@@ -108,96 +109,38 @@ ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "i
 
 ## Occupancy probabilities across periods -------------------------------------
 
-# hbef-tMsPGOcc.R: script to run a multi-species, multi-season occupancy model
-#                  using data on 12 foliage-gleaning birds in the 
-#                  Hubbard Brook Experimental Forest.
-# Author: Jeffrey W. Doser
-rm(list = ls())
-library(spOccupancy)
-# For making summary figure
-library(tidyverse)
+# This plot shows the average occupancy probability across all 373 sites within
+# each period. The black points/lines are the medians and the shaded regions are 
+# the 95% Bayesian CIs. 
 
-# Load the hbefTrends data set
-data(hbefTrends)
-# Check out details of the data set here.
-# ?hbefTrends
-# The data set has 12 species, 373 sites, and 9 years
+# Parametners 
+unique.periods <- as.numeric(gsub("p", "", dimnames(out$y)[[2]])) #unique periods
+n.periods <- length(unique.periods) #number of periods 
 
-# MCMC criteria
-# Number of MCMC samples = n.batch * batch.length
-n.batch <- 400
-batch.length <- 25
-(n.samples <- n.batch * batch.length)
-n.burn <- 6000
-n.thin <- 4
-# Just running for a single chain to keep run time modest
-n.chains <- 1
-
-# Fit a model with a linear trend, linear and quadratic effects of elevation, and 
-# an AR(1) temporal random effect
-# Note that I'm using default priors and initial values, which could be changed
-# if desired with the priors and inits arguments.
-# Approx. run time: 3.5 min (can reduce run time by running for less iterations)
-out <- tMsPGOcc(occ.formula = ~ scale(years) + scale(elev) + I(scale(elev)^2), 
-                det.formula = ~ scale(day) + I(scale(day)^2) + scale(tod), 
-                data = hbefTrends,
-                n.batch = n.batch,
-                batch.length = batch.length, 
-                ar1 = TRUE,
-                verbose = TRUE, 
-                n.report = 25,
-                n.burn = n.burn, 
-                n.thin = n.thin,
-                n.chains = n.chains)
-
-# Quick summary of results
-# Of course would want to run for multiple chains and longer for a full analysis
-summary(out, level = 'both')
-
-# Generate a plot of occupancy probability for each species over the 9 years
-# Species names
-sp.names <- dimnames(out$y)[[1]]
-# Number of species
-N <- length(sp.names)
-# Unique years
-unique.years <- as.numeric(dimnames(out$y)[[3]])
-# Number of years
-n.years <- length(unique.years)
-# Occupacy probabilities for each iteration, species, site, and year
-str(out$psi.samples)
-# Average occupancy prob in each year across the 373 sites
-psi.mean.samples <- apply(out$psi.samples, c(1, 2, 4), mean)
-# Median of the average occupancy probability for each species in each year.
-psi.medians <- apply(psi.mean.samples, c(2, 3), median)
-# Lower and upper bounds of 95% CI
-psi.quants <- apply(psi.mean.samples, c(2, 3), quantile, c(0.025, 0.975))
+# Average occupancy prob in each period across all sites
+psi.mean.samples <- apply(out$psi.samples, c(1, 3), mean) 
+psi.medians <- apply(psi.mean.samples, 2, median) #medians per period 
+psi.quants <- apply(psi.mean.samples, 2, quantile, c(0.025, 0.975)) #95% Bayesian CIs
 
 # Data frame for plotting in ggplot
-plot.df <- data.frame(sp = rep(sp.names, times = n.years),
-                      year = rep(unique.years, each = N),
-                      med = c(psi.medians),
-                      low = c(psi.quants[1, , ]),
-                      high = c(psi.quants[2, , ]))
-# Get overall average occupancy to order the species by their average occupancy
-psi.med <- plot.df %>%
-  group_by(sp) %>%
-  summarize(val = mean(med)) %>%
-  arrange(val)
-sp.levels.ordered <- psi.med$sp
-plot.df <- plot.df %>%
-  mutate(sp = factor(plot.df$sp, levels = sp.levels.ordered, ordered = TRUE))
-ggplot() +
-  geom_ribbon(data = plot.df, aes(x = year, ymin = low, ymax = high), fill = 'darkorchid4', alpha = 0.3) +
-  geom_line(data = plot.df, aes(x = year, y = med), lineend = 'butt') +
-  geom_point(data = plot.df, aes(x = year, y = med)) +
-  theme_bw(base_size = 14) +
-  facet_wrap(vars(sp), ncol = 3) +
-  theme(legend.position = c(0.75, 0.125)) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Year", y = 'Average Occupancy Probability')
-# This plot shows the average occupancy probability across all 373 sites for each species
-# within each year. The black points/lines are the medians and the shaded regions are the 
-# 95% Bayesian CIs. 
+plot.df <- data.frame(periods = unique.periods,
+                      med = psi.medians,
+                      low = c(psi.quants[1, ]),
+                      high = c(psi.quants[2, ]))
+
+# Plotting 
+(occPeriods <- ggplot() +
+    geom_ribbon(data = plot.df, aes(x = periods, ymin = low, ymax = high),
+                fill = 'darkorchid4', alpha = 0.3) +
+    geom_line(data = plot.df, aes(x = periods, y = med), lineend = 'butt') +
+    geom_point(data = plot.df, aes(x = periods, y = med)) +
+    theme_bw(base_size = 14) +
+    theme(legend.position = c(0.75, 0.125)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = "Periods", y = 'Average Occupancy Probability'))
+
+file_name <- paste(file_path, "/", target_species, "_occAcrossPeriods.jpg", sep="")
+ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "in")
 
 
 ## Predictions ----------------------------------------------------------------
