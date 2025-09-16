@@ -145,11 +145,7 @@ ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "
 
 ## Predictions ----------------------------------------------------------------
 
-## Predict 
-# from: https://doserlab.com/files/spoccupancy-web/articles/modelfitting#prediction 
-# hbefElev --- make this is a bounding box of sites (later, update to MOL range map)
-
-# load and format reference ---------------------------------------------------
+# Load and format reference  
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 world <- ne_countries(scale = "medium", returnclass = "sf")
 
@@ -163,7 +159,7 @@ bbox_sf <- st_as_sfc(st_bbox(plot_coords_sf))
 bbox_mmd <- ext(mmd_map)
 bbox_sf_mmd <- st_as_sfc(st_bbox(mmd_map))
 
-# Plot detection sites --------------------------------------------------------
+# Plot detection sites 
 world <- ne_countries(scale = "medium", returnclass = "sf")
 world <- st_transform(world, crs = crs)
 
@@ -175,7 +171,7 @@ ggplot() +
   theme_minimal() + theme(legend.position = "none") + 
   labs(title = "Species Detection Sites")
 
-# Plot zoomed to bbox ---------------------------------------------------------
+# Plot zoomed to bbox  
 world_cropped_mmd <- st_crop(world, bbox_mmd)
 (speciesDet <- ggplot() +
     geom_sf(data = world_cropped_mmd, fill = "gray90", color = "gray60") +
@@ -194,31 +190,26 @@ ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "
 mmd_repro <- project(mmd_map, ref)
 masked_ref <- mask(ref, mmd_repro)
 plot(masked_ref)
-mmd_cellIDs <- unique(masked_ref$cell_ID)
+mmd_cellIDs <- unique(masked_ref$cell_ID) #for some reason, one that is not in covs 
 
 
 # Format static covs ----------------------------------------------------------
+
 static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
-  mutate(across(
-    .cols = c(road_dist, tri, river_dist, coeff_var, cities_lg),
-    .fns = ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE),
-    .names = "{.col}_scaled"
-  )) %>% 
-  dplyr::select(-c(road_dist, tri, river_dist, coeff_var, cities_lg)) %>% 
+  dplyr::select(-c(cities_md, cities_sm)) %>% 
   filter(cell_ID %in% mmd_cellIDs$cell_ID)
 
-# these are now scaled: 
-road_dist.0 <- static_covs$road_dist_scaled
-tri.0 <- static_covs$tri_scaled
-river_dist.0 <- static_covs$river_dist_scaled
-coeff_var.0 <- static_covs$coeff_var_scaled
-cities_lg.0 <- static_covs$cities_lg_scaled
+road_dist.0 <- static_covs$road_dist
+tri.0 <- static_covs$tri
+river_dist.0 <- static_covs$river_dist 
+coeff_var.0 <- static_covs$coeff_var 
+cities_lg.0 <- static_covs$cities_lg 
 
 
 # Format dynamic covariates ---------------------------------------------------
 primary.periods <- seq(min(covs$period_counter), max(covs$period_counter), by = 1)
 
-# extraction function
+# Extraction function
 cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
   covariate <- read.csv(cov_dataframe_name) %>% 
     dplyr::select(-any_of("X")) %>% 
@@ -236,7 +227,7 @@ cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
   return(covariate)
 }
 
-# processed values 
+# Processed values 
 crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
 evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs$cell_ID)
 gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, mmd_cellIDs$cell_ID)
@@ -253,29 +244,25 @@ colnames(trend.0) <- as.character(primary.periods)
 ## Create prediction design matrix (1 = intercept) ----------------------------
 
 # Parameters
-# Number of sites 
-n.sites <- nrow(static_covs)
-# Number of years
-n.periods <- length(primary.periods)
-# Number of occupancy regression parameters
-n.beta <- ncol(out$beta.samples)
-# Create an empty array with the proper dimensions
-X.0 <- array(NA, dim = c(n.sites, n.periods, n.beta))
+n.sites <- nrow(static_covs)            # number of sites 
+n.periods <- length(primary.periods)    # number ofyears 
+n.beta <- ncol(out$beta.samples)        # number of occupancy parameters 
 
-# Fill in the array
-X.0[, , 1] <- 1
-X.0[, , 2] <- (crop.0 - mean(crop.0))/sd(crop.0)
-X.0[, , 3] <- (gpw.0 - mean(gpw.0))/sd(gpw.0)
-X.0[, , 4] <- (precseas.0 - mean(precseas.0))/sd(precseas.0)
-X.0[, , 5] <- (wdpa.0 - mean(wdpa.0))/sd(wdpa.0)
-X.0[, , 6] <- (evi.0 - mean(evi.0))/sd(evi.0)
-X.0[, , 7] <- (gfc.0 - mean(gfc.0))/sd(gfc.0)
-X.0[, , 8] <- road_dist.0
-X.0[, , 9] <- tri.0
-X.0[, , 10] <-river_dist.0
-X.0[, , 11] <- coeff_var.0
-X.0[, , 12] <- cities_lg.0
-X.0[, , 13] <-(trend.0 - mean(trend.0))/sd(trend.0)
+# Create and fill an array with the proper dimensions
+X.0 <- array(NA, dim = c(n.sites, n.periods, n.beta))
+X.0[, , 1] <-  1
+X.0[, , 2] <-  (crop.0 - mean(dat_ls$occ.covs$crop))/sd(dat_ls$occ.covs$crop)
+X.0[, , 3] <-  (gpw.0 - mean(dat_ls$occ.covs$gpw))/sd(dat_ls$occ.covs$gpw)
+X.0[, , 4] <-  (precseas.0 - mean(dat_ls$occ.covs$precseas))/sd(dat_ls$occ.covs$precseas)
+X.0[, , 5] <-  (wdpa.0 - mean(dat_ls$occ.covs$wdpa))/sd(dat_ls$occ.covs$wdpa)
+X.0[, , 6] <-  (evi.0 - mean(dat_ls$occ.covs$evi))/sd(dat_ls$occ.covs$evi)
+X.0[, , 7] <-  (gfc.0 - mean(dat_ls$occ.covs$gfc))/sd(dat_ls$occ.covs$gfc)
+X.0[, , 8] <-  (road_dist.0 - mean(dat_ls$occ.covs$road_dist))/sd(dat_ls$occ.covs$road_dist)   
+X.0[, , 9] <-  (tri.0 - mean(dat_ls$occ.covs$tri))/sd(dat_ls$occ.covs$tri)            
+X.0[, , 10] <- (river_dist.0 - mean(dat_ls$occ.covs$river_dist))/sd(dat_ls$occ.covs$river_dist)          
+X.0[, , 11] <- (coeff_var.0 - mean(dat_ls$occ.covs$coeff_var))/sd(dat_ls$occ.covs$coeff_var)         
+X.0[, , 12] <- (cities_lg.0 - mean(dat_ls$occ.covs$cities_lg))/sd(dat_ls$occ.covs$cities_lg)      
+X.0[, , 13] <- (trend.0 - mean(dat_ls$occ.covs$trend))/sd(dat_ls$occ.covs$trend)
 
 # Give names to X.0 just to make things clear
 dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'GPW', 'Precip', 'WDPA', 'EVI', 'GFC', 'Road Dist', 'TRI', 'River Dist', 'Coef Var', 'Cities Dist', 'Periods') 
@@ -283,7 +270,10 @@ dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'GPW', 'Precip', 'WDPA', 'EVI', '
 ## Predict occupancy for all years --------------------------------------------
 coords.0 <- static_covs[,c("x","y")] %>% distinct() %>% as.matrix()
 
+start_time <- Sys.time()
 out.pred <- predict(out, X.0, coords.0, t.cols = 1:n.periods, ignore.RE = TRUE, type = 'occupancy')
+end_time <- Sys.time()
+end_time - start_time 
 str(out.pred)
 
 # Can then manipulate the objects in out.pred.occ as desired
