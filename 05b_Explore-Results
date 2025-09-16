@@ -20,7 +20,7 @@ library(rasterVis)
 library(rnaturalearth)
 library(rnaturalearthdata)
 library(sf)
-library(gganimate)
+#library(gganimate)
 library(dplyr)
 library(purrr)
 
@@ -28,7 +28,7 @@ library(purrr)
 ## Load data ------------------------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Ceratotherium simum"
+species <- "Diceros bicornis"
 
 # Model outputs 
 file_path <- filenames[grep(species, filenames)]
@@ -160,13 +160,26 @@ world <- ne_countries(scale = "medium", returnclass = "sf")
 plot_coords <- as.data.frame(coords) 
 crs <- crs(ref)
 plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
-bbox_sf <- st_as_sfc(st_bbox(plot_coords_sf))
+bbox_detect <- st_bbox(plot_coords_sf)
 
 # get bounding box for expert range maps 
-bbox_mmd <- ext(mmd_map)
-bbox_sf_mmd <- st_as_sfc(st_bbox(mmd_map))
+bbox_mmd <- st_bbox(mmd_map)
 
-# Plot detection sites 
+# union of both bboxes (whichever is larger)
+bbox_union <- st_bbox(
+  c(xmin = min(bbox_detect["xmin"], bbox_mmd["xmin"]),
+    ymin = min(bbox_detect["ymin"], bbox_mmd["ymin"]),
+    xmax = max(bbox_detect["xmax"], bbox_mmd["xmax"]),
+    ymax = max(bbox_detect["ymax"], bbox_mmd["ymax"])),
+  crs = st_crs(ref)
+)
+
+# crop world to union bbox
+crs_union <- st_crs(ref)
+world_proj <- st_transform(world, crs_union)
+world_cropped <- st_crop(world_proj, bbox_union)
+
+# Plot detection sites ----
 world <- ne_countries(scale = "medium", returnclass = "sf")
 world <- st_transform(world, crs = crs)
 
@@ -179,21 +192,22 @@ ggplot() +
   labs(title = "Species Detection Sites")
 
 # Plot zoomed to bbox  
-world_cropped_mmd <- st_crop(world, bbox_mmd)
 (speciesDet <- ggplot() +
-    geom_sf(data = world_cropped_mmd, fill = "gray90", color = "gray60") +
+    geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
     geom_spatraster(data = mmd_map) + 
     geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
-    #geom_sf(data = bbox_sf_mmd, fill = NA, color = "red", size = 1) +
     scale_fill_viridis_c(na.value = NA) +
     theme_minimal() + theme(legend.position = "none") + 
-    labs(title = "Species Detection Sites [Zoomed]"))
+    labs(title = "Species Detection Sites [Zoomed]", 
+         subtitle = bquote(italic(.(as.name(target_species))))))
 
 file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in")
 
 
 # Crop to get cell_IDs within MMD ---------------------------------------------
+
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 mmd_repro <- project(mmd_map, ref)
 masked_ref <- mask(ref, mmd_repro)
 plot(masked_ref)
@@ -214,6 +228,7 @@ cities_lg.0 <- static_covs$cities_lg
 
 
 # Format dynamic covariates ---------------------------------------------------
+
 primary.periods <- seq(min(covs$period_counter), max(covs$period_counter), by = 1)
 
 # Extraction function
@@ -279,14 +294,14 @@ dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'GPW', 'Precip', 'WDPA', 'EVI', '
 ## Predict occupancy for all years --------------------------------------------
 
 ## Regular predict ----
-start_time <- Sys.time()
-out.pred <- predict(out, X.0, coords.0, t.cols = 1:n.periods, ignore.RE = TRUE, type = 'occupancy')
-end_time <- Sys.time()
-end_time - start_time 
-str(out.pred)
+#start_time <- Sys.time()
+#out.pred <- predict(out, X.0, coords.0, t.cols = 1:n.periods, ignore.RE = TRUE, type = 'occupancy')
+#end_time <- Sys.time()
+#end_time - start_time 
+#str(out.pred)
 
 # Calculate mean occupancy probability for each site/year: 
-psi.means <- apply(out.pred$psi.0.samples, c(2, 3), mean)
+#psi.means <- apply(out.pred$psi.0.samples, c(2, 3), mean)
 
 ## For extremely large datasets, chunk the predictions ---- 
 chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
@@ -546,7 +561,7 @@ df_occ %>%
 
 # Spatial map for one period --------------------------------------------------
 
-period <- "60"
+period_sel <- "60"
 
 df_occ_sf <- st_as_sf(df_occ, coords = c("x", "y"), crs = crs(ref), remove = FALSE)
 world <- ne_countries(scale = "medium", returnclass = "sf")
