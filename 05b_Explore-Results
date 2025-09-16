@@ -17,6 +17,7 @@ library(stringr)
 library(ggplot2)
 library(rasterVis)
 library(rnaturalearth)
+library(rnaturalearthdata)
 library(sf)
 
 
@@ -248,6 +249,8 @@ n.sites <- nrow(static_covs)            # number of sites
 n.periods <- length(primary.periods)    # number ofyears 
 n.beta <- ncol(out$beta.samples)        # number of occupancy parameters 
 
+coords.0 <- static_covs[,c("x","y")] %>% distinct() %>% as.matrix()
+
 # Create and fill an array with the proper dimensions
 X.0 <- array(NA, dim = c(n.sites, n.periods, n.beta))
 X.0[, , 1] <-  1
@@ -268,23 +271,22 @@ X.0[, , 13] <- (trend.0 - mean(dat_ls$occ.covs$trend))/sd(dat_ls$occ.covs$trend)
 dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'GPW', 'Precip', 'WDPA', 'EVI', 'GFC', 'Road Dist', 'TRI', 'River Dist', 'Coef Var', 'Cities Dist', 'Periods') 
 
 ## Predict occupancy for all years --------------------------------------------
-coords.0 <- static_covs[,c("x","y")] %>% distinct() %>% as.matrix()
 
+## Regular predict ----
 start_time <- Sys.time()
 out.pred <- predict(out, X.0, coords.0, t.cols = 1:n.periods, ignore.RE = TRUE, type = 'occupancy')
 end_time <- Sys.time()
 end_time - start_time 
 str(out.pred)
 
-# Can then manipulate the objects in out.pred.occ as desired
-# e.g., calculate mean occupancy probability for each site/year
-psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
+# Calculate mean occupancy probability for each site/year: 
+psi.means <- apply(out.pred$psi.0.samples, c(2, 3), mean)
 
-## PREDICT AND PLOT 
+## For extremely large datasets, chunk the predictions ---- 
 chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
                                        chunk_size = 2000,
-                                       n_post_draws = NULL,     # number of posterior draws to stream for means (default: min(1000, total draws))
-                                       n_q_draws = NULL,        # number of draws to store per chunk to compute quantiles (default: min(n_post_draws, 200))
+                                       n_post_draws = NULL,     
+                                       n_q_draws = NULL,        
                                        probs = c(0.025, 0.5, 0.975),
                                        keep_quantiles = TRUE,
                                        seed = 123,
@@ -293,13 +295,12 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
   
   set.seed(seed)
   
-  ## basic dims
   n_sites   <- nrow(coords.0)
   n_periods <- length(t.cols)
   n_beta    <- dim(X.0)[3]
   n_chunks  <- ceiling(n_sites / chunk_size)
   
-  ## get beta samples and orient as matrix: rows = draws, cols = parameters
+  # Get beta samples and orient as matrix: rows = draws, cols = parameters
   if (is.null(model$beta.samples)) stop("model$beta.samples not found in model object.")
   bsm <- model$beta.samples
   
@@ -332,9 +333,9 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
   if (is.null(n_q_draws)) n_q_draws <- min(n_post_draws, 200)
   n_q_draws <- min(n_q_draws, n_post_draws)
   
-  # pick draw indices (random subsample of posterior draws)
+  # Pick draw indices (random subsample of posterior draws)
   draw_idx_all <- sort(sample.int(n_total_draws, size = n_post_draws, replace = FALSE))
-  # which positions in that stream will be used for quantiles
+  # Which positions in that stream will be used for quantiles
   q_draw_positions <- sort(sample.int(n_post_draws, size = n_q_draws, replace = FALSE))
   
   # Prepare storage
@@ -342,7 +343,7 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
   sd_mat   <- matrix(NA_real_, nrow = n_sites, ncol = n_periods)
   quantiles_array <- if (keep_quantiles) array(NA_real_, dim = c(n_sites, n_periods, length(probs))) else NULL
   
-  # per-chunk loop
+  # Per-chunk loop
   for (i in seq_len(n_chunks)) {
     idx_start <- (i - 1) * chunk_size + 1
     idx_end   <- min(i * chunk_size, n_sites)
@@ -351,11 +352,11 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
     
     if (verbose) message(sprintf("Chunk %d/%d: sites %d:%d (%d sites)", i, n_chunks, idx_start, idx_end, nchunk))
     
-    # subset X.0 and build design matrix: rows = site*period, cols = n_beta
+    # Subset X.0 and build design matrix: rows = site*period, cols = n_beta
     Xsub <- X.0[idx, , , drop = FALSE]   # dim: [nchunk, n_periods, n_beta]
     Ncells <- nchunk * n_periods
     
-    # estimate memory for storing quantile draws for this chunk if requested
+    # Estimate memory for storing quantile draws for this chunk if requested
     if (keep_quantiles) {
       est_bytes <- as.numeric(Ncells) * as.numeric(n_q_draws) * 8
       # if too big (> ~1 GB), reduce n_q_draws for this chunk
@@ -371,17 +372,17 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
     }
     
     # Create X matrix (rows: site-period pairs, column: covariates)
-    # ordering: as.vector(Xsub[,,k]) -> site varies fastest within each period, then next period
+    # Ordering: as.vector(Xsub[,,k]) -> site varies fastest within each period, then next period
     Xmat <- matrix(NA_real_, nrow = Ncells, ncol = n_beta)
     for (k in seq_len(n_beta)) {
       Xmat[, k] <- as.vector(Xsub[,, k])
     }
     
-    # streaming accumulators (Welford)
+    # Streaming accumulators (Welford)
     mean_vec <- numeric(Ncells)
     M2_vec   <- numeric(Ncells)
     
-    # storage for quantile draws for this chunk (only if requested)
+    # Storage for quantile draws for this chunk (only if requested)
     if (keep_quantiles && length(q_draw_positions) > 0) {
       psi_q_mat <- matrix(NA_real_, nrow = Ncells, ncol = length(q_draw_positions))
       q_counter <- 1L
@@ -390,7 +391,7 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
       q_counter <- NULL
     }
     
-    # stream through selected draws
+    # Sstream through selected draws
     iter <- 0L
     for (jj in seq_along(draw_idx_all)) {
       sidx <- draw_idx_all[jj]
@@ -408,17 +409,17 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
         M2_vec   <- M2_vec + delta * (psi - mean_vec)
       }
       
-      # if this draw position was chosen for quantiles, store
+      # If this draw position was chosen for quantiles, store
       if (!is.null(psi_q_mat) && (jj %in% q_draw_positions)) {
         psi_q_mat[, q_counter] <- psi
         q_counter <- q_counter + 1L
       }
       
-      # occasional garbage collection
+      # Occasional garbage collection
       if ((jj %% 200) == 0L) gc(verbose = FALSE)
     } # draws loop
     
-    # finalize chunk summaries
+    # Finalize chunk summaries
     mean_chunk <- matrix(mean_vec, nrow = nchunk, ncol = n_periods)
     mean_mat[idx, ] <- mean_chunk
     
@@ -430,7 +431,7 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
       sd_mat[idx, ] <- NA_real_
     }
     
-    # quantiles (if requested)
+    # Quantiles (if requested)
     if (!is.null(psi_q_mat)) {
       # apply quantile over rows -> returns matrix (length(probs) x Ncells); transpose to Ncells x length(probs)
       q_mat <- t(apply(psi_q_mat, 1, quantile, probs = probs, na.rm = TRUE))
@@ -440,7 +441,7 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
       rm(psi_q_mat, q_mat, q_chunk_array)
     }
     
-    # optionally save chunk to disk to free memory
+    # Optionally save chunk to disk to free memory
     if (!is.null(save_chunks_dir)) {
       dir.create(save_chunks_dir, showWarnings = FALSE, recursive = TRUE)
       saveRDS(list(mean = mean_chunk,
@@ -454,11 +455,11 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
       sd_mat[idx, ] <- NA_real_
     }
     
-    # free memory and continue
+    # Free memory and continue
     rm(Xsub, Xmat, mean_vec, M2_vec, mean_chunk); gc(verbose = FALSE)
   } # chunk loop
   
-  # return
+  # Return
   out <- list(mean = mean_mat,
               sd = sd_mat,
               quantiles = quantiles_array,
@@ -468,29 +469,28 @@ chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
   return(out)
 }
 
-res <- chunked_predict_from_betas(out,    # your fitted spOccupancy model
-                                  X.0 = X.0,
-                                  coords.0 = coords.0,
-                                  t.cols = 1:n.periods,
+res <- chunked_predict_from_betas(out, X.0, coords.0, t.cols = 1:n.periods,
                                   chunk_size = 2000,
-                                  n_post_draws = 1000,   # reduce to 500 if memory is tight
-                                  n_q_draws = 200,       # number of draws stored to compute quantiles for each chunk
+                                  n_post_draws = 1000,   
+                                  n_q_draws = 200,       
                                   keep_quantiles = TRUE,
                                   verbose = TRUE)
-# posterior mean occupancy (sites x periods)
+
+# Posterior mean occupancy (sites x periods)
 occ_mean <- res$mean
 
-# posterior sd
+# Posterior sd
 occ_sd <- res$sd
 
-# posterior quantiles (if computed)
-occ_lower <- res$quantiles[, , 1]
+# Posterior quantiles (if computed)
+occ_lower <- res$quantiles[, , 1]   
 occ_median <- res$quantiles[, , 2]
 occ_upper <- res$quantiles[, , 3]
 
-## Plotting
 
-library(tidyverse)
+## Plotting predicted occupancy -----------------------------------------------
+
+# Formatting data -------------------------------------------------------------
 
 # Convert to long dataframe
 df_occ <- occ_mean %>%
@@ -523,7 +523,8 @@ df_occ <- df_occ %>%
   left_join(df_upper, by = c("site", "period"))
 
 
-## Time series with uncertainty 
+# Time series with uncertainty ------------------------------------------------
+
 df_occ %>%
   group_by(period) %>%
   summarise(mean = mean(mean_occ, na.rm=TRUE),
@@ -532,22 +533,41 @@ df_occ %>%
   ggplot(aes(x = period, y = mean)) +
   geom_ribbon(aes(ymin = lower, ymax = upper), fill = "grey80") +
   geom_line(size = 1.2, color = "darkblue") +
-  labs(y = "Occupancy probability", x = "Year/Period",
+  labs(y = "Occupancy probability", x = "Period",
        title = "Average occupancy over time") +
   theme_minimal()
 
-## Spatial map for one period 
-df_occ %>%
-  filter(period == "60") %>%
-  ggplot(aes(x = x, y = y, fill = mean_occ)) +
-  geom_tile() +   # or geom_point(size=2) if not gridded
-  scale_fill_viridis_c(option = "C") +
-  coord_equal() +
-  labs(fill = "Occupancy",
-       title = "Predicted occupancy (2010)") +
-  theme_minimal()
 
-## Difference map (change between two periods)
+# Spatial map for one period --------------------------------------------------
+
+period <- "60"
+
+df_occ_sf <- st_as_sf(df_occ, coords = c("x", "y"), crs = crs(ref), remove = FALSE)
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(df_occ_sf))
+world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
+plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
+
+(occPeriod <- ggplot() +
+  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+  geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.9) +
+  scale_fill_viridis_c(option = "C", na.value = NA) +
+  coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
+           ylim = c(min(plot_df$y), max(plot_df$y)),
+           expand = FALSE) +
+  labs(x = NULL, y = NULL,
+       fill = "Occupancy", 
+       title = bquote(italic(.(target_species))),
+    subtitle = paste0("Predicted occupancy (Period ", period_sel, ")")
+  ) +
+  theme_minimal())
+
+file_name <- paste(file_path, "/", target_species, "_occPeriod.jpg", sep="")
+ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "in")
+
+
+# Difference map (change between two periods) ---------------------------------
+
 df_diff <- df_occ %>%
   filter(period %in% c("44","99")) %>%
   select(site, x, y, period, mean_occ) %>%
