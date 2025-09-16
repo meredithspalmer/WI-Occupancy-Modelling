@@ -10,6 +10,7 @@ set.seed(123)
 # Load libraries
 library(tidyterra)
 library(tidyverse)
+library(tidyr)
 library(terra)
 library(spOccupancy)
 library(coda)
@@ -19,6 +20,9 @@ library(rasterVis)
 library(rnaturalearth)
 library(rnaturalearthdata)
 library(sf)
+library(gganimate)
+library(dplyr)
+library(purrr)
 
 
 ## Load data ------------------------------------------------------------------
@@ -604,21 +608,23 @@ file_name <- paste0(file_path, "/", target_species, "_occChange.jpg")
 ggsave(filename = file_name, plot = changeOcc, width = 6, height = 5, units = "in", bg = "white")
 
 
-# Difference map (change between two periods) ---------------------------------
-## Heatmap (site x period)
+# Heatmap (site x period) -----------------------------------------------------
+
+# not terribly informative, do not save 
 df_occ %>%
   ggplot(aes(x = period, y = site, fill = mean_occ)) +
   geom_tile() +
   scale_fill_viridis_c(option = "C") +
-  labs(x = "Year/Period", y = "Site",
+  labs(x = "Period", y = "Site",
        fill = "Occupancy",
        title = "Occupancy across sites and periods") +
   theme_minimal() +
   theme(axis.text.y = element_blank())
 
-## Animate map over time 
-library("gganimate")
 
+# Animate map over time -------------------------------------------------------
+
+# run only if need to - takes a long time to render 
 p <- df_occ %>%
   ggplot(aes(x = x, y = y, fill = mean_occ)) +
   geom_tile() +
@@ -632,356 +638,101 @@ p <- df_occ %>%
 animate(p, nframes = length(primary.periods)*5, fps = 5)
 
 
-# ------------------------
-# 3. Collapse to average occupancy per year
-# ------------------------
-
-# out.pred$psi.samples has dimension: [iterations × sites × years]
-psi.samples <- out.pred$psi.samples
-
-# Average across sites for each iteration and year
-psi.mean.by.year <- apply(psi.samples, c(1, 3), mean)  # [iterations × years]
-
-# Summarize posterior mean & CI per year
-occ.summary <- data.frame(
-  year = years,
-  mean = apply(psi.mean.by.year, 2, mean),
-  lower = apply(psi.mean.by.year, 2, quantile, 0.025),
-  upper = apply(psi.mean.by.year, 2, quantile, 0.975)
-)
-
-# ------------------------
-# 4. Plot occupancy vs year
-# ------------------------
-
-ggplot(occ.summary, aes(x = year, y = mean)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "gray80", alpha = 0.6) +
-  geom_line(color = "blue", size = 1) +
-  labs(x = "Year", y = "Occupancy probability (ψ)", 
-       title = "Predicted occupancy across sites") +
-  theme_minimal()
-
-
-
-
-
-
-# Number of prediction sites
-J.pred <- nrow(static_covs)
-
-# Number of prediction years 
-n.years.pred <- 25 
-
-# Number of occupancy predictors (including intercept) 
-p.occ <- ncol(out$beta.samples)
-
-# Get covariates and standardize them using values used to fit the model
-tri.pred <- (static_covs$tri - mean(dat_ls$occ.covs$tri)) / sd(dat_ls$occ.covs$tri) #shouldn't need?
-year_1999_scaled <- (1999 - mean(dat_ls$occ.covs$years)) / sd(dat_ls$occ.covs$years)
-year.pred <- matrix(year_1999_scaled, nrow = J.pred, ncol = 1)
-
-# Create three-dimensional array
-X.0 <- array(1, dim = c(J.pred, n.years.pred, p.occ))
-
-# Fill in the array
-X.0[, , 2] <- year.pred #years
-X.0[, , 3] <- tri.pred #elevation
-str(X.0)
-
-# Indicate which primary time periods (years) we are predicting for
-t.cols <- c(1, 9)
-
-# Predict 
-out.pred <- predict(out, X.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
-str(out.pred)
-
-
-#we plot the mean of REVI occurrence probability in 2009 and 2018 across the forest.
-plot.dat <- data.frame(x = hbefElev$Easting, y = hbefElev$Northing, 
-                       mean.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, mean), 
-                       mean.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, mean), 
-                       sd.2009.psi = apply(out.pred$psi.0.samples[, , 1], 2, sd), 
-                       sd.2018.psi = apply(out.pred$psi.0.samples[, , 2], 2, sd), 
-                       stringsAsFactors = FALSE)
-
-# Make a species distribution map showing the point estimates, or predictions (posterior means)
-dat.stars <- st_as_stars(plot.dat, dims = c('x', 'y'))
-
-# 2009
-ggplot() + geom_stars(data = dat.stars, aes(x = x, y = y, fill = mean.2009.psi)) +
-  scale_fill_viridis_c(na.value = 'transparent') +
-  labs(x = 'Easting', y = 'Northing', fill = '', 
-       title = 'Mean REVI occurrence probability 2009') +
-  theme_bw()  
-
-
-
-
-# We now use our fitted model to predict occurrence across all cells in our study area. We use the predict function within the spOcc package, which intakes a design matrix of the covariate values to predict over. Note that the design matrix must match the order of covariates used to fit the model. The covariate values that we predict over must be standardized (scaled) in the same way that the variables were standardized to fit the model. This means they must be scaled against all covariate values.
-
-TO DO: Here somehow have to get bb on area surveyed, extract covariates for this area at 10x10 km2 scale. That means need to ensure have global covarage on covs, not just cropped coverage
-
-# Scale covariates 
-fc.0 <- scale(occ_covs_all$Forest_PercentCover)
-Cliffs.0 <- scale(occ_covs_all$CliffsCanyons_PercentCover)
-Precip.0 <- scale(occ_covs_all$MeanAnnualPrecipitation_mm)
-
-# Create prediction design matrix (1 = intercept)
-X.0 <- cbind(1, fc.0, Cliffs.0, Precip.0)
-
-out.pred <- predict(out, X.0)
-psi.0.samples <- out.pred$psi.0.samples
-
-# MSP: assuming it is here that I can combine across years and plot?? 
-
-
-# Assuming you have a fitted svcTPGOcc model object named 'svc_model'
-# and a data frame 'new_data' with covariates for prediction locations and years.
-
-# Predict occupancy probability at new locations and/or future years
-predicted_occupancy <- predict(svc_model, X.0 = new_data)
-
-# 'predicted_occupancy' will contain posterior predictive samples for occupancy
-# at the specified locations and years, allowing you to assess uncertainty.
-
-
-# ## Predict -------
-
-# load and format reference ---------------------------------------------------
-ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
-world <- ne_countries(scale = "medium", returnclass = "sf")
-
-# get bounding box for species detection sites
-plot_coords <- as.data.frame(coords) 
-crs <- crs(ref)
-plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
-bbox_sf <- st_as_sfc(st_bbox(plot_coords_sf))
-
-# Plot detection sites --------------------------------------------------------
-world <- ne_countries(scale = "medium", returnclass = "sf")
-world <- st_transform(world, crs = crs)
-
-ggplot() +
-  geom_sf(data = world, fill = "gray90", color = "gray60") +
-  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
-  theme_minimal() +
-  labs(title = "Species Detection Sites")
-
-# Plot zoomed to bbox ---------------------------------------------------------
-world_cropped <- st_crop(world, bbox_sf) 
-
-ggplot() +
-  geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
-  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
-  geom_sf(data = bbox_sf, fill = NA, color = "red", size = 1) +
-  theme_minimal() +
-  labs(title = "Species Detection Sites [Zoomed]")
-
-# Crop raster to bbox to get cell_IDs within bounding box ---------------------
-r_cropped <- crop(ref, bbox_sf)
-r_df <- as.data.frame(r_cropped, xy = TRUE)
-
-# Format static covs ----------------------------------------------------------
-static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
-  filter(cell_ID %in% r_df$cell_ID)
-
-
-
-
-
-
-# We create our final predictive maps from the full posterior predictive distributions of ψ across the 4500 cells.
-
-# Occurrence probability means:
-psi.0.mean <- apply(psi.0.samples, 2, mean)
-# -> each column of psi.0.samples is an MCMC sample of the psi for one site
-# -> these are the means ordered in that vector based on their cell
-
-length(psi.0.mean) #this is mean values across all the cells, so we need a map to interpret it
-
-# Find 95% credible intervals and widths of 95% credible interval for occurrence probability estimates:
-quantiles.ordered.samples <- as.data.frame(
-  t(apply(psi.0.samples ,2,quantile,probs=c(0.025,0.975))))
-quantiles.ordered.samples$width <- quantiles.ordered.samples[,2] -
-  quantiles.ordered.samples[,1]
-
-# Predictive plots require the shapefile for the 10x10 grids that can be linked to the unique cell IDs. 
-
-# Create a dataframe for plotting:Plot names in the covariates and in the prediction outputs line up because that is the order it was read into the prediction formula
-
-predicted.df <- data.frame(Cell= occ_covs_all$Cell,
-                           psi.mean = psi.0.mean,
-                           psi.width = quantiles.ordered.samples$width)
-
-# Join the predicted results to the spatial grid, using the plot name
-plottable <- left_join(select(grid_shp,Cell, geometry),
-                       predicted.df,
-                       by = 'Cell')
-# There are some NA grid cells that didn't have covariate values and don't have predictions; remove them: 
-plottable <- na.omit(plottable)
-
-ggplot(data = plottable) +
-  geom_sf(aes(fill = psi.mean), lwd = 0.05) +
-  theme_bw() +
-  viridis::scale_fill_viridis(limits = c(0, 1)) +
-  ggtitle('LANO posterior mean predicted occurrence',
-          'Single-season, single-species model')
-
-ggplot(plottable) +
-  geom_sf(aes(fill = psi.width), lwd = 0.05) +
-  theme_bw() +
-  viridis::scale_fill_viridis(option = 'plasma', limits = c(0, 1)) +
-  ggtitle('LANO predicted occurrence 95% interval width',
-          'Single-season, single-species model')
-
-
-
-# Below we predict across the 400 “new” locations and plot them in comparison to the true values we used to simulate the data.
-
-# Predict occupancy at the 400 new sites
-out.pred <- predict(out.svc.trend, X.pred, coords.pred, t.cols = 1:n.time.max)
-
-# get SVC values at the prediction locations
-svc.pred.samples <- getSVCSamples(out.svc.trend, pred.object = out.pred)
-
-# Get mean values of the SVC for the covariate
-svc.cov.pred.mean <- apply(svc.pred.samples$occ.cov.1, 2, mean)
-
-# Plot
-plot(coords.pred, type = "n", xlab = "", ylab = "", asp = TRUE, 
-     main = "Estimated values", bty = 'n')
-points(coords.pred, pch=15, cex = 2.1, 
-       col = rgb(0,0,0,(svc.cov.pred.mean-min(svc.cov.pred.mean))/diff(range(svc.cov.pred.mean))))
-
-## adapt 
-# First standardize elevation using mean and sd from fitted model
-elev.pred <- (hbefElev$val - mean(btbwHBEF$occ.covs[, 1])) / sd(btbwHBEF$occ.covs[, 1])
-coords.0 <- as.matrix(hbefElev[, c('Easting', 'Northing')])
-X.0 <- cbind(1, elev.pred, elev.pred^2)
-out.pred <- predict(out, X.0, coords.0, verbose = FALSE)
-
-# Plot spatially varying trend across study region  
-**FIX THIS**
+# Change in occupancy relative to change in covariate -------------------------
+
+df_occ_change <- df_occ %>%
+  filter(period %in% c(min(period), max(period))) %>%
+  select(site, period, mean_occ) %>%
+  pivot_wider(names_from = period, values_from = mean_occ,
+              names_prefix = "period_") %>%
+  mutate(delta_occ = .data[[paste0("period_", max(df_occ$period))]] -
+           .data[[paste0("period_", min(df_occ$period))]])
+
+# Compute Δ covariate per site  
+get_delta_cov <- function(cov_matrix, cov_name) {
+  data.frame(site = 1:nrow(cov_matrix),
+             covariate = cov_name,
+             delta_cov = cov_matrix[, ncol(cov_matrix)] - cov_matrix[, 1])
+}
+
+# Function for Δ covariate
+get_delta_cov <- function(cov_mat, cov_name) {
+  # Handle case where covariate is a vector, not a matrix
+  if (is.null(dim(cov_mat))) {
+    n_sites <- length(cov_mat)
+    cov_start <- cov_mat[1]
+    cov_end   <- cov_mat[length(cov_mat)]
+  } else {
+    n_sites <- nrow(cov_mat)
+    cov_start <- cov_mat[, 1]
+    cov_end   <- cov_mat[, ncol(cov_mat)]
+  }
   
-  y <- yarray            #detection-nondetection data
-X <- dat$X             #occurrence design matrix for fixed effects
-X.p <- dat$X.p         #detection design matrix for fixed effets  
-psi <- dat$psi         #occurrence values
-coords <- coords       #spatial coordinates
-w <- dat$w             #spatially varying intercept and covariate effects
-cov.effect <- beta[2] + w[, 2]
-plot.dat <- data.frame(x = coords[, 1], 
-                       y = coords[, 2], 
-                       cov.effect = cov.effect)
+  data.frame(
+    site = 1:n_sites,
+    covariate = cov_name,
+    delta_cov = cov_end - cov_start
+  )
+}
 
-ggplot(plot.dat, aes(x = x, y = y, fill = cov.effect)) + 
-  geom_raster() + 
-  scale_fill_gradient2(midpoint = 0, low = '#B2182B', mid = 'white', 
-                       high = '#2166AC', na.value = NA) + 
-  theme_bw() 
-# (decrease in occurrence = red, increase in occurrence = blue)
+# Change in spatially varying covariates ----
+cov_list_static <- list(`Road Dist` = road_dist.0,
+                        TRI = tri.0,
+                        `River Dist` = river_dist.0,
+                        `Coeff Var` = coeff_var.0,
+                        `Cities Dist` = cities_lg.0)
 
+df_cov_change <- map2_dfr(cov_list_static, names(cov_list_static), get_delta_cov)
 
+df_change <- df_occ_change %>%
+  select(site, delta_occ) %>%
+  left_join(df_cov_change, by = "site")
 
+(occDeltaSpat <- 
+    ggplot(df_change, aes(x = delta_cov, y = delta_occ)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", se = TRUE, color = "blue") +
+    facet_wrap(~ covariate, scales = "free_x") +
+    labs(x = "Δ Covariate",
+         y = "Δ Occupancy",
+         title = "Change in occupancy vs. change in covariates", 
+          subtitle = "Spatiotemporally varying covariates") +
+    theme_minimal() +
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
 
-
-## Occurrence data across study area ------------------------------------------
-
-# We may be interested in average occurrence across the whole study area, which can be computed as a derived quantity of the cell-level occurrences. We include naive average occurrence across surveyed cells as a solid line.
-
-psi <- as.data.frame(out$psi.samples) # samples of latent psi across all sites
-#this is psi sampled across all 169 sites
-avg_psi <- rowMeans(psi) #take averages across all columns (sites)
-avg_psi_naive <- mean(as.numeric(as.character(naive$Naive_occupancy))) FIGURE THIS OUT 
-hist(avg_psi, breaks = 20, freq=F, main = "", xlab = "Mean occurrence across all cells")
-abline(v = avg_psi_naive, lwd = 2) FIGURE THIS OUT 
-
-
-
-
-## add in the following 
-
-## Estimates of SVCs 
-
-# To extract the estimates of the spatially varying coefficients at each of the spatial locations in the data set used to fit the model, we need to combine the non-spatial component of the coefficient (contained in out.svc$beta.samples) and the spatial component of the coefficient (contained in out.svc$w.samples). Recall that in an SVC occupancy model, the total effect of a covariate at any given location is the sum of the non-spatial effect and the adjustment of the effect at that specific location. We provide the function getSVCSamples() to extract the SVCs at each location.
-
-# The resulting object, here called svc.samples, is a list with each component corresponding to a matrix of the MCMC samples of each spatially varying coefficient estimated in the model, with rows corresponding to MCMC sample and column corresponding to site.
-
-svc.samples <- getSVCSamples(out) 
-str(svc.samples)
-
-# Intercept 
-svc.samples <- getSVCSamples(out.svc.trend)
-int.quants <- apply(svc.samples[["(Intercept)"]], 2, quantile, 
-                    probs = c(0.025, 0.5, 0.975))
-svc.true.fit <- beta + w.fit
-plot(svc.true.fit[, 1], int.quants[2, ], pch = 19, 
-     ylim = c(min(int.quants[1, ]), max(int.quants[3, ])),
-     xlab = "True", ylab = "Fit", main = 'Intercept')
-abline(0, 1)
-arrows(svc.true.fit[, 1], int.quants[2, ], svc.true.fit[, 1], col = 'gray', 
-       int.quants[1, ], length = 0.02, angle = 90)
-arrows(svc.true.fit[, 1], int.quants[1, ], svc.true.fit[, 1], col = 'gray', 
-       int.quants[3, ], length = 0.02, angle = 90)
-points(svc.true.fit[, 1], int.quants[2, ], pch = 19)
-
-# Trend -------------------------------------------------------------------
-trend.quants <- apply(svc.samples[["trend"]], 2, quantile, 
-                      probs = c(0.025, 0.5, 0.975))
-plot(svc.true.fit[, 2], trend.quants[2, ], pch = 19, 
-     ylim = c(min(trend.quants[1, ]), max(trend.quants[3, ])),
-     xlab = "True", ylab = "Fit", main = 'Spatially-Varying Trends')
-abline(0, 1)
-arrows(svc.true.fit[, 2], trend.quants[2, ], svc.true.fit[, 2], col = 'gray', 
-       trend.quants[1, ], length = 0.02, angle = 90)
-arrows(svc.true.fit[, 2], trend.quants[1, ], svc.true.fit[, 2], col = 'gray', 
-       trend.quants[3, ], length = 0.02, angle = 90)
-points(svc.true.fit[, 2], trend.quants[2, ], pch = 19)
+# Save as JPEG
+file_name <- paste0(file_path, "/", target_species, "_occDeltaSpat.jpg")
+ggsave(filename = file_name, plot = occDeltaSpat, width = 6, height = 5, units = "in", bg = "white")
 
 
-#https://code.usgs.gov/usgs/norock/irvine_k/vignette-bayesian-site-occupancy-model-bat-acoustic-data/-/blob/main/LANO-OR-WA-vignette.pdf?ref_type=heads
-#Plotting covariates
-ggplot(data = plottable_covs) +
-  geom_sf(aes(fill = Forest_PercentCover), lwd = 0.05 ) +
-  theme_bw() +
-  viridis::scale_fill_viridis(limits = c(0, 1))
+# Change in spatiotemporally varying covs ----
+cov_list_svc <- list(`Crop Prop` = crop.0,
+                     GPW = gpw.0,
+                     `Seasonal Precip` = precseas.0, 
+                     WDPA = wdpa.0,
+                     EVI = evi.0,
+                     GFC = gfc.0,
+                     Trend = trend.0)
 
+df_cov_change <- map2_dfr(cov_list_svc, names(cov_list_svc), get_delta_cov)
 
+df_change <- df_occ_change %>%
+  select(site, delta_occ) %>%
+  left_join(df_cov_change, by = "site")
 
+(occDeltaSVC <- ggplot(df_change, aes(x = delta_cov, y = delta_occ)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  facet_wrap(~ covariate, scales = "free_x") +
+  labs(x = "Δ Covariate",
+       y = "Δ Occupancy",
+       title = "Change in occupancy vs. change in covariates", 
+       subtitle = "Spatiotemporally varying covariates") +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)))
 
-# Load full reference grid ---------------------------------------------------------------
-grid_full <- rast("/gpfs/gibbs/pi/jetz/wildlife_insights/RWT/data/data_for_annotation/Global_1km_CEA_reference_raster_with_cellID.tif")
-
-# Load range map ---------------------------------------------------------------
-file_rangemap <- list.files("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", full.names = TRUE) %>% 
-  str_subset(pattern = species_full)
-#rangemap <- rast("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/Suncus_etruscus.tif")
-rangemap <- rast(file_rangemap)
-rangemap_bf <- buffer(rangemap, width = 100000) #500 km
-rangemap_bf <- as.numeric(rangemap_bf) # from true/false to 1/0
-rangemap_bf <- ifel(rangemap_bf == 0, NA, 1)
-
-
-
-# Subset grid based on range map -----------------------------------------------
-grid_sub <- terra::crop(grid_full, rangemap_bf) # to make extent match
-grid_sub <- terra::mask(grid_sub, rangemap_bf) # to mask 
-
-# plot(grid_sub, y = 2)
-# plot(rangemap_bf)
-# plot(rangemap, add = TRUE, col = "red")
-# plot(rangemap_bf, add = TRUE, col = "blue")
-# plot(world,  col=NULL, "l", add = TRUE)
-# points(coords, col = "blue")
-
-
-# Remove no-land ---------------------------------------------------------------
-land <- rast("/gpfs/gibbs/pi/jetz/data/regions_datasets/MOL_land_layer/v2/MOL_Land_Layer_Countries_Fixed_1km.tiff") %>% 
-  terra::project(crs(grid_sub))
-
-land_sub <- terra::crop(land, grid_sub) # to make extent match
-land_sub <- ifel(land_sub == 0, NA, 1)
-land_sub_rs <- resample(land_sub, grid_sub) # resample to align
-grid_land <- terra::mask(grid_sub, land_sub_rs) # to remove no-land 
-
-# Extract covariates -----------------------------------------------------------
+# Save as JPEG
+file_name <- paste0(file_path, "/", target_species, "_occDeltaSpat.jpg")
+ggsave(filename = file_name, plot = occDeltaSpat, width = 6, height = 5, units = "in", bg = "white")
