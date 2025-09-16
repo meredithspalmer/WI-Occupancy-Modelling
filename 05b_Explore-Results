@@ -27,8 +27,8 @@ library(purrr)
 
 ## Load data ------------------------------------------------------------------
 
-filenames <- list.files("Model outputs", full.names = TRUE) 
-species <- "Acinonyx jubatus"
+(filenames <- list.files("Model outputs", full.names = TRUE))
+species <- "Ceratotherium simum"
 
 # Model outputs 
 file_path <- filenames[grep(species, filenames)]
@@ -142,7 +142,9 @@ plot.df <- data.frame(periods = unique.periods,
     theme_bw(base_size = 14) +
     theme(legend.position = c(0.75, 0.125)) +
     scale_y_continuous(limits = c(0, 1)) +
-    labs(x = "Periods", y = 'Average Occupancy Probability'))
+    labs(x = "Periods", y = 'Average Occupancy Probability', 
+         title = "Occupancy through time", 
+         subtitle = bquote(italic(.(target_species)))))
 
 file_name <- paste(file_path, "/", target_species, "_occAcrossPeriods.jpg", sep="")
 ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "in")
