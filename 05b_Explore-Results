@@ -549,39 +549,62 @@ world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
 plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
 
 (occPeriod <- ggplot() +
-  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
-  geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.9) +
-  scale_fill_viridis_c(option = "C", na.value = NA) +
-  coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
-           ylim = c(min(plot_df$y), max(plot_df$y)),
-           expand = FALSE) +
-  labs(x = NULL, y = NULL,
-       fill = "Occupancy", 
-       title = bquote(italic(.(target_species))),
-    subtitle = paste0("Predicted occupancy (Period ", period_sel, ")")
-  ) +
-  theme_minimal())
+    geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+    geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.9) +
+    scale_fill_viridis_c(option = "C", na.value = NA) +
+    coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
+             ylim = c(min(plot_df$y), max(plot_df$y)), 
+             expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         fill = "Occupancy", 
+         title = bquote(italic(.(target_species))),
+         subtitle = paste0("Predicted occupancy (Period ", period_sel, ")")) +
+    theme_minimal() + 
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
 
 file_name <- paste(file_path, "/", target_species, "_occPeriod.jpg", sep="")
-ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "in")
+ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "in", bg = "white")
 
 
 # Difference map (change between two periods) ---------------------------------
 
+min_period <- min(periods$period_counter)
+max_period <- max(periods$period_counter)
+
+df_occ_sf <- st_as_sf(df_occ, coords = c("x", "y"), crs = crs(ref), remove = FALSE)
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(df_occ_sf))
+world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
+
 df_diff <- df_occ %>%
-  filter(period %in% c("44","99")) %>%
+  filter(period %in% c(min_period, max_period)) %>%
   select(site, x, y, period, mean_occ) %>%
-  pivot_wider(names_from = period, values_from = mean_occ) %>%
-  mutate(diff = `99` - `44`)
+  pivot_wider(names_from = period, values_from = mean_occ, names_prefix = "period_") %>%
+  mutate(diff = .data[[paste0("period_", max_period)]] - 
+           .data[[paste0("period_", min_period)]])
 
-ggplot(df_diff, aes(x = x, y = y, fill = diff)) +
-  geom_tile() +
-  scale_fill_gradient2(low = "red", mid = "white", high = "blue") +
-  coord_equal() +
-  labs(fill = "Δ occupancy (2020-2000)",
-       title = "Change in occupancy between 2000 and 2020") +
-  theme_minimal()
+(changeOcc <- ggplot() +
+  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+  geom_tile(data = df_diff, aes(x = x, y = y, fill = diff), alpha = 0.9) +
+  scale_fill_gradient2(low = "red", mid = "white", high = "blue", midpoint = 0) +
+  coord_sf(xlim = c(min(df_diff$x), max(df_diff$x)),
+           ylim = c(min(df_diff$y), max(df_diff$y)),
+           expand = FALSE) +
+  labs(x = NULL, y = NULL,
+       fill = paste0("Δ occupancy (", max_period, " - ", min_period, ")"),
+       title = bquote(italic(.(target_species))),
+       subtitle = "Predicted change in occupancy") + 
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)))
 
+# Save as JPEG
+file_name <- paste0(file_path, "/", target_species, "_occChange.jpg")
+ggsave(filename = file_name, plot = changeOcc, width = 6, height = 5, units = "in", bg = "white")
+
+
+# Difference map (change between two periods) ---------------------------------
 ## Heatmap (site x period)
 df_occ %>%
   ggplot(aes(x = period, y = site, fill = mean_occ)) +
