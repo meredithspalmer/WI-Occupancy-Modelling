@@ -214,6 +214,37 @@ colnames(trend.0) <- as.character(primary.periods)
 
 
 ## Create prediction design matrix (1 = intercept) ----------------------------
+
+# Parameters
+# Number of sites 
+n.sites <- nrow(static_covs)
+# Number of years
+n.periods <- length(primary.periods)
+# Number of occupancy regression parameters
+n.beta <- ncol(out$beta.samples)
+# Create an empty array with the proper dimensions
+X.0 <- array(NA, dim = c(n.sites, n.periods, n.beta))
+
+# Fill in the array
+# Intercept
+X.0[, , 1] <- 1
+# Elevation (standardized by values used to fit the model)
+elev.pred <- (full.data$occ.covs$elev - mean(fit.data$occ.covs$elev)) / sd(fit.data$occ.covs$elev)
+X.0[, , 2] <- elev.pred
+# Elevation^2
+X.0[, , 3] <- elev.pred^2
+# Year (standardized by values used to fit the model)
+years.pred <- (full.data$occ.covs$years - mean(fit.data$occ.covs$years)) / sd(fit.data$occ.covs$years)
+X.0[, , 4] <- years.pred
+# Give names to X.0 just to make things clear
+dimnames(X.0)[[3]] <- c('(Intercept)', 'elev', 'elev.2', 'years')
+# Prediction coordinates
+coords.0 <- full.data$coords
+# Predict across all years and sites in the original data set
+out.pred.occ <- predict(out, X.0, coords.0, t.cols = 1:n.years, type = 'occupancy')
+str(out.pred.occ)
+
+
 X.0 <- cbind(1, 
              (crop.0 - mean(crop.0))/sd(crop.0), 
              (gpw.0 - mean(gpw.0))/sd(gpw.0), 
@@ -229,6 +260,18 @@ t.cols <- primary.periods
 coords.0 <- static_covs[,c("x","y")] %>% distinct() %>% as.matrix()
 
 out.pred <- predict(out, X.0, coords.0, t.cols = t.cols, ignore.RE = TRUE, type = 'occupancy')
+
+^ FIGURE OUT X.0!!! maybe just need to make a matrix?? look at how made before; look at bat doc 
+
+
+
+# Can then manipulate the objects in out.pred.occ as desired
+# e.g., calculate mean occupancy probability for each site/year
+psi.means <- apply(out.pred.occ$psi.0.samples, c(2, 3), mean)
+
+
+
+
 
 
 # ------------------------
