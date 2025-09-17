@@ -28,7 +28,7 @@ library(purrr)
 ## Load data ------------------------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Diceros bicornis"
+species <- "Gorilla gorilla"
 
 # Model outputs 
 file_path <- filenames[grep(species, filenames)]
@@ -283,8 +283,8 @@ X.0[, , 6] <-  (evi.0 - mean(dat_ls$occ.covs$evi))/sd(dat_ls$occ.covs$evi)
 X.0[, , 7] <-  (gfc.0 - mean(dat_ls$occ.covs$gfc))/sd(dat_ls$occ.covs$gfc)
 X.0[, , 8] <-  (road_dist.0 - mean(dat_ls$occ.covs$road_dist))/sd(dat_ls$occ.covs$road_dist)   
 X.0[, , 9] <-  (tri.0 - mean(dat_ls$occ.covs$tri))/sd(dat_ls$occ.covs$tri)            
-X.0[, , 10] <- (river_dist.0 - mean(dat_ls$occ.covs$river_dist))/sd(dat_ls$occ.covs$river_dist)          
-X.0[, , 11] <- (coeff_var.0 - mean(dat_ls$occ.covs$coeff_var))/sd(dat_ls$occ.covs$coeff_var)         
+X.0[, , 10] <- (river_dist.0 - mean(dat_ls$occ.covs$river_dist))/sd(dat_ls$occ.covs$river_dist)     
+X.0[, , 11] <- (coeff_var.0 - mean(dat_ls$occ.covs$coeff_var))/sd(dat_ls$occ.covs$coeff_var)      
 X.0[, , 12] <- (cities_lg.0 - mean(dat_ls$occ.covs$cities_lg))/sd(dat_ls$occ.covs$cities_lg)      
 X.0[, , 13] <- (trend.0 - mean(dat_ls$occ.covs$trend))/sd(dat_ls$occ.covs$trend)
 
@@ -606,19 +606,19 @@ df_diff <- df_occ %>%
            .data[[paste0("period_", min_period)]])
 
 (changeOcc <- ggplot() +
-  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
-  geom_tile(data = df_diff, aes(x = x, y = y, fill = diff), alpha = 0.9) +
-  scale_fill_gradient2(low = "red", mid = "white", high = "blue", midpoint = 0) +
-  coord_sf(xlim = c(min(df_diff$x), max(df_diff$x)),
-           ylim = c(min(df_diff$y), max(df_diff$y)),
-           expand = FALSE) +
-  labs(x = NULL, y = NULL,
-       fill = paste0("Δ occupancy (", max_period, " - ", min_period, ")"),
-       title = bquote(italic(.(target_species))),
-       subtitle = "Predicted change in occupancy") + 
-  theme_minimal() +
-  theme(plot.background = element_rect(fill = "white", color = NA),
-        panel.background = element_rect(fill = "white", color = NA)))
+    geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+    geom_tile(data = df_diff, aes(x = x, y = y, fill = diff), alpha = 0.9) +
+    scale_fill_gradient2(low = "red", mid = "white", high = "blue", midpoint = 0) +
+    coord_sf(xlim = c(min(df_diff$x), max(df_diff$x)),
+             ylim = c(min(df_diff$y), max(df_diff$y)),
+             expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         fill = paste0("Δ occupancy (", max_period, " - ", min_period, ")"),
+         title = bquote(italic(.(target_species))),
+         subtitle = "Predicted change in occupancy") + 
+    theme_minimal() +
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
 
 # Save as JPEG
 file_name <- paste0(file_path, "/", target_species, "_occChange.jpg")
@@ -657,99 +657,106 @@ animate(p, nframes = length(primary.periods)*5, fps = 5)
 
 # Change in occupancy relative to change in covariate -------------------------
 
-df_occ_change <- df_occ %>%
-  filter(period %in% c(min(period), max(period))) %>%
-  select(site, period, mean_occ) %>%
-  pivot_wider(names_from = period, values_from = mean_occ,
-              names_prefix = "period_") %>%
-  mutate(delta_occ = .data[[paste0("period_", max(df_occ$period))]] -
-           .data[[paste0("period_", min(df_occ$period))]])
-
-# Compute Δ covariate per site  
-get_delta_cov <- function(cov_matrix, cov_name) {
-  data.frame(site = 1:nrow(cov_matrix),
-             covariate = cov_name,
-             delta_cov = cov_matrix[, ncol(cov_matrix)] - cov_matrix[, 1])
-}
-
-# Function for Δ covariate
-get_delta_cov <- function(cov_mat, cov_name) {
-  # Handle case where covariate is a vector, not a matrix
-  if (is.null(dim(cov_mat))) {
-    n_sites <- length(cov_mat)
-    cov_start <- cov_mat[1]
-    cov_end   <- cov_mat[length(cov_mat)]
-  } else {
-    n_sites <- nrow(cov_mat)
-    cov_start <- cov_mat[, 1]
-    cov_end   <- cov_mat[, ncol(cov_mat)]
+# Function to extract occupancy response curves
+occ_response <- function(out, dat_ls, covariates, n_points = 100) {
+  beta_draws <- as.matrix(out$beta.samples)
+  beta_names <- colnames(beta_draws)
+  
+  cov_means <- sapply(dat_ls$occ.covs, mean, na.rm = TRUE)
+  cov_sds   <- sapply(dat_ls$occ.covs, sd, na.rm = TRUE)
+  
+  results <- list()
+  
+  for (cov_name in covariates) {
+    beta_col <- paste0("scale(", cov_name, ")")
+    if (!(beta_col %in% beta_names)) {
+      stop(paste("No column in beta.samples matches", beta_col,
+                 "\nAvailable:", paste(beta_names, collapse = ", ")))
+    }
+    
+    cov_seq <- seq(min(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
+                   max(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
+                   length.out = n_points)
+    cov_seq_scaled <- (cov_seq - cov_means[cov_name]) / cov_sds[cov_name]
+    
+    # design matrix
+    X_pred <- matrix(0, nrow = n_points, ncol = ncol(beta_draws))
+    colnames(X_pred) <- beta_names
+    
+    # intercept
+    if ("(Intercept)" %in% beta_names) {
+      X_pred[, "(Intercept)"] <- 1
+    }
+    
+    # focal covariate
+    X_pred[, beta_col] <- cov_seq_scaled
+    
+    # predict
+    eta <- X_pred %*% t(beta_draws)
+    psi <- plogis(eta)
+    
+    results[[cov_name]] <- data.frame(
+      covariate = cov_seq,
+      mean = rowMeans(psi),
+      low = apply(psi, 1, quantile, 0.025),
+      high = apply(psi, 1, quantile, 0.975),
+      variable = cov_name
+    )
   }
   
-  data.frame(
-    site = 1:n_sites,
-    covariate = cov_name,
-    delta_cov = cov_end - cov_start
-  )
+  dplyr::bind_rows(results)
 }
 
-# Change in spatially varying covariates ----
-cov_list_static <- list(`Road Dist` = road_dist.0,
-                        TRI = tri.0,
-                        `River Dist` = river_dist.0,
-                        `Coeff Var` = coeff_var.0,
-                        `Cities Dist` = cities_lg.0)
+# Static covariates --- 
+cov_labels <- c(road_dist   = "Dist to Roads",
+                tri         = "Terrain Ruggedness",
+                river_dist  = "Dist to Rivers",
+                coeff_var   = "Coefficient of Variation",
+                cities_lg   = "Dist to Cities")
 
-df_cov_change <- map2_dfr(cov_list_static, names(cov_list_static), get_delta_cov)
+covs_to_plot <- names(cov_labels)
+plot_df <- occ_response(out, dat_ls, covariates = covs_to_plot)
+plot_df$variable <- factor(plot_df$variable,
+                           levels = covs_to_plot,
+                           labels = cov_labels[covs_to_plot])
 
-df_change <- df_occ_change %>%
-  select(site, delta_occ) %>%
-  left_join(df_cov_change, by = "site")
-
-(occDeltaSpat <- 
-    ggplot(df_change, aes(x = delta_cov, y = delta_occ)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", se = TRUE, color = "blue") +
-    facet_wrap(~ covariate, scales = "free_x") +
-    labs(x = "Δ Covariate",
-         y = "Δ Occupancy",
-         title = "Change in occupancy vs. change in covariates", 
-          subtitle = "Spatiotemporally varying covariates") +
-    theme_minimal() +
-    theme(plot.background = element_rect(fill = "white", color = NA),
-          panel.background = element_rect(fill = "white", color = NA)))
+(occDeltaStatic <- ggplot(plot_df, aes(x = covariate, y = mean)) +
+  geom_ribbon(aes(ymin = low, ymax = high), fill = "grey80") +
+  geom_line(size = 1, color = "darkblue") +
+  facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+  labs(x = "Covariate value", y = "Occupancy probability",
+       title = "Change in occupancy across spatial gradients",
+       subtitle = bquote(italic(.(as.name(target_species))))) +
+  theme_minimal())
 
 # Save as JPEG
-file_name <- paste0(file_path, "/", target_species, "_occDeltaSpat.jpg")
-ggsave(filename = file_name, plot = occDeltaSpat, width = 6, height = 5, units = "in", bg = "white")
+file_name <- paste0(file_path, "/", target_species, "_occDeltaStatic.jpg")
+ggsave(filename = file_name, plot = occDeltaStatic, width = 6, height = 5, units = "in", bg = "white")
 
+# SVC covariates --- 
+cov_labels <- c(crop       = "Proportion Crop",
+                gpw        = "Human Population",
+                gfc        = "Forest Loss",
+                precseas   = "Seasonal Precip",
+                wdpa       = "Protected Area Status",
+                evi        = "Vegetation", 
+                trend      = "Trend (time)")
 
-# Change in spatiotemporally varying covs ----
-cov_list_svc <- list(`Crop Prop` = crop.0,
-                     GPW = gpw.0,
-                     `Seasonal Precip` = precseas.0, 
-                     WDPA = wdpa.0,
-                     EVI = evi.0,
-                     GFC = gfc.0,
-                     Trend = trend.0)
+covs_to_plot <- names(cov_labels)
+plot_df <- occ_response(out, dat_ls, covariates = covs_to_plot)
+plot_df$variable <- factor(plot_df$variable,
+                           levels = covs_to_plot,
+                           labels = cov_labels[covs_to_plot])
 
-df_cov_change <- map2_dfr(cov_list_svc, names(cov_list_svc), get_delta_cov)
-
-df_change <- df_occ_change %>%
-  select(site, delta_occ) %>%
-  left_join(df_cov_change, by = "site")
-
-(occDeltaSVC <- ggplot(df_change, aes(x = delta_cov, y = delta_occ)) +
-  geom_point(alpha = 0.4) +
-  geom_smooth(method = "lm", se = TRUE, color = "blue") +
-  facet_wrap(~ covariate, scales = "free_x") +
-  labs(x = "Δ Covariate",
-       y = "Δ Occupancy",
-       title = "Change in occupancy vs. change in covariates", 
-       subtitle = "Spatiotemporally varying covariates") +
-  theme_minimal() +
-  theme(plot.background = element_rect(fill = "white", color = NA),
-        panel.background = element_rect(fill = "white", color = NA)))
+(occDeltaSVC <- ggplot(plot_df, aes(x = covariate, y = mean)) +
+    geom_ribbon(aes(ymin = low, ymax = high), fill = "grey80") +
+    geom_line(size = 1, color = "darkblue") +
+    facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+    labs(x = "Covariate value", y = "Occupancy probability",
+         title = "Change in occupancy across SVC gradients",
+         subtitle = bquote(italic(.(as.name(target_species))))) +
+    theme_minimal())
 
 # Save as JPEG
-file_name <- paste0(file_path, "/", target_species, "_occDeltaSpat.jpg")
-ggsave(filename = file_name, plot = occDeltaSpat, width = 6, height = 5, units = "in", bg = "white")
+file_name <- paste0(file_path, "/", target_species, "_occDeltaSVC.jpg")
+ggsave(filename = file_name, plot = occDeltaStatic, width = 6, height = 5, units = "in", bg = "white")
