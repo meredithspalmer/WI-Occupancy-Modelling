@@ -260,9 +260,14 @@ hist(minjul_sq[,,3]) #data is pre-scaled: no need to scale further
 raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
 raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
 raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
-(raw_occ_plot <- ggplot(raw.occ.prob.df, aes(x, y)) + geom_point() + theme_bw() + 
+
+(raw_occ_plot <- 
+    ggplot(raw.occ.prob.df, aes(x, y)) + 
+    geom_point() + theme_bw() + 
     xlab("Period") + ylab("Raw Occurrence Proportion") + 
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)))
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+    labs(title = "Raw Occupancy", subtitle = bquote(italic(.(target_species)))))
+
 file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
 ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
 
