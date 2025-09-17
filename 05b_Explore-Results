@@ -28,7 +28,7 @@ library(purrr)
 ## Load data ------------------------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Helarctos malayanus"
+species <- "Loxodonta cyclotis"
 
 # Model outputs 
 file_path <- filenames[grep(species, filenames)]
@@ -68,7 +68,8 @@ occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.
     geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
     xlab('Covariates (scaled)') +
     ylab('Posterior Distribution') +
-    ggtitle('Occurrence coefficients', 'Multi-season, single-species model') + 
+    labs(title = "Occurrence coefficients", 
+         subtitle = bquote(italic(.(target_species)))) + 
     coord_flip())
 
 file_name <- paste(file_path, "/", target_species, "_occurrenceParams.jpg", sep="")
@@ -94,7 +95,8 @@ det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 
     geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
     xlab('Covariates (scaled)') +
     ylab('Posterior Distribution') +
-    ggtitle('Detection coefficients', 'Multi-season, single-species model') + 
+    labs(title = "Detection coefficients", 
+         subtitle = bquote(italic(.(target_species)))) + 
     coord_flip())
 
 file_name <- paste(file_path, "/", target_species, "_detectionParams.jpg", sep="")
