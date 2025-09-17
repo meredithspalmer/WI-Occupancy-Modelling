@@ -28,7 +28,7 @@ library(purrr)
 ## Load data ------------------------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Loxodonta cyclotis"
+species <- "Lycaon pictus"
 
 # Model outputs 
 file_path <- filenames[grep(species, filenames)]
@@ -761,4 +761,4 @@ plot_df$variable <- factor(plot_df$variable,
 
 # Save as JPEG
 file_name <- paste0(file_path, "/", target_species, "_occDeltaSVC.jpg")
-ggsave(filename = file_name, plot = occDeltaStatic, width = 6, height = 5, units = "in", bg = "white")
+ggsave(filename = file_name, plot = occDeltaSVC, width = 6, height = 5, units = "in", bg = "white")
