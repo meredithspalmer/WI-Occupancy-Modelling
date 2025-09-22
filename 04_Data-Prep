@@ -10,12 +10,6 @@ rm(list=ls()); gc()
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 set.seed(123)
 
-# Snappy codec
-#unlink("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/R/4.2/00LOCK-arrow", recursive = TRUE)
-#Sys.setenv(ARROW_S3="ON")
-#Sys.setenv(NOT_CRAN="true")
-#install.packages("arrow", repos = "https://arrow-r-nightly.s3.amazonaws.com")
-
 # Load libraries
 library(arrow)
 library(coda)
@@ -23,9 +17,7 @@ library(dplyr)
 library(forcats)
 library(ggmap)
 library(gridExtra)
-#library(hrbrthemes)
 library(lubridate)
-#library(MCMCvis)
 library(purrr)
 library(raster)
 library(reshape2)
@@ -257,7 +249,7 @@ date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ",
                           format(date_range[2], "%Y-%m-%d"))
 
 # Create Gantt-style plot
-ggplot(dat_temp) +
+(deployPlot <- ggplot(dat_temp) +
   geom_linerange(aes(y = y_pos, xmin = sensor_start_date, xmax = sensor_end_date,
     color = as.factor(project_id)), linewidth = 2, alpha = 0.7) + #deployment timelines
   geom_point(data = dat_sp_temp, aes(x = record_date, y = y_pos),
@@ -272,13 +264,20 @@ ggplot(dat_temp) +
         axis.ticks.y = element_blank(),
         axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
         axis.title = element_text(face = "bold"),
-        legend.position = "none")
+        legend.position = "none"))
 
-SAVE PLOT 
+# Save plot
+parent_dir <- "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs"
+all_folders <- list.dirs(parent_dir, recursive = FALSE)
+species_folder <- all_folders[str_detect(all_folders, fixed(target_species))]
+plot_file <- file.path(species_folder, paste0(gsub(" ", "_", target_species), "_deployment_plot.png"))
+ggsave(filename = plot_file, plot = deployPlot, width = 10, height = 6, dpi = 300)
 
-# After doing checks, clean original data for outliers 
+
+# After doing checks, clean original data for outliers ------------------------
 #dat <- dat %>% filter(latitude != min(latitude)) #remove weird location
 #min(dat_sp$latitude) -> if also bad, remove
+
 
 ## Build camera operability matrix (effort) -----------------------------------
 
