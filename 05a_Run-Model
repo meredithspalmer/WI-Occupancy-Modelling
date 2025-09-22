@@ -57,7 +57,8 @@ print(nrow(ystack))
 print(nrow(covs))
 
 # Create new directory to store outputs 
-new_dir_path <- paste("Model outputs/",target_species, "_", Sys.Date(), sep="")
+file_species <- gsub(" ", "_", target_species)
+new_dir_path <- paste("Model outputs/", file_species, sep="")
 if (!dir.exists(new_dir_path)) {
   dir.create(new_dir_path)
 } else {
