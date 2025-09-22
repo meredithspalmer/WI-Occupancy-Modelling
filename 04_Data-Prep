@@ -1,4 +1,4 @@
-#Project: WI Occupancy Range Wide Trends
+# Project: WI Occupancy Range Wide Trends
 
 # This file contains code to format the data to run species-level occupancy models.
 
@@ -24,11 +24,13 @@ library(gridExtra)
 library(lubridate)
 #library(MCMCvis)
 library(purrr)
+library(raster)
 library(reshape2)
 library(rlist)
 library(sf)
 library(spOccupancy)
 library(stringr)
+library(terra)
 library(tibble)
 library(tictoc)
 library(tidyr)
@@ -38,8 +40,9 @@ library(tmaptools)
 library(tsibble)
 library(viridis)
 
-# Prep detection matrix, effort, and julian date -------------------------------
-# Goal: Prep species-specific stacked detection matrices, by deployment-season-year and week
+## Prep detection matrix, effort, and julian date -----------------------------
+
+# Load and format WI data -----------------------------------------------------
 
 # Load data 
 #overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
@@ -85,6 +88,7 @@ all_dat <- all_dat[!is.na(all_dat$record_date),]
 rm(dat_seq, dat_images, overview_images, overview_seq)
 gc()
 
+
 # Define periods --------------------------------------------------------------
 
 # Define time in the year-week format 
@@ -108,17 +112,50 @@ periods$year <- year(periods$start_period)
 periods$period_counter <- 1:nrow(periods)
 head(periods)
 
-# Add initial info ------------------------------------------------------------
+
+# Load and format species MMD range map data ----------------------------------
 
 # Target species name
 target_species <- "Panthera onca"
+
+# Download data 
+species_file <- gsub(" ", "_", target_species)
+mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map <- rast(mmd_map_path)
+
+
+# Subset data by species ------------------------------------------------------
 
 # Extract data for a species
 dat_sp <- all_dat %>% filter(sp_binomial == target_species)
 nrow(dat_sp)
 
 # Retain all records of the projects in which the target species was detected
-dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
+#dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
+
+# Retain all records of projects that fall within MMD species range map
+sites <- all_dat[c("project_id", "latitude", "longitude")] %>% distinct()
+mmd_map_wgs <- project(mmd_map, "EPSG:4326")
+cells <- terra::cellFromXY(mmd_map_wgs, as.matrix(sites[, c("longitude", "latitude")]))
+vals <- terra::values(mmd_map_wgs)[cells]
+sites_in_range <- sites[vals == 1, ]
+dat <- all_dat %>% filter(project_id %in% unique(sites_in_range$project_id)) 
+
+# Check by plotting 
+ras_df <- as.data.frame(mmd_map_wgs, xy = TRUE, na.rm = TRUE)
+ggplot() +
+  geom_tile(data = ras_df, aes(x = x, y = y, fill = Panthera_onca)) +
+  scale_fill_viridis_c(na.value = NA, option = "viridis") +
+  geom_point(data = sites, aes(x = longitude, y = latitude), color = "gray50", size = 1, alpha = 0.5) +
+  geom_point(data = sites_in_range, aes(x = longitude, y = latitude), color = "red", size = 1.5) +
+  coord_equal() +
+  theme_minimal() +
+  labs(title = paste("Species distribution and site points:", target_species),
+       x = "Longitude", y = "Latitude", fill = "Presence")
+
+# Compare to number of sites pulled before
+#nrow(sites_in_range)
+#length(unique(dat_sp$project_id))
 
 # Check start and end dates: if issue, flip (note: many of these are 1 day depls)
 nrow(dat %>% filter(sensor_end_date <= sensor_start_date))
