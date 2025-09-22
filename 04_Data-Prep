@@ -170,73 +170,111 @@ dat <- dat %>%
   mutate(sensor_start_date = pmin(sensor_start_date, sensor_end_date),
          sensor_end_date   = pmax(sensor_start_date, sensor_end_date))
 
-# Data exploration & cleaning -------------------------------------------------
+## Spatial and temporal checks ------------------------------------------------
+  
+# Spatial coverage ------------------------------------------------------------
+loc <- dat %>% 
+  dplyr::select(latitude, longitude, project_id) %>% 
+  distinct() %>% 
+  mutate(project_id = as.factor(project_id))
+  
+# EXAMINE DATA -> manually update 
+#loc <- loc %>% filter(latitude != min(latitude)) #remove weird location
+  
+# Spatial check --- 
+loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
+st_crs(loc_sp) = 4326
+  
+data("World")
+World <- st_transform(World, crs = 4326)
 
-if(data_exploration){
+tmap_mode("plot")
+dat_map_range <- tm_shape(World) + 
+  tm_fill(alpha = 0.3) +        
+  tm_borders() +                
+  tm_shape(loc_sp) + 
+  tm_dots(col = "red", size = 0.3, popup.vars = c("Lat" = "latitude", "Long" = "longitude")) +
+  tm_grid() +                 
+  tm_scale_bar(breaks = c(0, 500, 1000), text.size = 1, position = c("LEFT", "BOTTOM")) +
+  tm_style("col_blind") +
+  tm_layout(legend.show = FALSE)
+print(dat_map_range)
   
-  # Spatial and temporal checks ---------------------------------------------
-  
-  loc <- dat %>% 
-    dplyr::select(latitude, longitude, project_id) %>% 
-    distinct() %>% 
-    mutate(project_id = as.factor(project_id))
-  
-  # EXAMINE DATA -> manually update 
-  #loc <- loc %>% filter(latitude != min(latitude)) #remove weird location
-  
-  # Create spatial object and set CRS (WGS84)
-  loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
-  st_crs(loc_sp) = 4326
-  
-  # Map locations
-  data("World")
-  World <- st_transform(World, crs = 4326)
-  tmap_mode("plot")
-  dat_map_range <- tm_shape(World) + 
-    tm_fill(alpha = 0.3) +        
-    tm_borders() +                
-    tm_shape(loc_sp) + 
-    tm_dots(col = "red", size = 0.3, popup.vars = c("Lat" = "latitude", "Long" = "longitude")) +
-    tm_grid() +                 
-    tm_scale_bar(breaks = c(0, 500, 1000), text.size = 1, position = c("LEFT", "BOTTOM")) +
-    tm_style("col_blind") +
-    tm_layout(legend.show = FALSE)
-  print(dat_map_range)
-  
-  # Temporal coverage
-  dat_temp <- dat %>% mutate(record_week = sprintf("%02d", week(record_date)),
-                             record_year = year(record_date),
-                             year_week = as.numeric(paste(record_year, record_week, sep = "")),
-                             proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
-    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
-  
-  x_label <- (expand.grid(year = seq(year(min(dat$record_date)), year(max(dat$record_date)),
-                                     by = 1),
-                          week = sprintf("%02d", seq(01, 53, 1))) %>% 
-                mutate(x_label = paste(year, week, sep = "")) %>% 
-                arrange(x_label))$x_label
-  
-  dat_sp_temp <- dat_sp %>% mutate(record_week = sprintf("%02d", week(record_date)),
-                                   record_year = year(record_date),
-                                   year_week = as.numeric(paste(record_year, record_week, 
-                                                                sep = "")),
-                                   proj_depl = paste(project_id, deployment_location_id, 
-                                                     sep = "_")) %>% 
-    dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
-  
-  ggplot(dat_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id))) +
-    geom_point(aes(color = as.factor(project_id))) +
-    geom_point(data = dat_sp_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id)),
-               color = "black", inherit.aes = FALSE) +
-    scale_x_discrete("Year-week", breaks = as.factor(x_label[seq(1, length(x_label), by = 8)]), 
-                     labels = as.factor(x_label[seq(1, length(x_label), by = 8)])) +
-    labs(y = "Deployments", title = target_species) +
-    theme_classic() +
-    theme(axis.text.y = element_blank(),
-          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
-          axis.title = element_text(face = "bold"),
-          legend.position = "none")
-}
+# Temporal coverage ----------------------------------------------------------- 
+
+# Prepare data
+dat_temp <- dat %>%
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
+         record_date = as.Date(record_date)) %>%
+  dplyr::select(project_id, deployment_location_id, proj_depl, record_date,
+                sensor_start_date, sensor_end_date) %>%
+  distinct()
+
+# Create chronological deployment order
+deployment_order <- dat_temp %>%
+  group_by(proj_depl) %>%
+  summarise(first_date = min(record_date), .groups = "drop") %>%
+  arrange(first_date) %>%
+  pull(proj_depl)
+
+# Aggregate deployments to get one start/end per deployment
+deploy_dates <- dat_temp %>%
+  group_by(project_id, deployment_location_id, proj_depl) %>%
+  summarise(sensor_start_date = min(sensor_start_date, na.rm = TRUE),
+            sensor_end_date   = max(sensor_end_date, na.rm = TRUE),
+            .groups = "drop")
+
+# Merge aggregated dates back to dat_temp
+dat_temp <- dat_temp %>%
+  dplyr::select(project_id, deployment_location_id, proj_depl, record_date) %>%
+  distinct() %>%
+  left_join(deploy_dates, by = c("project_id", "deployment_location_id", "proj_depl"))
+
+# Add stacking offsets for overlapping deployments
+dat_temp <- dat_temp %>%
+  group_by(proj_depl) %>%
+  mutate(y_stack = row_number() * 0.2) %>%  # vertical offset
+  ungroup() %>%
+  mutate(y_pos = as.numeric(factor(proj_depl, levels = deployment_order)) + y_stack)
+
+# Prepare species detection points aligned to deployment bars
+dat_sp_temp <- dat_sp %>%
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
+         record_date = as.Date(record_date)) %>%
+  dplyr::select(project_id, deployment_location_id, proj_depl, record_date) %>%
+  distinct() %>%
+  semi_join(deploy_dates, by = c("project_id", "deployment_location_id", "proj_depl")) %>%
+  group_by(proj_depl) %>%
+  mutate(y_stack = row_number() * 0.2) %>%
+  ungroup() %>%
+  mutate(y_pos = as.numeric(factor(proj_depl, levels = deployment_order)) + y_stack) %>%
+  filter(!is.na(y_pos) & !is.na(record_date))
+
+# Calculate statistics for subtitle
+num_deployments <- n_distinct(dat_temp$proj_depl)
+date_range <- range(dat_temp$record_date, na.rm = TRUE)
+date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ", 
+                          format(date_range[2], "%Y-%m-%d"))
+
+# Create Gantt-style plot
+ggplot(dat_temp) +
+  geom_linerange(aes(y = y_pos, xmin = sensor_start_date, xmax = sensor_end_date,
+    color = as.factor(project_id)), linewidth = 2, alpha = 0.7) + #deployment timelines
+  geom_point(data = dat_sp_temp, aes(x = record_date, y = y_pos),
+             color = "black", size = 1.5, alpha = 0.8) + #species detections 
+  scale_x_date(date_breaks = "6 months", date_labels = "%Y-%m") +
+  labs(y = "Deployments (chronological)",
+       x = "Date",
+       title = bquote("Deployments through time: " * italic(.(target_species))),
+       subtitle = paste0("Deployments: ", num_deployments, "\nDate range: ", date_range_text)) +
+  theme_classic() +
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title = element_text(face = "bold"),
+        legend.position = "none")
+
+SAVE PLOT 
 
 # After doing checks, clean original data for outliers 
 #dat <- dat %>% filter(latitude != min(latitude)) #remove weird location
