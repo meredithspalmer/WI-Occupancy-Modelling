@@ -560,5 +560,5 @@ plogis(2.13) #convert logit values to probability scale
 
 ## Save files -------------------------------------------------------------------
 
-(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", target_species, "_", Sys.Date(), "/", target_species, "_", Sys.Date(), "_svcTPGOcc", ".RData", sep = ""))
+(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", file_species, "/", file_species, "_svcTPGOcc", "_", Sys.Date(), ".RData", sep = ""))
 save(yarray, covs, target_species, out, coords, dat_ls, periods, file = filename)
