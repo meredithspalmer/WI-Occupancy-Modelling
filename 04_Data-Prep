@@ -111,7 +111,7 @@ head(periods)
 # Load and format species MMD range map data ----------------------------------
 
 # Target species name
-target_species <- "Panthera onca"
+target_species <- "Acinonyx jubatus"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
@@ -138,8 +138,10 @@ dat <- all_dat %>% semi_join(sites_in_range, by = c("project_id", "latitude", "l
 
 # Check by plotting 
 ras_df <- as.data.frame(mmd_map_wgs, xy = TRUE, na.rm = TRUE)
+names(ras_df)[3] <- "species"
+
 ggplot() +
-  geom_tile(data = ras_df, aes(x = x, y = y, fill = Panthera_onca)) +
+  geom_tile(data = ras_df, aes(x = x, y = y, fill = species)) +
   scale_fill_viridis_c(na.value = NA, option = "viridis") +
   geom_point(data = sites, aes(x = longitude, y = latitude), color = "gray50", size = 1, alpha = 0.5) +
   geom_point(data = sites_in_range, aes(x = longitude, y = latitude), color = "red", size = 1.5) +
