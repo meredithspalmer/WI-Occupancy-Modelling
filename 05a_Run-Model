@@ -262,18 +262,52 @@ raw.occ.prob <- apply(yarray, 2, mean, na.rm = TRUE)
 raw.occ.prob.df <- data.frame(x = names(raw.occ.prob), y = raw.occ.prob)
 raw.occ.prob.df$x <- factor(raw.occ.prob.df$x, levels = mixedsort(unique(raw.occ.prob.df$x)))
 
-(raw_occ_plot <- 
-    ggplot(raw.occ.prob.df, aes(x, y)) + 
-    geom_point() + theme_bw() + 
-    xlab("Period") + ylab("Raw Occurrence Proportion") + 
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
-    labs(title = "Raw Occupancy", subtitle = bquote(italic(.(target_species)))))
+# If necessary: 
+sum(is.na(raw.occ.prob.df$y))
+raw.occ.prob.df <- raw.occ.prob.df[!is.na(raw.occ.prob.df$y),]
+
+# Format breaks 
+period_dates <- periods %>%
+  mutate(month = case_when(
+    season == "Winter" ~ 1,
+    season == "Spring" ~ 4,
+    season == "Summer" ~ 7,
+    season == "Fall"   ~ 10),
+    period_date = ymd(paste(year, month, "01", sep = "-")),
+    label_year = ifelse(month == 4, as.character(year), ""))
+
+raw.occ.prob.df <- raw.occ.prob.df %>%
+  mutate(period_counter = as.integer(sub("p", "", x))) %>%
+  left_join(period_dates, by = "period_counter") %>%
+  dplyr::select(period_date, y, label_year)
+
+# Fill in missing periods with y = 0
+all_period_dates <- seq(
+  min(period_dates$period_date),
+  max(period_dates$period_date),
+  by = "3 months")
+
+raw.occ.prob.df <- tibble(period_date = all_period_dates) %>%
+  left_join(raw.occ.prob.df, by = "period_date") %>%
+  mutate(y = ifelse(is.na(y), 0, y),
+         label_year = ifelse(month(period_date) == 4, year(period_date), ""))
+
+# Plot
+(raw_occ_plot <- ggplot(raw.occ.prob.df, aes(x = period_date, y = y)) +
+    geom_point() +
+    theme_bw() +
+    xlab("Year") +
+    ylab("Raw Occurrence Proportion") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+    scale_x_date(breaks = raw.occ.prob.df$period_date,
+                 labels = raw.occ.prob.df$label_year) +
+    labs(title = "Raw Occupancy",
+         subtitle = bquote(italic(.(target_species)))))
 
 file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
 ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
 
 # If outliers, remove: 
-
 # yarray 
 #cols_to_keep <- dimnames(yarray)[[2]] != "p3"
 #yarray <- yarray[, cols_to_keep, ]
@@ -336,70 +370,6 @@ occ.formula = ~ scale(crop) + scale(gpw) + scale(precseas) + scale(wdpa) +
 det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
 
 svc.cols = c(1:13)  #covariates whose effects are estimated as SVCs, including intercept
-
-
-## Subset data if appropriate -------------------------------------------------
-
-# If splitting (for k-fold cross validation): 
-# Fit model with 75% of locations to train, remaining 25% to predict 
-J <- length(unique(covs$cell_ID))  
-pred.indx <- sample(1:J, round(J * .25), replace = FALSE)
-
-y.fit <- yarray[-pred.indx,,]
-y.pred <- yarray[pred.indx,,]
-coords.fit <- coords[-pred.indx,]
-coords.pred <- coords[pred.indx,]
-
-static.fit <- static[-pred.indx,]
-static.pred <- static[pred.indx,]
-gpw.fit <- gpw[-pred.indx,]
-gpw.pred <- gpw[pred.indx,]
-evi.fit <- evi[-pred.indx,]
-evi.pred <- evi[pred.indx,]
-crop.fit <- crop[-pred.indx,]
-crop.pred <- crop[pred.indx,]
-gfc.fit <- gfc[-pred.indx,]
-gfc.pred <- gfc[pred.indx,]
-precseas.fit <- precseas[-pred.indx,]
-precseas.pred <- precseas[pred.indx,]
-wdpa.fit <- wdpa[-pred.indx,]
-wdpa.pred <- wdpa[pred.indx,]
-ndepl.fit <- ndepl[-pred.indx,]
-ndepl.pred <- ndepl[pred.indx,]
-proj.fit <- proj[-pred.indx,]
-proj.pred <- proj[pred.indx,]
-trend.fit <- trend[-pred.indx,]
-trend.pred <- trend[pred.indx,]
-effort.fit <- effort[-pred.indx,,] 
-effort.pred <- effort[pred.indx,,] 
-minjul.fit <- minjul[-pred.indx,,]  
-minjul.pred <- minjul[pred.indx,,]  
-minjul_sq.fit <- minjul_sq[-pred.indx,,]
-minjul_sq.pred <- minjul_sq[pred.indx,,]
-
-
-# Organize data for svcTPGOcc -------------------------------------------------
-
-# If splitting  
-dat_ls_split <- list(y = y.fit,
-                     occ.covs = list(crop = crop.fit, 
-                                     gpw = gpw.fit,
-                                     gfc = gfc.fit, 
-                                     precseas = precseas.fit,
-                                     wdpa = wdpa.fit,
-                                     evi = evi.fit,
-                                     road_dist = static.fit$road_dist,
-                                     tri = static.fit$tri,
-                                     river_dist = static.fit$river_dist,
-                                     coeff_var = static.fit$coeff_var,
-                                     cities_lg = static.fit$cities_lg,
-                                     trend = trend.fit),
-                     det.covs = list(effort = effort.fit,       # already scaled! 
-                                     minjul = minjul.fit,       # already scaled! 
-                                     minjul_sq = minjul_sq.fit, # already scaled! 
-                                     ndepl = ndepl.fit, 
-                                     proj = proj.fit),
-                     coords = coords.fit)
 
 # If running full model 
 dat_ls <- list(y = yarray,
