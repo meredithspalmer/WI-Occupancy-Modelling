@@ -306,16 +306,6 @@ for(i in 1:nrow(proj_depl)){
 
 sum(cam_op,na.rm=T) #check if working 
 
-if(data_exploration){ 
-  eff <- data.frame(active_depl = colSums(cam_op, na.rm = TRUE), sampl_date = as.Date(colnames(cam_op)))
-  
-  ggplot() +
-    geom_col(data = eff, aes(x = sampl_date, y = active_depl), col = "royalblue") +
-    geom_vline(xintercept = c(periods$start_period, periods$end_period[nrow(periods)]), linetype = "dashed", 
-               color = "grey56") +
-    labs(x = "Date", y = "Number of active deployments", title = target_species) +
-    theme_bw()
-}
 
 ## Build Julian date matrix ---------------------------------------------------
 
@@ -324,6 +314,7 @@ juldat <- matrix(rep(yday(colnames(cam_op)), nrow(cam_op)),
                  byrow = TRUE)
 colnames(juldat) <- colnames(cam_op)
 rownames(juldat) <- rownames(cam_op)
+
 
 ## Build detection/non-detection matrix ----------------------------------------
 
@@ -388,6 +379,7 @@ for(i in 1:length(det_ls)) {
 # Unlist detection histories 
 det_mat <- list.rbind(det_ls)  
 
+
 ## Effort ---------------------------------------------------------------------
 
 # Prepare list to store cam_op (i.e. effort) by period
@@ -428,6 +420,7 @@ for(i in 1:length(cam_op_ls)) {
 # Unlist detection histories
 cam_op <- list.rbind(cam_op_ls) 
 
+
 ## Julian date ----------------------------------------------------------------
 
 # Prepare list to store juldat by period
@@ -460,11 +453,13 @@ unlist(sapply(juldat_ls, dim))
 # Unlist detection histories
 juldat <- list.rbind(juldat_ls)  
 
+
 ## Remove deployment-season combinations with no effort -----------------------
 ind <- apply(cam_op[,1:max.length], 1, function(x) all(is.na(x)))
 cam_op <- cam_op[!ind, ]
 det_mat <- det_mat[!ind, ]
 juldat <- juldat[!ind, ]
+
 
 ## Aggregate in weekly occasions ----------------------------------------------
 
@@ -509,9 +504,10 @@ ystack <- ystack[ind > 1, ]
 det_mat <- det_mat[ind > 1, ]
 minjul <- minjul[ind > 1, ]
 
+
 ## Prepare covariates related to sampling -------------------------------------
 
-# Add season/time covariates (?)
+# Add season/time covariates 
 covs <- cbind(effort, minjul) %>% 
   mutate(proj_depl = rownames(det_mat),
          season = det_mat[, ncol(det_mat)-1],
@@ -519,49 +515,11 @@ covs <- cbind(effort, minjul) %>%
          proj = substr(proj_depl, 1, 7),
          depl = substr(proj_depl, 9, nchar(proj_depl)))
 
-if(data_exploration){
-  # Visualize effort
-  covs_long <- covs %>% 
-    select(proj_depl, season, year, effort_w1:effort_w13) %>% 
-    mutate(proj_depl_s_y = paste(proj_depl, season, year, sep = "_")) %>% 
-    select(-c("proj_depl", "season", "year")) %>% 
-    pivot_longer(!proj_depl_s_y, names_to = "effort_week", values_to = "effort") %>% 
-    mutate_at(vars(effort_week), ~fct_relevel(., c("effort_w1", "effort_w2", "effort_w3",
-                                                   "effort_w4", "effort_w5", "effort_w6",
-                                                   "effort_w7", "effort_w8", "effort_w9",
-                                                   "effort_w10", "effort_w11", "effort_w12",
-                                                   "effort_w13")))
-  
-  ggplot(covs_long, aes(x = effort_week, y = proj_depl_s_y, color = as.factor(effort), 
-                        fill = as.factor(effort))) +
-    geom_tile() +
-    theme_bw() +
-    theme(axis.text.y = element_blank(), axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
-  
-  # Visualize detection/nondetection matrices
-  ystack_long <- as.data.frame(ystack) %>% 
-    mutate(proj_depl_s_y = with(covs, paste(proj_depl, season, year, sep = "_")),
-           season_year = with(covs, paste(season, year, sep = "_"))) %>% 
-    pivot_longer(!c(proj_depl_s_y, season_year), names_to = "det_week", values_to = "det") %>%
-    mutate_at(vars(det_week), ~fct_relevel(., c("V1", "V2", "V3", "V4", "V5", 
-                                                "V6", "V7", "V8", "V9", "V10",
-                                                "V11", "V12", "V13"))) 
-  
-  ggplot(ystack_long, aes(x = det_week, y = proj_depl_s_y, color = as.factor(det), 
-                          fill = as.factor(det))) +
-    geom_tile() +
-    scale_fill_manual(values = c("black", "red", "white")) +
-    labs(x="Week", y="Proj_depl_season_year", title="Detection matrices") +
-    theme_bw() +
-    theme(axis.text.y = element_blank(),
-          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
-    facet_wrap(~season_year)
-}
-
 # Add period counter 
 covs <- left_join(covs, periods %>% 
                     dplyr::select("season", "year", "period_counter") %>% 
                     mutate(year = as.character(year)))
+
 
 ## Spatially aggregate to cell ID ---------------------------------------------
 
@@ -578,18 +536,18 @@ sum(is.na(covs$cell_ID))
 ystack2 <- as.data.frame(ystack) 
 ystack2 <- cbind(ystack2, covs)
 
-test <- ystack2 #quick save - good through here; afterwards, things get weird 
-
 ystack2_group <- ystack2 %>% 
   drop_na(cell_ID) %>% 
   group_by(cell_ID, season, `year`) %>% 
-  summarise(n_depl = n(),
-            across(starts_with("V"), function(x) ifelse(all(is.na(x)), NA, max(x, na.rm = TRUE))),
-            across(starts_with("effort_w"), function(x) ifelse(all(is.na(x)), NA, sum(x, na.rm = TRUE))),
-            across(minjul_w1:minjul_w13, min),
-            proj = unique(proj),
-            period_counter = unique(period_counter)) %>% 
-  ungroup() 
+  summarise(
+    n_depl = n(),
+    across(starts_with("V"), ~ ifelse(all(is.na(.x)), NA, max(.x, na.rm = TRUE))),
+    across(starts_with("effort_w"), ~ ifelse(all(is.na(.x)), NA, sum(.x, na.rm = TRUE))),
+    across(minjul_w1:minjul_w13, ~ min(.x, na.rm = TRUE)),
+    proj = first(proj),
+    period_counter = first(period_counter),
+    .groups = "drop"
+  )
 
 # -> more than 7 days effort because combining effort from multiple project-deployments within same 
 # cell_ID (e.g., if 6 projects each operating for full 7 days, effort is 42)
