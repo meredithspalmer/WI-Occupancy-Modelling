@@ -196,69 +196,64 @@ print(dat_map_range)
 
 # Prepare data
 dat_temp <- dat %>%
-  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
-         record_date = as.Date(record_date)) %>%
+  mutate(
+    proj_depl = paste(project_id, deployment_location_id, sep = "_"),
+    record_date = as.Date(record_date)
+  ) %>%
   dplyr::select(project_id, deployment_location_id, proj_depl, record_date,
                 sensor_start_date, sensor_end_date) %>%
   distinct()
 
-# Create chronological deployment order
-deployment_order <- dat_temp %>%
-  group_by(proj_depl) %>%
-  summarise(first_date = min(record_date), .groups = "drop") %>%
-  arrange(first_date) %>%
-  pull(proj_depl)
-
-# Aggregate deployments to get one start/end per deployment
+#  Aggregate deployments to get one start/end per deployment
 deploy_dates <- dat_temp %>%
   group_by(project_id, deployment_location_id, proj_depl) %>%
-  summarise(sensor_start_date = min(sensor_start_date, na.rm = TRUE),
-            sensor_end_date   = max(sensor_end_date, na.rm = TRUE),
-            .groups = "drop")
+  summarise(
+    start = min(sensor_start_date, na.rm = TRUE),
+    end   = max(sensor_end_date, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(start) %>%
+  mutate(y_pos = row_number())  
 
-# Merge aggregated dates back to dat_temp
+# Merge y_pos back to dat_temp (for deployments)
 dat_temp <- dat_temp %>%
   dplyr::select(project_id, deployment_location_id, proj_depl, record_date) %>%
   distinct() %>%
-  left_join(deploy_dates, by = c("project_id", "deployment_location_id", "proj_depl"))
+  left_join(deploy_dates %>% dplyr::select(proj_depl, y_pos, start, end), 
+            by = "proj_depl")
 
-# Add stacking offsets for overlapping deployments
-dat_temp <- dat_temp %>%
-  group_by(proj_depl) %>%
-  mutate(y_stack = row_number() * 0.2) %>%  # vertical offset
-  ungroup() %>%
-  mutate(y_pos = as.numeric(factor(proj_depl, levels = deployment_order)) + y_stack)
-
-# Prepare species detection points aligned to deployment bars
+# Prepare species detection points, aligned to deployments
 dat_sp_temp <- dat_sp %>%
   mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
          record_date = as.Date(record_date)) %>%
   dplyr::select(project_id, deployment_location_id, proj_depl, record_date) %>%
   distinct() %>%
-  semi_join(deploy_dates, by = c("project_id", "deployment_location_id", "proj_depl")) %>%
-  group_by(proj_depl) %>%
-  mutate(y_stack = row_number() * 0.2) %>%
-  ungroup() %>%
-  mutate(y_pos = as.numeric(factor(proj_depl, levels = deployment_order)) + y_stack) %>%
+  semi_join(deploy_dates, by = "proj_depl") %>%
+  left_join(deploy_dates %>% dplyr::select(proj_depl, y_pos), by = "proj_depl") %>%
   filter(!is.na(y_pos) & !is.na(record_date))
 
-# Calculate statistics for subtitle
+# Calculate summary statistics for subtitle
 num_deployments <- n_distinct(dat_temp$proj_depl)
 date_range <- range(dat_temp$record_date, na.rm = TRUE)
 date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ", 
                           format(date_range[2], "%Y-%m-%d"))
 
 # Create Gantt-style plot
-(deployPlot <- ggplot(dat_temp) +
-  geom_linerange(aes(y = y_pos, xmin = sensor_start_date, xmax = sensor_end_date,
-    color = as.factor(project_id)), linewidth = 2, alpha = 0.7) + #deployment timelines
-  geom_point(data = dat_sp_temp, aes(x = record_date, y = y_pos),
-             color = "black", size = 1.5, alpha = 0.8) + #species detections 
+(deployPlot <- ggplot() +
+  geom_linerange(data = deploy_dates, aes(y = y_pos, xmin = start, xmax = end,
+                                          color = as.factor(project_id)), 
+                 linewidth = 2, alpha = 0.7) + #deployment timelines
+  geom_point(data = dat_sp_temp, aes(x = record_date, y = y_pos), color = "black",
+             size = 1.5, alpha = 0.8) + #species detections 
   scale_x_date(date_breaks = "6 months", date_labels = "%Y-%m") +
+  scale_y_continuous(breaks = deploy_dates$y_pos,
+                     labels = deploy_dates$proj_depl,
+                     expand = expansion(add = c(0.5, 0.5))) +
   labs(y = "Deployments (chronological)",
        x = "Date",
        title = bquote("Deployments through time: " * italic(.(target_species))),
-       subtitle = paste0("Deployments: ", num_deployments, "\nDate range: ", date_range_text)) +
+       subtitle = paste0("Deployments: ", num_deployments, "\nDate range: ", 
+                         date_range_text)) +
   theme_classic() +
   theme(axis.text.y = element_blank(), 
         axis.ticks.y = element_blank(),
@@ -268,10 +263,10 @@ date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ",
 
 # Save plot
 parent_dir <- "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs"
-all_folders <- list.dirs(parent_dir, recursive = FALSE)
-species_folder <- all_folders[str_detect(all_folders, fixed(target_species))]
-plot_file <- file.path(species_folder, paste0(gsub(" ", "_", target_species), "_deployment_plot.png"))
-ggsave(filename = plot_file, plot = deployPlot, width = 10, height = 6, dpi = 300)
+species_dir <- file.path(parent_dir, gsub(" ", "_", target_species))
+if (!dir.exists(species_dir)) {dir.create(species_dir, recursive = TRUE)}
+plot_file <- file.path(species_dir, paste0(gsub(" ", "_", target_species), "_deployment_plot_", Sys.Date(),".png"))
+ggsave(filename = plot_file, plot = last_plot(), width = 10, height = 6, dpi = 300)
 
 
 # After doing checks, clean original data for outliers ------------------------
