@@ -1,5 +1,8 @@
-# Project: WI Occupancy Range Wide Trends
+########################
+###### Data prep #######
+########################
 
+# Project: WI Occupancy Range Wide Trends
 # This file contains code to format the data to run species-level occupancy models.
 
 # Set working directory 
@@ -139,7 +142,7 @@ mmd_map_wgs <- project(mmd_map, "EPSG:4326")
 cells <- terra::cellFromXY(mmd_map_wgs, as.matrix(sites[, c("longitude", "latitude")]))
 vals <- terra::values(mmd_map_wgs)[cells]
 sites_in_range <- sites[vals == 1, ]
-dat <- all_dat %>% filter(project_id %in% unique(sites_in_range$project_id)) 
+dat <- all_dat %>% semi_join(sites_in_range, by = c("project_id", "latitude", "longitude"))
 
 # Check by plotting 
 ras_df <- as.data.frame(mmd_map_wgs, xy = TRUE, na.rm = TRUE)
@@ -170,9 +173,9 @@ dat <- dat %>%
 # Data exploration & cleaning -------------------------------------------------
 
 if(data_exploration){
+  
   # Spatial and temporal checks ---------------------------------------------
-  # Spatial coverage
-  # Select unique locations
+  
   loc <- dat %>% 
     dplyr::select(latitude, longitude, project_id) %>% 
     distinct() %>% 
@@ -188,32 +191,17 @@ if(data_exploration){
   # Map locations
   data("World")
   World <- st_transform(World, crs = 4326)
-  #tmap_mode("view")
   tmap_mode("plot")
-  dat_map_range <- tm_shape(loc_sp) +
-    tm_grid() +
-    tm_dots(col = "project_id", popup.vars=c("Lat" = "latitude", "Long" = "longitude"), size = 0.3) +
-    #tm_compass(type = "8star", position = c("right", "top")) +
+  dat_map_range <- tm_shape(World) + 
+    tm_fill(alpha = 0.3) +        
+    tm_borders() +                
+    tm_shape(loc_sp) + 
+    tm_dots(col = "red", size = 0.3, popup.vars = c("Lat" = "latitude", "Long" = "longitude")) +
+    tm_grid() +                 
     tm_scale_bar(breaks = c(0, 500, 1000), text.size = 1, position = c("LEFT", "BOTTOM")) +
-    tm_style("col_blind") + # + tm_basemap(server = "OpenTopoMap") +
-    tm_shape(World) + 
-    tm_fill(alpha = 0.3) +
-    tm_borders() +
-    tm_layout(legend.show = FALSE) #legend.outside = TRUE)      
+    tm_style("col_blind") +
+    tm_layout(legend.show = FALSE)
   print(dat_map_range)
-  
-  # Map locations --- NOT WORKING; HOW DIFFERENT FROM ABOVE? LOOK AT LATER 
-  data("World")
-  World <- st_transform(World, crs = 4326)
-  #tmap_mode("view")
-  tmap_mode("plot")
-  dat_map_proj <- tm_shape(loc_sp) +
-    tm_grid() +
-    tm_dots(popup.vars=c("Lat" = "latitude", "Long" = "longitude"), size = 0.3) +
-    tm_facets(by = "project_id") +
-    tm_scale_bar(breaks = c(0, 5, 10), text.size = 1, position = c("LEFT", "BOTTOM")) +
-    tm_style("col_blind") 
-  print(dat_map_proj)
   
   # Temporal coverage
   dat_temp <- dat %>% mutate(record_week = sprintf("%02d", week(record_date)),
@@ -222,15 +210,18 @@ if(data_exploration){
                              proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
     dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
   
-  x_label <- (expand.grid(year = seq(year(min(dat$record_date)), year(max(dat$record_date)), by = 1),
+  x_label <- (expand.grid(year = seq(year(min(dat$record_date)), year(max(dat$record_date)),
+                                     by = 1),
                           week = sprintf("%02d", seq(01, 53, 1))) %>% 
                 mutate(x_label = paste(year, week, sep = "")) %>% 
                 arrange(x_label))$x_label
   
   dat_sp_temp <- dat_sp %>% mutate(record_week = sprintf("%02d", week(record_date)),
                                    record_year = year(record_date),
-                                   year_week = as.numeric(paste(record_year, record_week, sep = "")),
-                                   proj_depl = paste(project_id, deployment_location_id, sep = "_")) %>% 
+                                   year_week = as.numeric(paste(record_year, record_week, 
+                                                                sep = "")),
+                                   proj_depl = paste(project_id, deployment_location_id, 
+                                                     sep = "_")) %>% 
     dplyr::select(project_id, deployment_location_id, proj_depl, year_week) %>% distinct()
   
   ggplot(dat_temp, aes(x = as.factor(year_week), y = proj_depl, group = as.factor(project_id))) +
