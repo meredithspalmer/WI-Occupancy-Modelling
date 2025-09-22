@@ -111,7 +111,7 @@ head(periods)
 # Load and format species MMD range map data ----------------------------------
 
 # Target species name
-target_species <- "Acinonyx jubatus"
+target_species <- "Lycaon pictus"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
@@ -128,7 +128,8 @@ nrow(dat_sp)
 # Retain all records of the projects in which the target species was detected
 #dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
 
-# Retain all records of projects that fall within MMD species range map
+# Retain all records of projects that fall within MMD species range map AND projects that 
+# contain species (some are outside the MMD range maps)
 sites <- all_dat[c("project_id", "latitude", "longitude")] %>% distinct()
 mmd_map_wgs <- project(mmd_map, "EPSG:4326")
 cells <- terra::cellFromXY(mmd_map_wgs, as.matrix(sites[, c("longitude", "latitude")]))
@@ -136,7 +137,12 @@ vals <- terra::values(mmd_map_wgs)[cells]
 
 sites_in_range <- sites[vals == 1, ]
 sites_in_range_clean <- sites_in_range %>% filter(!is.na(longitude), !is.na(latitude))
-dat <- all_dat %>% semi_join(sites_in_range_clean, by = c("project_id", "latitude", "longitude"))
+
+sites_sp <- dat_sp %>% dplyr::select(project_id, latitude, longitude) %>% distinct()
+sites_keep <- bind_rows(sites_in_range_clean, sites_sp) %>% distinct()
+dat <- all_dat %>% semi_join(sites_keep, by = c("project_id", "latitude", "longitude"))
+
+spp_sites <- dat[c("project_id", "latitude", "longitude")] %>% distinct()
 
 # Check by plotting 
 ras_df <- as.data.frame(mmd_map_wgs, xy = TRUE, na.rm = TRUE)
@@ -147,7 +153,7 @@ ggplot() +
   scale_fill_viridis_c(na.value = NA, option = "viridis") +
   geom_point(data = sites, aes(x = longitude, y = latitude),
              color = "gray50", size = 1, alpha = 0.5, na.rm = TRUE) +
-  geom_point(data = sites_in_range_clean, aes(x = longitude, y = latitude),
+  geom_point(data = spp_sites, aes(x = longitude, y = latitude),
              color = "red", size = 1.5, na.rm = TRUE) +
   coord_equal() +
   theme_minimal() +
@@ -155,7 +161,7 @@ ggplot() +
        x = "Longitude", y = "Latitude", fill = "Presence")
 
 # Compare to number of sites pulled before
-nrow(sites_in_range)
+nrow(spp_sites)
 length(unique(dat_sp$project_id))
 
 # Check start and end dates: if issue, flip (note: many of these are 1 day depls)
