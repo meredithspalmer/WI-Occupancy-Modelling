@@ -115,7 +115,7 @@ occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.
          subtitle = bquote(italic(.(target_species)))) + 
     coord_flip())
 
-file_name <- paste(file_path, "/", target_species, "_occurrenceParams.jpg", sep="")
+file_name <- paste(file_path, "/", file_species, "_occurrenceParams.jpg", sep="")
 ggsave(filename = file_name, plot = occParams, width = 6, height = 5, units = "in")
 
 ## Parameter plots: Detection 
@@ -142,7 +142,7 @@ det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 
          subtitle = bquote(italic(.(target_species)))) + 
     coord_flip())
 
-file_name <- paste(file_path, "/", target_species, "_detectionParams.jpg", sep="")
+file_name <- paste(file_path, "/", file_species, "_detectionParams.jpg", sep="")
 ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "in")
 
 # -> Interpretations:
@@ -269,10 +269,12 @@ ggplot() +
     scale_fill_viridis_c(na.value = NA) +
     theme_minimal() + theme(legend.position = "none") + 
     labs(title = "Species Detection Sites [Zoomed]", 
-         subtitle = bquote(italic(.(as.name(target_species))))))
+         subtitle = bquote(italic(.(as.name(target_species))))) + 
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
 
 file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
-ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in")
+ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in", bg = "white")
 
 
 # Crop to get cell_IDs within MMD ---------------------------------------------
@@ -639,6 +641,11 @@ world_proj <- st_transform(world, st_crs(df_occ_sf))
 world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
 plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
 
+period_dates <- periods %>% 
+  rename(period = period_counter) %>%
+  filter(period == period_sel)
+period_dates <- paste(period_dates$season, period_dates$year)
+
 (occPeriod <- ggplot() +
     geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
     geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.9) +
@@ -648,13 +655,13 @@ plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
              expand = FALSE) +
     labs(x = NULL, y = NULL,
          fill = "Occupancy", 
-         title = paste0("Predicted occupancy (Period ", period_sel, ")"), 
+         title = paste0("Predicted occupancy (", period_dates, ")"), 
          subtitle = bquote(italic(.(target_species)))) +
     theme_minimal() + 
     theme(plot.background = element_rect(fill = "white", color = NA),
           panel.background = element_rect(fill = "white", color = NA)))
 
-file_name <- paste(file_path, "/", target_species, "_occPeriod.jpg", sep="")
+file_name <- paste(file_path, "/", file_species, "_occPeriod.jpg", sep="")
 ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "in", bg = "white")
 
 
@@ -675,6 +682,9 @@ df_diff <- df_occ %>%
   mutate(diff = .data[[paste0("period_", max_period)]] - 
            .data[[paste0("period_", min_period)]])
 
+start_date <- paste(periods[periods$period_counter == min_period,]$season, periods[periods$period_counter == min_period,]$year)
+end_date <- paste(periods[periods$period_counter == max_period,]$season, periods[periods$period_counter == max_period,]$year)
+
 (changeOcc <- ggplot() +
     geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
     geom_tile(data = df_diff, aes(x = x, y = y, fill = diff), alpha = 0.9) +
@@ -683,7 +693,7 @@ df_diff <- df_occ %>%
              ylim = c(min(df_diff$y), max(df_diff$y)),
              expand = FALSE) +
     labs(x = NULL, y = NULL,
-         fill = paste0("Δ occupancy (", max_period, " - ", min_period, ")"),
+         fill = paste0("Δ occupancy\n(", start_date, ":", end_date, ")"),
          title = "Predicted change in occupancy", 
          subtitle = bquote(italic(.(target_species)))) + 
     theme_minimal() +
@@ -691,38 +701,38 @@ df_diff <- df_occ %>%
           panel.background = element_rect(fill = "white", color = NA)))
 
 # Save as JPEG
-file_name <- paste0(file_path, "/", target_species, "_occChange.jpg")
+file_name <- paste0(file_path, "/", file_species, "_occChange.jpg")
 ggsave(filename = file_name, plot = changeOcc, width = 6, height = 5, units = "in", bg = "white")
 
 
 # Heatmap (site x period) -----------------------------------------------------
 
 # not terribly informative, do not save 
-df_occ %>%
-  ggplot(aes(x = period, y = site, fill = mean_occ)) +
-  geom_tile() +
-  scale_fill_viridis_c(option = "C") +
-  labs(x = "Period", y = "Site",
-       fill = "Occupancy",
-       title = "Occupancy across sites and periods") +
-  theme_minimal() +
-  theme(axis.text.y = element_blank())
+#df_occ %>%
+#  ggplot(aes(x = period, y = site, fill = mean_occ)) +
+#  geom_tile() +
+#  scale_fill_viridis_c(option = "C") +
+#  labs(x = "Period", y = "Site",
+#       fill = "Occupancy",
+#       title = "Occupancy across sites and periods") +
+#  theme_minimal() +
+#  theme(axis.text.y = element_blank())
 
 
 # Animate map over time -------------------------------------------------------
 
 # run only if need to - takes a long time to render 
-p <- df_occ %>%
-  ggplot(aes(x = x, y = y, fill = mean_occ)) +
-  geom_tile() +
-  scale_fill_viridis_c(option = "C", limits = c(0,1)) +
-  coord_equal() +
-  labs(title = "Predicted occupancy: {closest_state}",
-       fill = "Occupancy") +
-  theme_minimal() +
-  transition_states(period, state_length = 1, transition_length = 1)
+#p <- df_occ %>%
+#  ggplot(aes(x = x, y = y, fill = mean_occ)) +
+#  geom_tile() +
+#  scale_fill_viridis_c(option = "C", limits = c(0,1)) +
+#  coord_equal() +
+#  labs(title = "Predicted occupancy: {closest_state}",
+#       fill = "Occupancy") +
+#  theme_minimal() +
+#  transition_states(period, state_length = 1, transition_length = 1)
 
-animate(p, nframes = length(primary.periods)*5, fps = 5)
+#animate(p, nframes = length(primary.periods)*5, fps = 5)
 
 
 # Change in occupancy relative to change in covariate -------------------------
@@ -830,3 +840,4 @@ plot_df$variable <- factor(plot_df$variable,
 # Save as JPEG
 file_name <- paste0(file_path, "/", target_species, "_occDeltaSVC.jpg")
 ggsave(filename = file_name, plot = occDeltaSVC, width = 6, height = 5, units = "in", bg = "white")
+
