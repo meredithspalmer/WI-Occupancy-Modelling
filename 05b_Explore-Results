@@ -211,14 +211,18 @@ ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "
 
 ## Predictions ----------------------------------------------------------------
 
-dat_sp <- all_dat %>% filter(sp_binomial == target_species)
-head(dat_sp)
+# Species detections 
+dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>% 
+  dplyr::select(latitude, longitude) %>% 
+  distinct()
+plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
+plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
 
 # Load and format reference  
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 world <- ne_countries(scale = "medium", returnclass = "sf")
 
-# get bounding box for species detection sites
+# Get bounding box for all sites in range or with species detections
 plot_coords <- as.data.frame(coords) 
 crs <- crs(ref)
 plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
@@ -245,20 +249,23 @@ world_cropped <- st_crop(world_proj, bbox_union)
 world <- ne_countries(scale = "medium", returnclass = "sf")
 world <- st_transform(world, crs = crs)
 
-## THIS IS PLOTTING SITE COORDS -- need to bring in species detection coords 
+# Plot
 ggplot() + 
   geom_sf(data = world, fill = "gray90", color = "gray60", linewidth = 0.3) +
   geom_spatraster(data = mmd_map) + 
-  geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+  geom_sf(data = plot_coords_sf, color = "#ece7f2", size = 2) + 
+  geom_sf(data = plot_sp_coords_proj, color = "#2b8cbe", size = 2) +  
   scale_fill_viridis_c(na.value = NA) +
-  theme_minimal() + theme(legend.position = "none") + 
+  theme_minimal() + 
+  theme(legend.position = "none") + 
   labs(title = "Species Detection Sites")
 
 # Plot zoomed to bbox  
 (speciesDet <- ggplot() +
     geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
     geom_spatraster(data = mmd_map) + 
-    geom_sf(data = plot_coords_sf, color = "violet", size = 2) +
+    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +           
+    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet") + 
     scale_fill_viridis_c(na.value = NA) +
     theme_minimal() + theme(legend.position = "none") + 
     labs(title = "Species Detection Sites [Zoomed]", 
