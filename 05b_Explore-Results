@@ -28,17 +28,16 @@ library(purrr)
 ## Load data ------------------------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Lycaon pictus"
+species <- "Acinonyx jubatus"
 
 # Model outputs 
-file_path <- filenames[grep(species, filenames)]
-file_name_only <- basename(file_path)
-filename <- paste0(file_path, "/", file_name_only, "_svcTPGOcc.RData")
+file_species <- gsub(" ", "_", species)
+file_path <- filenames[grep(file_species, filenames)]
+filename <- paste0(file_path, "/", file_species, "_svcTPGOcc.RData")
 load(filename)
 
 # MOL range maps 
-species_file <- gsub(" ", "_", species)
-mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", file_species, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
 
 
@@ -135,16 +134,31 @@ plot.df <- data.frame(periods = unique.periods,
                       low = c(psi.quants[1, ]),
                       high = c(psi.quants[2, ]))
 
-# Plotting 
+# Format date breaks 
+period_dates <- periods %>%
+  mutate(month = case_when(
+    season == "Winter" ~ 1,
+    season == "Spring" ~ 4,
+    season == "Summer" ~ 7,
+    season == "Fall"   ~ 10),
+    period_date = ymd(paste(year, month, "01", sep = "-")),
+    label_year = ifelse(month == 4, as.character(year), "")) %>% 
+  rename(periods = period_counter)
+
+plot.df <- plot.df %>%
+  left_join(period_dates, by = "periods") %>%
+  dplyr::select(period_date, med, low, high, label_year)
+
+# Plot
 (occPeriods <- ggplot() +
-    geom_ribbon(data = plot.df, aes(x = periods, ymin = low, ymax = high),
+    geom_ribbon(data = plot.df, aes(x = period_date, ymin = low, ymax = high),
                 fill = 'darkorchid4', alpha = 0.3) +
-    geom_line(data = plot.df, aes(x = periods, y = med), lineend = 'butt') +
-    geom_point(data = plot.df, aes(x = periods, y = med)) +
+    geom_line(data = plot.df, aes(x = period_date, y = med), lineend = 'butt') +
+    geom_point(data = plot.df, aes(x = period_date, y = med)) +
     theme_bw(base_size = 14) +
     theme(legend.position = c(0.75, 0.125)) +
     scale_y_continuous(limits = c(0, 1)) +
-    labs(x = "Periods", y = 'Average Occupancy Probability', 
+    labs(x = "Date", y = 'Average Occupancy Probability', 
          title = "Occupancy through time", 
          subtitle = bquote(italic(.(target_species)))))
 
@@ -723,13 +737,13 @@ plot_df$variable <- factor(plot_df$variable,
                            labels = cov_labels[covs_to_plot])
 
 (occDeltaStatic <- ggplot(plot_df, aes(x = covariate, y = mean)) +
-  geom_ribbon(aes(ymin = low, ymax = high), fill = "grey80") +
-  geom_line(size = 1, color = "darkblue") +
-  facet_wrap(~ variable, scales = "free_x", ncol = 2) +
-  labs(x = "Covariate value", y = "Occupancy probability",
-       title = "Change in occupancy across spatial gradients",
-       subtitle = bquote(italic(.(as.name(target_species))))) +
-  theme_minimal())
+    geom_ribbon(aes(ymin = low, ymax = high), fill = "grey80") +
+    geom_line(size = 1, color = "darkblue") +
+    facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+    labs(x = "Covariate value", y = "Occupancy probability",
+         title = "Change in occupancy across spatial gradients",
+         subtitle = bquote(italic(.(as.name(target_species))))) +
+    theme_minimal())
 
 # Save as JPEG
 file_name <- paste0(file_path, "/", target_species, "_occDeltaStatic.jpg")
