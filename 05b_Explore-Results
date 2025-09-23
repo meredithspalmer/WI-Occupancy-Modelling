@@ -25,7 +25,51 @@ library(dplyr)
 library(purrr)
 
 
-## Load data ------------------------------------------------------------------
+## Load and format WI data (for all) ------------------------------------------
+
+# Load data 
+overview_seq <- read.csv("WI data/sequences_updated_20240710.csv")
+overview_images <- read.csv("WI data/images_updated_20240714.csv")
+
+# Format data
+dat_seq <- overview_seq |>
+  mutate(record_date = sequence_date) |>
+  dplyr::select(-c(sequence_date, sequence_datetime)) |>
+  collect()
+
+# if loaded csv: 
+dat_seq <- dat_seq %>%
+  dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
+                sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
+
+dat_images <- overview_images |>
+  mutate(record_date = photo_date) |>
+  mutate(sp_binomial = Accepted_MOL) |>
+  dplyr::select(-c(photo_date, photo_datetime, Accepted_MOL)) |>
+  collect()
+
+dat_images <- dat_images[!dat_images$sp_binomial == "Accepted_MOL",] |> #header added as row
+  mutate(latitude = as.numeric(latitude)) |>
+  mutate(longitude = as.numeric(longitude)) 
+
+# if loaded csv: 
+dat_images <- dat_images %>% 
+  dplyr::select(project_id, deployment_location_id, record_date, sensor_start_date_and_time, 
+                sensor_end_date_and_time, latitude, longitude, class, sp_binomial)
+
+# Combine data 
+all_dat <- rbind(dat_images, dat_seq) %>% 
+  mutate(sensor_start_date = as.Date(sensor_start_date_and_time),
+         sensor_end_date = as.Date(sensor_end_date_and_time),
+         record_date = as.Date(record_date)) %>% 
+  dplyr::select(-c(sensor_start_date_and_time, sensor_end_date_and_time))
+
+all_dat <- all_dat[!is.na(all_dat$record_date),] 
+
+rm(dat_seq, dat_images, overview_images, overview_seq)
+
+
+## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
 species <- "Acinonyx jubatus"
@@ -101,7 +145,6 @@ det_quantiles[,3:6] <- t(apply(det.samps ,2,quantile,probs=c(0.025, 0.25, 0.75, 
 file_name <- paste(file_path, "/", target_species, "_detectionParams.jpg", sep="")
 ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "in")
 
-
 # -> Interpretations:
 #      - Coefficients are estimated for the logit(ψ) = βX model and thus must be 
 #        interpreted on the logit scale
@@ -168,6 +211,9 @@ ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "
 
 ## Predictions ----------------------------------------------------------------
 
+dat_sp <- all_dat %>% filter(sp_binomial == target_species)
+head(dat_sp)
+
 # Load and format reference  
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 world <- ne_countries(scale = "medium", returnclass = "sf")
@@ -199,6 +245,7 @@ world_cropped <- st_crop(world_proj, bbox_union)
 world <- ne_countries(scale = "medium", returnclass = "sf")
 world <- st_transform(world, crs = crs)
 
+## THIS IS PLOTTING SITE COORDS -- need to bring in species detection coords 
 ggplot() + 
   geom_sf(data = world, fill = "gray90", color = "gray60", linewidth = 0.3) +
   geom_spatraster(data = mmd_map) + 
