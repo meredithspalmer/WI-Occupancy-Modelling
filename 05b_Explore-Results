@@ -73,7 +73,7 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Acinonyx jubatus"
+species <- "Panthera pardus"
 
 # Model outputs 
 file_species <- gsub(" ", "_", species)
@@ -200,7 +200,7 @@ plot.df <- plot.df %>%
     geom_line(data = plot.df, aes(x = period_date, y = med), lineend = 'butt') +
     geom_point(data = plot.df, aes(x = period_date, y = med)) +
     theme_bw(base_size = 14) +
-    theme(legend.position = c(0.75, 0.125)) +
+    theme(legend.position.inside = c(0.75, 0.125)) +
     scale_y_continuous(limits = c(0, 1)) +
     labs(x = "Date", y = 'Average Occupancy Probability', 
          title = "Occupancy through time", 
@@ -212,16 +212,16 @@ ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "
 
 ## Predictions ----------------------------------------------------------------
 
+# Load and format reference  
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
 # Species detections 
 dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>% 
   dplyr::select(latitude, longitude) %>% 
   distinct()
 plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
 plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
-
-# Load and format reference  
-ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
-world <- ne_countries(scale = "medium", returnclass = "sf")
 
 # Get bounding box for all sites in range or with species detections
 plot_coords <- as.data.frame(coords) 
@@ -280,7 +280,6 @@ ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "
 
 # Crop to get cell_IDs within MMD ---------------------------------------------
 
-ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 mmd_repro <- project(mmd_map, ref)
 masked_ref <- mask(ref, mmd_repro)
 plot(masked_ref)
@@ -841,4 +840,3 @@ plot_df$variable <- factor(plot_df$variable,
 # Save as JPEG
 file_name <- paste0(file_path, "/", target_species, "_occDeltaSVC.jpg")
 ggsave(filename = file_name, plot = occDeltaSVC, width = 6, height = 5, units = "in", bg = "white")
-
