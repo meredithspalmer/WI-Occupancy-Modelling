@@ -73,7 +73,7 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Panthera pardus"
+species <- "Acinonyx jubatus"
 
 # Model outputs 
 file_species <- gsub(" ", "_", species)
@@ -84,6 +84,10 @@ load(filename)
 # MOL range maps 
 mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", file_species, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
+
+# GBIF data -- NEED TO UDPATE (cannot get 'species' to work...)
+gbif <- read.csv("WI_GBIF/GBIF_clean.csv") %>% 
+  filter(verbatimsciname == "Acinonyx jubatus") ##UPDATE 
 
 
 ## Results --------------------------------------------------------------------
@@ -615,6 +619,8 @@ df_occ <- df_occ %>%
   left_join(df_lower, by = c("site", "period")) %>%
   left_join(df_upper, by = c("site", "period"))
 
+file_name <- paste(file_path, "/", file_species, "_modelout.csv", sep="")
+write.csv(df_occ, file_name, row.names=F)
 
 # Time series with uncertainty ------------------------------------------------
 
@@ -644,7 +650,7 @@ plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
 period_dates <- periods %>% 
   rename(period = period_counter) %>%
   filter(period == period_sel)
-period_dates <- paste(period_dates$season, period_dates$year)
+period_date <- paste(period_dates$season, period_dates$year)
 
 (occPeriod <- ggplot() +
     geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
@@ -655,7 +661,7 @@ period_dates <- paste(period_dates$season, period_dates$year)
              expand = FALSE) +
     labs(x = NULL, y = NULL,
          fill = "Occupancy", 
-         title = paste0("Predicted occupancy (", period_dates, ")"), 
+         title = paste0("Predicted occupancy (", period_date, ")"), 
          subtitle = bquote(italic(.(target_species)))) +
     theme_minimal() + 
     theme(plot.background = element_rect(fill = "white", color = NA),
@@ -663,6 +669,98 @@ period_dates <- paste(period_dates$season, period_dates$year)
 
 file_name <- paste(file_path, "/", file_species, "_occPeriod.jpg", sep="")
 ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "in", bg = "white")
+
+
+# Compare to GBIF map same period ---------------------------------------------
+
+# Filter to same year 
+year_of_interest <- period_dates$year
+gbif_year <- gbif %>% filter(year == year_of_interest)
+
+# Convert GBIF records to spatial points
+gbif_pts <- st_as_sf(gbif_year, coords = c("longitude", "latitude"), crs = 4326)  
+
+# Bounding box 
+bbox <- st_bbox(gbif_pts) %>% st_as_sfc()
+bbox_buff <- st_buffer(bbox, dist = 0.5)  # buffer ~0.5 degrees (~50 km) 
+bbox_buff <- st_transform(bbox_buff, crs(ref))
+
+# Crop reference raster to bbox
+ref_crop <- crop(ref, vect(bbox_buff))
+ref_crop <- project(ref_crop, "EPSG:4326")
+
+# Rasterize GBIF points to reference grid 
+gbif_pts$one <- 1
+sv <- vect(gbif_pts)  # convert sf to SpatVector
+r_counts <- rasterize(sv, ref_crop, field = "one", fun = "sum", background = NA)
+
+# Convert to data frame
+r_df <- as.data.frame(r_counts, xy = TRUE, na.rm = TRUE)
+names(r_df)[3] <- "n_sightings"
+r_df$n_sightings[r_df$n_sightings == 0] <- NA
+
+# Get bbox limits for plotting zoom
+bb <- st_bbox(gbif_pts)
+
+# Plot
+ggplot() +
+  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+  geom_tile(data = r_df, aes(x = x, y = y, fill = n_sightings), alpha = 0.9) +
+  scale_fill_viridis_c(option = "C", direction = -1, na.value = NA, name = "Sightings") +
+  coord_sf(xlim = c(bb["xmin"], bb["xmax"]),
+           ylim = c(bb["ymin"], bb["ymax"]),
+           expand = FALSE) + 
+  labs(x = NULL, y = NULL, 
+       title = paste("GBIF sightings in", year_of_interest),
+       subtitle = bquote(italic(.(target_species)))) +
+  theme_minimal() +
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA))
+
+
+# THIS CAN BE VERY HARD TO READ if few sightings for year ---- 
+# Plot over a range of sightings 
+
+# Filter to year +/- 5
+year_min <- period_dates$year - 5
+year_max <-  period_dates$year + 5
+gbif_year <- gbif %>% filter(year %in% year_min:year_max)
+
+# GBIF points in EPSG:4326
+gbif_pts <- st_as_sf(gbif_year, coords = c("longitude", "latitude"), crs = 4326)
+
+# Crop raster to points (transform bbox to raster CRS first)
+gbif_pts_raster_crs <- st_transform(gbif_pts, crs(ref))
+bbox <- st_bbox(gbif_pts_raster_crs) %>% st_as_sfc() %>% st_buffer(100000) 
+
+# Reproject raster
+ref_crop <- crop(ref, vect(bbox))
+ref_4326 <- terra::project(ref_crop, "EPSG:4326")
+
+# Rasterize points  
+gbif_pts$one <- 1
+r_counts <- rasterize(vect(gbif_pts), ref_4326, field = "one", fun = "sum", background = NA)
+r_df <- as.data.frame(r_counts, xy = TRUE, na.rm = TRUE)
+names(r_df)[3] <- "n_sightings"
+r_df$n_sightings[r_df$n_sightings == 0] <- NA
+
+# Plot using correct lat/lon bbox
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(gbif_pts))
+world_crop <- st_crop(world_proj, st_bbox(gbif_pts))
+#bb <- st_bbox(gbif_pts)  # EPSG:4326 bbox
+
+# Note that sqrt-transformed sightings to make low sightings visible 
+ggplot() +
+  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+  geom_tile(data = r_df, aes(x = x, y = y, fill = n_sightings), alpha = 0.9) +
+  scale_fill_viridis_c(option = "plasma", trans = "sqrt", name = "Sightings") + 
+  labs(x = NULL, y = NULL,
+       title = paste("GBIF sightings between", year_min, "-", year_max),
+       subtitle = bquote(italic(.(target_species)))) +
+  theme_minimal()
+
+
 
 
 # Difference map (change between two periods) ---------------------------------
