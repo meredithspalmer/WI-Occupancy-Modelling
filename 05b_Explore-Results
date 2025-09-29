@@ -678,7 +678,7 @@ ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "i
 
 # Filter to same year...
 year_of_interest <- period_dates$year #one year 
-gbif_year <- gbif %>% filter(year == year_of_interest)
+gbif_year <- gbif_species %>% filter(year == year_of_interest)
 
 # Or range of years ...
 year_min <- period_dates$year - 5
