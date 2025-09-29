@@ -25,6 +25,9 @@ library(dplyr)
 library(purrr)
 library(lubridate)
 
+## Load GBIF data (for all) ---------------------------------------------------
+
+gbif <- read.csv("WI_GBIF/GBIF_clean.csv")
 
 ## Load and format WI data (for all) ------------------------------------------
 
@@ -73,7 +76,7 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species_name <- "Acinonyx jubatus"
+species_name <- "Diceros bicornis"
 
 # Model outputs 
 file_species <- gsub(" ", "_", species_name)
@@ -86,8 +89,7 @@ mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mamma
 mmd_map <- rast(mmd_map_path)
 
 # GBIF data 
-gbif <- read.csv("WI_GBIF/GBIF_clean.csv") %>% 
-  filter(verbatimsciname == species_name) 
+gbif_species <- gbif %>% filter(verbatimsciname == species_name) 
 
 
 ## Results --------------------------------------------------------------------
@@ -214,7 +216,7 @@ file_name <- paste(file_path, "/", target_species, "_occAcrossPeriods.jpg", sep=
 ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "in")
 
 
-## Predictions ----------------------------------------------------------------
+## Mapping --------------------------------------------------------------------
 
 # Load and format reference  
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
@@ -282,16 +284,15 @@ file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in", bg = "white")
 
 
-# Crop to get cell_IDs within MMD ---------------------------------------------
+## Predictions (run predict ONE TIME!) ----------------------------------------
 
+# Crop to get cell_IDs within MMD 
 mmd_repro <- project(mmd_map, ref)
 masked_ref <- mask(ref, mmd_repro)
 plot(masked_ref)
 mmd_cellIDs <- unique(masked_ref$cell_ID) #for some reason, one that is not in covs 
 
-
-# Format static covs ----------------------------------------------------------
-
+# Format static covs 
 static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
   dplyr::select(-c(cities_md, cities_sm)) %>% 
   filter(cell_ID %in% mmd_cellIDs$cell_ID)
@@ -302,9 +303,7 @@ river_dist.0 <- static_covs$river_dist
 coeff_var.0 <- static_covs$coeff_var 
 cities_lg.0 <- static_covs$cities_lg 
 
-
-# Format dynamic covariates ---------------------------------------------------
-
+# Format dynamic covariates
 primary.periods <- seq(min(covs$period_counter), max(covs$period_counter), by = 1)
 
 # Extraction function
@@ -339,7 +338,7 @@ trend.0 <- matrix(rep(primary.periods, each = nrow(static_covs)),
 colnames(trend.0) <- as.character(primary.periods)
 
 
-## Create prediction design matrix (1 = intercept) ----------------------------
+## Create prediction design matrix (1 = intercept) 
 
 # Parameters
 n.sites <- nrow(static_covs)            # number of sites 
@@ -366,6 +365,7 @@ X.0[, , 13] <- (trend.0 - mean(dat_ls$occ.covs$trend))/sd(dat_ls$occ.covs$trend)
 
 # Give names to X.0 just to make things clear
 dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'GPW', 'Precip', 'WDPA', 'EVI', 'GFC', 'Road Dist', 'TRI', 'River Dist', 'Coef Var', 'Cities Dist', 'Periods') 
+
 
 ## Predict occupancy for all years --------------------------------------------
 
@@ -584,7 +584,6 @@ occ_lower <- res$quantiles[, , 1]
 occ_median <- res$quantiles[, , 2]
 occ_upper <- res$quantiles[, , 3]
 
-
 # Convert to long dataframe
 df_occ <- occ_mean %>%
   as.data.frame() %>%
@@ -618,8 +617,13 @@ df_occ <- df_occ %>%
 file_name <- paste(file_path, "/", file_species, "_modelout.csv", sep="")
 write.csv(df_occ, file_name, row.names=F)
 
+TEST <- df_occ
 
 ## Plotting predicted occupancy -----------------------------------------------
+
+# Read predictions 
+file_name <- paste(file_path, "/", file_species, "_modelout.csv", sep="")
+df_occ <- read.csv(file_name)
 
 # Time series with uncertainty ------------------------------------------------
 
