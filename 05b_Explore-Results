@@ -73,10 +73,10 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species <- "Acinonyx jubatus"
+species_name <- "Acinonyx jubatus"
 
 # Model outputs 
-file_species <- gsub(" ", "_", species)
+file_species <- gsub(" ", "_", species_name)
 file_path <- filenames[grep(file_species, filenames)]
 filename <- paste0(file_path, "/", file_species, "_svcTPGOcc.RData")
 load(filename)
@@ -85,9 +85,9 @@ load(filename)
 mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", file_species, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
 
-# GBIF data -- NEED TO UDPATE (cannot get 'species' to work...)
+# GBIF data 
 gbif <- read.csv("WI_GBIF/GBIF_clean.csv") %>% 
-  filter(verbatimsciname == "Acinonyx jubatus") ##UPDATE 
+  filter(verbatimsciname == species_name) 
 
 
 ## Results --------------------------------------------------------------------
@@ -585,10 +585,6 @@ occ_median <- res$quantiles[, , 2]
 occ_upper <- res$quantiles[, , 3]
 
 
-## Plotting predicted occupancy -----------------------------------------------
-
-# Formatting data -------------------------------------------------------------
-
 # Convert to long dataframe
 df_occ <- occ_mean %>%
   as.data.frame() %>%
@@ -621,6 +617,9 @@ df_occ <- df_occ %>%
 
 file_name <- paste(file_path, "/", file_species, "_modelout.csv", sep="")
 write.csv(df_occ, file_name, row.names=F)
+
+
+## Plotting predicted occupancy -----------------------------------------------
 
 # Time series with uncertainty ------------------------------------------------
 
@@ -694,20 +693,20 @@ world_proj <- st_transform(world, st_crs(df_occ_sf))
 world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
 
 gbif_plot <- (ggplot() +
-  geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
-  geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.8) +
-  scale_fill_viridis_c(option = "C", direction = -1, na.value = NA, name = "Predicted Occupancy") +
-  geom_sf(data = gbif_sf, color = "black", fill = "black", size = 1.5, alpha = 0.4, shape = 21) +
-  coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
-           ylim = c(min(plot_df$y), max(plot_df$y)),
-           expand = FALSE) +
-  labs(x = NULL, y = NULL,
-       title = paste0("Predicted occupancy vs. GBIF sightings (P", period_sel, 
-                      " / ",  year_of_interest, ")"),
-       subtitle = bquote(italic(.(target_species)))) +
-  theme_minimal() +
-  theme(plot.background = element_rect(fill = "white", color = NA),
-        panel.background = element_rect(fill = "white", color = NA)))
+                geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+                geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.8) +
+                scale_fill_viridis_c(option = "C", direction = -1, na.value = NA, name = "Predicted Occupancy") +
+                geom_sf(data = gbif_sf, color = "black", fill = "black", size = 1.5, alpha = 0.4, shape = 21) +
+                coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
+                         ylim = c(min(plot_df$y), max(plot_df$y)),
+                         expand = FALSE) +
+                labs(x = NULL, y = NULL,
+                     title = paste0("Predicted occupancy vs. GBIF sightings (P", period_sel, 
+                                    " / ",  year_of_interest, ")"),
+                     subtitle = bquote(italic(.(target_species)))) +
+                theme_minimal() +
+                theme(plot.background = element_rect(fill = "white", color = NA),
+                      panel.background = element_rect(fill = "white", color = NA)))
 
 file_name <- paste(file_path, "/", file_species, "_gbifComp.jpg", sep="")
 ggsave(filename = file_name, plot = gbif_plot, width = 6, height = 5, units = "in", bg = "white")
