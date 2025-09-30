@@ -149,6 +149,7 @@ desired_order <- c("TRI", "Road Dist", "River Dist", "City Dist", "CV",
 occ_quantiles$covariate <- factor(occ_quantiles$covariate, levels = desired_order)
 occ_quantiles$mean <- colMeans(occ.samps)
 occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
+occ_quantiles_full <- occ_quantiles
 
 (occParams <- ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
     geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
@@ -165,6 +166,7 @@ occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.
 
 file_name <- paste(file_path, "/", file_species, "_occurrenceParams.jpg", sep="")
 ggsave(filename = file_name, plot = occParams, width = 6, height = 5, units = "in")
+
 
 ## Parameter plots: Detection 
 det.samps <- out$alpha.samples
@@ -202,6 +204,68 @@ ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "i
 #      - Negative beta coefficents imply that an increase in the value of that 
 #        covariate results in a decrease in the probability of occurrence, when 
 #        all other covariate values are held constant.
+
+
+## IF PERFORMING COMPARATIVE ANALYSIS: 
+svc_files <- list.files(file_path, pattern = "svcTPGOcc", full.names = TRUE)
+svc_files <- svc_files[!grepl("Pan_troglodytes_svcTPGOcc\\.RData$", svc_files)]
+
+all_occ_summaries <- lapply(svc_files, function(file) {
+  load(file)
+  occ.samps <- out$beta.samples
+  occ_quantiles <- data.frame(covariate = colnames(occ.samps),
+                              mean      = colMeans(occ.samps),
+                              q2.5      = apply(occ.samps, 2, quantile, probs = 0.025),
+                              q25       = apply(occ.samps, 2, quantile, probs = 0.25),
+                              q75       = apply(occ.samps, 2, quantile, probs = 0.75),
+                              q97.5     = apply(occ.samps, 2, quantile, probs = 0.975))
+  occ_quantiles <- occ_quantiles[occ_quantiles$covariate != "(Intercept)", ]
+  occ_quantiles$source_file <- basename(file)
+  return(occ_quantiles)
+})
+
+combined_occ_quantiles <- bind_rows(all_occ_summaries) %>% select(-source_file)
+rownames(combined_occ_quantiles) <- NULL
+combined_occ_quantiles$covariate <- c("City Dist", "CV", "Crop", "EVI", "GFC", "GPW", "Precip", 
+                                      "River Dist", "Road Dist", "Trend", "TRI", "WDPA") 
+desired_order <- c("TRI", "Road Dist", "River Dist", "City Dist", "CV", "Crop", "GPW", "Precip", 
+                   "WDPA", "EVI", "GFC", "Trend")
+combined_occ_quantiles$covariate <- factor(combined_occ_quantiles$covariate, levels = desired_order)
+
+individual_test <- ggplot(combined_occ_quantiles, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariates (scaled)') +
+  ylab('Posterior Distribution') +
+  labs(title = "Occurrence coefficients - Individual covariate", 
+       subtitle = bquote(italic(.(target_species)))) + 
+  coord_flip()
+individual_test
+
+occ_quantiles_full <- occ_quantiles_full %>% filter(covariate != "Intercept")
+
+combined_test <- ggplot(occ_quantiles_full, aes(x = covariate, y = mean)) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+  geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                linewidth = 1.5, show.legend = FALSE) +
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+  xlab('Covariates (scaled)') +
+  ylab('Posterior Distribution') +
+  labs(title = "Occurrence coefficients - Full model", 
+       subtitle = bquote(italic(.(target_species)))) + 
+  coord_flip()
+combined_test
+
+library(gridExtra)
+all_occ_results <- grid.arrange(combined_test, individual_test, ncol = 2)
+file_name <- paste(file_path, "/", file_species, "_occurrenceParamsCompare.jpg", sep="")
+ggsave(filename = file_name, plot = all_occ_results, width = 10, height = 4, units = "in")
 
 
 ## Occupancy probabilities across periods -------------------------------------
@@ -302,18 +366,18 @@ world_cropped <- st_crop(world_proj, bbox_union)
 
 # Plot zoomed to bbox  
 (speciesDet <- ggplot() +
-  geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
-  geom_spatraster(data = mmd_map) + 
-  geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +                  
-  geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) +      
-  geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) +  
-  scale_fill_viridis_c(na.value = NA) +
-  theme_minimal() + 
-  theme(legend.position = "none") + 
-  labs(title = "Species Detection Sites [Zoomed]", 
-       subtitle = bquote(italic(.(as.name(target_species))))) + 
-  theme(plot.background = element_rect(fill = "white", color = NA),
-        panel.background = element_rect(fill = "white", color = NA)))
+    geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
+    geom_spatraster(data = mmd_map) + 
+    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +                  
+    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) +      
+    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) +  
+    scale_fill_viridis_c(na.value = NA) +
+    theme_minimal() + 
+    theme(legend.position = "none") + 
+    labs(title = "Species Detection Sites [Zoomed]", 
+         subtitle = bquote(italic(.(as.name(target_species))))) + 
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
 
 file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in", bg = "white")
