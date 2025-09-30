@@ -161,7 +161,7 @@ ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 # Load and format species range map data -------------------------------------
 
 # Target species name
-target_species <- "Ceratotherium simum"
+target_species <- "Lycaon pictus"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
@@ -244,7 +244,7 @@ extended_raster <- rasterize(ext_vect, ext_raster, field = "presence", backgroun
 plot(extended_range$geometry)
 plot(extended_raster, add = TRUE, border = "red")
 
-file_name = paste0("Model outputs/", species_file, "/", species_file, "_extendedRange.tif")
+(file_name = paste0("Model outputs/", species_file, "/", species_file, "_extendedRange.tif"))
 writeRaster(extended_raster, filename = file_name, overwrite = TRUE)
 
 
@@ -477,7 +477,6 @@ date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ",
           axis.title = element_text(face = "bold"),
           legend.position = "none"))
 
-library(gridExtra)
 (deployPlotComp <- grid.arrange(deployPlot, deployPlotTRIM, ncol = 2))
 
 file_name = paste0("Model outputs/", species_file, "/", species_file, "_deployPlotTRIM.jpg")
@@ -486,6 +485,7 @@ ggsave(filename = file_name, plot = deployPlotComp, width = 10, height = 4, unit
 # Update data 
 dat <- dat_filtered
 dat_sp <- dat_sp_filtered
+
 
 # After doing checks, clean original data for outliers ------------------------
 #dat <- dat %>% filter(latitude != min(latitude)) #remove weird location
