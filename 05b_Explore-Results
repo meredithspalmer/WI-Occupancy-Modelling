@@ -69,7 +69,6 @@ all_dat <- rbind(dat_images, dat_seq) %>%
   dplyr::select(-c(sensor_start_date_and_time, sensor_end_date_and_time))
 
 all_dat <- all_dat[!is.na(all_dat$record_date),] 
-
 rm(dat_seq, dat_images, overview_images, overview_seq)
 
 
@@ -322,13 +321,11 @@ ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "
 
 ## Update size of predicted area, based on WI and GBIF detections -------------
 
-## Update size of predicted area, based on WI and GBIF detections ------------- 
-
 # Hopefully one of these contains the species 
 homerange_species <- homerange %>% filter(Species == species_name) 
 #disp_species <- disp_weighted %>% filter(Species == species_name) 
 
-# Buffer in km → m 
+# Buffer of 1 order of magnitude the home range size (km → m) 
 buffer <- homerange_species$Homerange * 10 
 buffer_m <- buffer * 1000 
 
@@ -382,31 +379,38 @@ names(ext_bbox_buffered) <- c("xmin", "ymin", "xmax", "ymax")
 world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
 
 # Plot with updated bounding box 
-(speciesDetExtended <- ggplot() + 
-    geom_sf(data = world_cropped_buffered, fill = "gray90", color = "gray60") + 
-    geom_sf(data = extended_range, fill = "lightblue", color = "blue", alpha = 0.3) + 
-    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) + 
-    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) + 
-    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) + 
-    coord_sf(xlim = c(ext_bbox_buffered["xmin"], ext_bbox_buffered["xmax"]), 
-             ylim = c(ext_bbox_buffered["ymin"], ext_bbox_buffered["ymax"])) + 
-    theme_minimal() + 
-    labs(title = "Species Detection Sites [Zoomed]", 
+(speciesDetExtended <- ggplot() +
+    geom_sf(data = world_cropped_buffered, fill = "gray90", color = "gray60") +
+    # Original expert range
+    geom_sf(data = mmd_poly, fill = "#FFA500", color = "darkorange", alpha = 0.4) +
+    # Extended range (union)
+    geom_sf(data = extended_range, fill = "#1E90FF", color = "blue", alpha = 0.3) +
+    # Detection points
+    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +
+    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) +
+    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) +
+    coord_sf(xlim = c(ext_bbox_buffered["xmin"], ext_bbox_buffered["xmax"]),
+             ylim = c(ext_bbox_buffered["ymin"], ext_bbox_buffered["ymax"])) +
+    theme_minimal() +
+    labs(title = "Species Detection Sites: Extended Range",
          subtitle = bquote(italic(.(target_species)))))
+
+file_name <- paste(file_path, "/", target_species, "_speciesDetectionsExtended.jpg", sep="")
+ggsave(filename = file_name, plot = speciesDetExtended, width = 6, height = 5, units = "in", bg = "white")
 
 
 ## Predictions (run predict ONE TIME!) ----------------------------------------
 
-# Crop to get cell_IDs within MMD 
-mmd_repro <- project(mmd_map, ref)
-masked_ref <- mask(ref, mmd_repro)
+# Crop to get cell_IDs within extended range
+range_repro <- project(extended_range, ref)
+masked_ref <- mask(ref, range_repro)
 plot(masked_ref)
-mmd_cellIDs <- unique(masked_ref$cell_ID) #for some reason, one that is not in covs 
+range_cellIDs <- unique(masked_ref$cell_ID) #for some reason, one that is not in covs 
 
 # Format static covs 
 static_covs <- read.csv("Covariates for modelling/site_level_covariates_full.csv") %>% 
   dplyr::select(-c(cities_md, cities_sm)) %>% 
-  filter(cell_ID %in% mmd_cellIDs$cell_ID)
+  filter(cell_ID %in% range_cellIDs$cell_ID)
 
 road_dist.0 <- static_covs$road_dist
 tri.0 <- static_covs$tri
@@ -436,12 +440,12 @@ cov_subset <- function(cov_dataframe_name, primary.periods, cell_IDs){
 }
 
 # Processed values 
-crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
-evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, mmd_cellIDs$cell_ID)
-gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, mmd_cellIDs$cell_ID)
-precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, mmd_cellIDs$cell_ID)
-wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_WDPA_full.csv", primary.periods, mmd_cellIDs$cell_ID) 
-gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, mmd_cellIDs$cell_ID)
+crop.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_crop_full.csv", primary.periods, range_cellIDs$cell_ID) 
+evi.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_full.csv", primary.periods, range_cellIDs$cell_ID)
+gpw.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_full.csv", primary.periods, range_cellIDs$cell_ID)
+precseas.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas_full.csv", primary.periods, range_cellIDs$cell_ID)
+wdpa.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_WDPA_full.csv", primary.periods, range_cellIDs$cell_ID) 
+gfc.0 <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_full.csv", primary.periods, range_cellIDs$cell_ID)
 trend.0 <- matrix(rep(primary.periods, each = nrow(static_covs)),
                   nrow = nrow(static_covs),
                   ncol = length(primary.periods),
@@ -728,7 +732,6 @@ df_occ <- df_occ %>%
 file_name <- paste(file_path, "/", file_species, "_modelout.csv", sep="")
 write.csv(df_occ, file_name, row.names=F)
 
-TEST <- df_occ
 
 ## Plotting predicted occupancy -----------------------------------------------
 
