@@ -696,7 +696,7 @@ world <- ne_countries(scale = "medium", returnclass = "sf")
 world_proj <- st_transform(world, st_crs(df_occ_sf))
 world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
 
-gbif_plot <- (ggplot() +
+(gbif_plot <- ggplot() +
                 geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
                 geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.8) +
                 scale_fill_viridis_c(option = "C", direction = -1, na.value = NA, name = "Predicted Occupancy") +
