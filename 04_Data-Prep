@@ -84,6 +84,52 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 gc()
 
 
+## Load GBIF data (for all) ---------------------------------------------------
+
+gbif <- read.csv("WI_GBIF/GBIF_clean.csv")
+
+## Dispersal data -------------------------------------------------------------
+
+# Pull home range size (https://esapubs.org/archive/ecol/E090/184/)
+pan1 <- read.csv("Species data/PanTHERIA_1-0_WR05_Aug2008.csv") %>% 
+  dplyr::select(MSW05_Binomial, X22.1_HomeRange_km2) %>% 
+  rename(Species = MSW05_Binomial, 
+         Homerange = X22.1_HomeRange_km2)
+pan2 <- read.csv("Species data/PanTHERIA_1-0_WR93_Aug2008.csv") %>% 
+  dplyr::select(MSW93_Binomial, X22.1_HomeRange_km2) %>% 
+  rename(Species = MSW93_Binomial, 
+         Homerange = X22.1_HomeRange_km2)
+
+common_species <- intersect(pan1$Species, pan2$Species)
+pan1_filtered <- pan1 %>% filter(!Species %in% common_species)
+homerange <- bind_rows(pan2, pan1_filtered)
+
+# Pull dispersal distances (from https://besjournals.onlinelibrary.wiley.com/doi/10.1111/j.1365-2656.2012.02030.x) 
+disp <- read.csv("Species data/Dispersal.csv")
+
+# Clean units and convert all values to km
+disp_clean <- disp %>%
+  mutate(unit_short = case_when(
+    str_detect(Units, regex("km", ignore_case = TRUE)) ~ "km",
+    str_detect(Units, regex("metres|m", ignore_case = TRUE)) ~ "m",
+    str_detect(Units, regex("mile", ignore_case = TRUE)) ~ "mi",
+    TRUE ~ NA_character_),
+    Value_km = case_when(unit_short == "km" ~ Value,
+                         unit_short == "m"  ~ Value / 1000,
+                         unit_short == "mi" ~ Value * 1.60934,
+                         TRUE ~ NA_real_)) %>%
+  filter(!is.na(Value_km))  
+
+# Assign weights to measure type
+measure_weights <- c("Maximum" = 0.5, "Mean" = 0.3, "Median" = 0.2)
+
+# Compute weighted average per species
+disp_weighted <- disp_clean %>%
+  mutate(weight = measure_weights[Measure]) %>%
+  group_by(Species) %>%
+  summarise(avg_km = weighted.mean(Value_km, w = weight, na.rm = TRUE))
+
+
 # Define periods --------------------------------------------------------------
 
 # Define time in the year-week format 
@@ -108,15 +154,98 @@ periods$period_counter <- 1:nrow(periods)
 head(periods)
 
 
+# Load and format reference map -----------------------------------------------
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+
+
 # Load and format species MMD range map data ----------------------------------
 
 # Target species name
-target_species <- "Lycaon pictus"
+target_species <- "Ceratotherium simum"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
+
+# GBIF data 
+gbif_species <- gbif %>% filter(verbatimsciname == target_species) 
+
+# Range map data 
 mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
+
+
+## Compute extended range map -------------------------------------------------
+
+# Species detections 
+dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>% 
+  dplyr::select(latitude, longitude) %>% 
+  distinct()
+plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
+plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
+
+# Home range size
+homerange_species <- homerange %>% filter(Species == target_species) 
+#disp_species <- disp_weighted %>% filter(Species == target_species) 
+
+# Buffer of 1 order of magnitude the home range size (km → m) 
+buffer <- homerange_species$Homerange * 10 
+buffer_m <- buffer * 1000 
+
+# GBIF data
+gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
+gbif_sf_proj <- st_transform(gbif_sf, crs = st_crs(ref))
+
+# Gather detection points 
+all_points <- rbind(gbif_sf_proj %>% 
+                      dplyr::select(geometry), plot_sp_coords_proj %>% 
+                      dplyr::select(geometry)) 
+
+# Convert to sf and buffer 
+all_points_sf <- st_as_sf(all_points, crs = st_crs(ref)) 
+points_buffered <- st_buffer(all_points_sf, dist = buffer_m) 
+
+# Dissolve to one polygon 
+points_union <- st_union(points_buffered) %>% 
+  st_make_valid() %>% 
+  st_buffer(0) %>% 
+  st_cast("MULTIPOLYGON")
+
+# Convert expert range raster to polygon
+mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>% 
+  st_as_sf() %>% 
+  st_make_valid() %>% 
+  st_buffer(0) %>% 
+  st_cast("MULTIPOLYGON") 
+
+# Union expert range with buffered detections 
+extended_range <- st_sf(geometry = st_union(mmd_poly, points_union) %>% st_make_valid())
+extended_range$presence <- 1
+
+# Set CRS and resolution 
+crs_use <- crs(mmd_map)  
+res_km <- 10000  # 10 km resolution
+st_crs(extended_range) <- crs_use
+
+# Convert to SpatVector
+ext_vect <- vect(extended_range)
+
+# Create an empty raster template covering the polygon extent
+ext_raster <- rast(xmin = xmin(ext_vect),
+                   xmax = xmax(ext_vect),
+                   ymin = ymin(ext_vect),
+                   ymax = ymax(ext_vect),
+                   resolution = res_km,
+                   crs = crs_use)
+
+# Rasterize polygon
+extended_raster <- rasterize(ext_vect, ext_raster, field = "presence", background = NA, touches = TRUE)
+
+# Plot to check
+plot(extended_range$geometry)
+plot(extended_raster, add = TRUE, border = "red")
+
+file_name = paste0("Model outputs/", species_file, "/", species_file, "_extendedRange.tif")
+writeRaster(extended_raster, filename = file_name, overwrite = TRUE)
 
 
 # Subset data by species ------------------------------------------------------
@@ -131,7 +260,8 @@ nrow(dat_sp)
 # Retain all records of projects that fall within MMD species range map AND projects that 
 # contain species (some are outside the MMD range maps)
 sites <- all_dat[c("project_id", "latitude", "longitude")] %>% distinct()
-mmd_map_wgs <- project(mmd_map, "EPSG:4326")
+#mmd_map_wgs <- project(mmd_map, "EPSG:4326")
+mmd_map_wgs <- project(extended_raster, "EPSG:4326") 
 cells <- terra::cellFromXY(mmd_map_wgs, as.matrix(sites[, c("longitude", "latitude")]))
 vals <- terra::values(mmd_map_wgs)[cells]
 
@@ -175,20 +305,20 @@ dat <- dat %>%
          sensor_end_date   = pmax(sensor_start_date, sensor_end_date))
 
 ## Spatial and temporal checks ------------------------------------------------
-  
+
 # Spatial coverage ------------------------------------------------------------
 loc <- dat %>% 
   dplyr::select(latitude, longitude, project_id) %>% 
   distinct() %>% 
   mutate(project_id = as.factor(project_id))
-  
+
 # EXAMINE DATA -> manually update 
 #loc <- loc %>% filter(latitude != min(latitude)) #remove weird location
-  
+
 # Spatial check --- 
 loc_sp <- st_as_sf(loc, coords = c("longitude", "latitude"), remove = FALSE)
 st_crs(loc_sp) = 4326
-  
+
 data("World")
 World <- st_transform(World, crs = 4326)
 
@@ -203,15 +333,13 @@ dat_map_range <- tm_shape(World) +
   tm_style("col_blind") +
   tm_layout(legend.show = FALSE)
 print(dat_map_range)
-  
+
 # Temporal coverage ----------------------------------------------------------- 
 
 # Prepare data
 dat_temp <- dat %>%
-  mutate(
-    proj_depl = paste(project_id, deployment_location_id, sep = "_"),
-    record_date = as.Date(record_date)
-  ) %>%
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
+         record_date = as.Date(record_date)) %>%
   dplyr::select(project_id, deployment_location_id, proj_depl, record_date,
                 sensor_start_date, sensor_end_date) %>%
   distinct()
@@ -219,11 +347,9 @@ dat_temp <- dat %>%
 #  Aggregate deployments to get one start/end per deployment
 deploy_dates <- dat_temp %>%
   group_by(project_id, deployment_location_id, proj_depl) %>%
-  summarise(
-    start = min(sensor_start_date, na.rm = TRUE),
-    end   = max(sensor_end_date, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
+  summarise(start = min(sensor_start_date, na.rm = TRUE),
+            end   = max(sensor_end_date, na.rm = TRUE),
+            .groups = "drop") %>%
   arrange(start) %>%
   mutate(y_pos = row_number())  
 
@@ -252,33 +378,40 @@ date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ",
 
 # Create Gantt-style plot
 (deployPlot <- ggplot() +
-  geom_linerange(data = deploy_dates, aes(y = y_pos, xmin = start, xmax = end,
-                                          color = as.factor(project_id)), 
-                 linewidth = 2, alpha = 0.7) + #deployment timelines
-  geom_point(data = dat_sp_temp, aes(x = record_date, y = y_pos), color = "black",
-             size = 1.5, alpha = 0.8) + #species detections 
-  scale_x_date(date_breaks = "6 months", date_labels = "%Y-%m") +
-  scale_y_continuous(breaks = deploy_dates$y_pos,
-                     labels = deploy_dates$proj_depl,
-                     expand = expansion(add = c(0.5, 0.5))) +
-  labs(y = "Deployments (chronological)",
-       x = "Date",
-       title = bquote("Deployments through time: " * italic(.(target_species))),
-       subtitle = paste0("Deployments: ", num_deployments, "\nDate range: ", 
-                         date_range_text)) +
-  theme_classic() +
-  theme(axis.text.y = element_blank(), 
-        axis.ticks.y = element_blank(),
-        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
-        axis.title = element_text(face = "bold"),
-        legend.position = "none"))
+    geom_linerange(data = deploy_dates, aes(y = y_pos, xmin = start, xmax = end,
+                                            color = as.factor(project_id)), 
+                   linewidth = 2, alpha = 0.7) + #deployment timelines
+    geom_point(data = dat_sp_temp, aes(x = record_date, y = y_pos), color = "black",
+               size = 1.5, alpha = 0.8) + #species detections 
+    scale_x_date(date_breaks = "6 months", date_labels = "%Y-%m") +
+    scale_y_continuous(breaks = deploy_dates$y_pos,
+                       labels = deploy_dates$proj_depl,
+                       expand = expansion(add = c(0.5, 0.5))) +
+    labs(y = "Deployments (chronological)",
+         x = "Date",
+         title = bquote("Deployments through time: " * italic(.(target_species))),
+         subtitle = paste0("Deployments: ", num_deployments, "\nDate range: ", 
+                           date_range_text)) +
+    theme_classic() +
+    theme(axis.text.y = element_blank(), 
+          axis.ticks.y = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+          axis.title = element_text(face = "bold"),
+          legend.position = "none"))
 
 # Save plot
 parent_dir <- "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs"
 species_dir <- file.path(parent_dir, gsub(" ", "_", target_species))
 if (!dir.exists(species_dir)) {dir.create(species_dir, recursive = TRUE)}
-plot_file <- file.path(species_dir, paste0(gsub(" ", "_", target_species), "_deployment_plot_", Sys.Date(),".png"))
+plot_file <- file.path(species_dir, paste0(gsub(" ", "_", target_species), "_deployment_plot_original.png"))
 ggsave(filename = plot_file, plot = last_plot(), width = 10, height = 6, dpi = 300)
+
+
+## Truncate data based on temporal consistency --------------------------------
+
+
+PLOT TWO PLOTS TOGETHER 
+
 
 
 # After doing checks, clean original data for outliers ------------------------
