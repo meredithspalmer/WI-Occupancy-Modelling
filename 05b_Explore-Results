@@ -73,6 +73,48 @@ all_dat <- all_dat[!is.na(all_dat$record_date),]
 rm(dat_seq, dat_images, overview_images, overview_seq)
 
 
+## Dispersal data -------------------------------------------------------------
+
+# Pull home range size (https://esapubs.org/archive/ecol/E090/184/)
+pan1 <- read.csv("Species data/PanTHERIA_1-0_WR05_Aug2008.csv") %>% 
+  dplyr::select(MSW05_Binomial, X22.1_HomeRange_km2) %>% 
+  rename(Species = MSW05_Binomial, 
+         Homerange = X22.1_HomeRange_km2)
+pan2 <- read.csv("Species data/PanTHERIA_1-0_WR93_Aug2008.csv") %>% 
+  dplyr::select(MSW93_Binomial, X22.1_HomeRange_km2) %>% 
+  rename(Species = MSW93_Binomial, 
+         Homerange = X22.1_HomeRange_km2)
+
+common_species <- intersect(pan1$Species, pan2$Species)
+pan1_filtered <- pan1 %>% filter(!Species %in% common_species)
+homerange <- bind_rows(pan2, pan1_filtered)
+
+# Pull dispersal distances (from https://besjournals.onlinelibrary.wiley.com/doi/10.1111/j.1365-2656.2012.02030.x) 
+disp <- read.csv("Species data/Dispersal.csv")
+
+# Clean units and convert all values to km
+disp_clean <- disp %>%
+  mutate(unit_short = case_when(
+    str_detect(Units, regex("km", ignore_case = TRUE)) ~ "km",
+    str_detect(Units, regex("metres|m", ignore_case = TRUE)) ~ "m",
+    str_detect(Units, regex("mile", ignore_case = TRUE)) ~ "mi",
+    TRUE ~ NA_character_),
+    Value_km = case_when(unit_short == "km" ~ Value,
+                         unit_short == "m"  ~ Value / 1000,
+                         unit_short == "mi" ~ Value * 1.60934,
+                         TRUE ~ NA_real_)) %>%
+  filter(!is.na(Value_km))  
+
+# Assign weights to measure type
+measure_weights <- c("Maximum" = 0.5, "Mean" = 0.3, "Median" = 0.2)
+
+# Compute weighted average per species
+disp_weighted <- disp_clean %>%
+  mutate(weight = measure_weights[Measure]) %>%
+  group_by(Species) %>%
+  summarise(avg_km = weighted.mean(Value_km, w = weight, na.rm = TRUE))
+
+
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
@@ -276,6 +318,65 @@ world_cropped <- st_crop(world_proj, bbox_union)
 
 file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in", bg = "white")
+
+
+## Update size of predicted area, based on WI and GBIF detections -------------
+
+# Hopefully one of these contains the species 
+homerange_species <- homerange %>% filter(Species == species_name)
+#disp_species <- disp_weighted %>% filter(Species == species_name)
+
+# Buffer in km → m
+buffer <- homerange_species$Homerange * 10
+buffer_m <- buffer * 1000
+
+# Gather detection points
+all_points <- rbind(gbif_sf_proj %>% dplyr::select(geometry),
+                    plot_sp_coords_proj %>% dplyr::select(geometry))
+
+# Convert to sf and buffer
+all_points_sf <- st_as_sf(all_points, crs = st_crs(ref))
+points_buffered <- st_buffer(all_points_sf, dist = buffer_m)
+
+# Dissolve to one polygon
+points_union <- st_union(points_buffered) %>%
+  st_make_valid() %>%
+  st_buffer(0) %>%
+  st_cast("MULTIPOLYGON")
+
+# Convert expert range raster to polygon
+mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>%
+  st_as_sf() %>%
+  st_make_valid() %>%
+  st_buffer(0) %>%
+  st_cast("MULTIPOLYGON")
+
+# Union expert range with buffered detections
+extended_range <- st_union(mmd_poly, points_union) %>%
+  st_make_valid()
+
+# Convert back to raster aligned with `mmd_map`
+extended_raster <- terra::rasterize(vect(extended_range), mmd_map, field = 1, background = NA)
+
+# Plot with BOTH ranges
+(speciesDetExtended <- ggplot() +
+    geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
+    geom_spatraster(data = mmd_map) +   # Original expert range (raster)
+    scale_fill_gradient(name = "Expert range", low = "gray85", high = "gray50", na.value = NA) +
+    geom_sf(data = extended_range, fill = "lightblue", color = "blue", alpha = 0.3) +  # Extended
+    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +                  
+    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) +      
+    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) +  
+    theme_minimal() + 
+    theme(legend.position = "right") + 
+    labs(
+      title = "Species Detection Sites [Zoomed]",
+      subtitle = bquote(italic(.(target_species)))
+    ) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA)
+    ))
 
 
 ## Predictions (run predict ONE TIME!) ----------------------------------------
