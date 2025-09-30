@@ -76,7 +76,7 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species_name <- "Diceros bicornis"
+species_name <- "Tapirus pinchaque"
 
 # Model outputs 
 file_species <- gsub(" ", "_", species_name)
@@ -677,16 +677,16 @@ ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "i
 # Compare to GBIF map same period ---------------------------------------------
 
 # Filter to same year...
-year_of_interest <- period_dates$year #one year 
+year_of_interest <- period_dates$year 
 gbif_year <- gbif_species %>% filter(year == year_of_interest)
 
 # Or range of years ...
-year_min <- period_dates$year - 5
-year_max <-  period_dates$year + 5
-gbif_year <- gbif %>% filter(year %in% year_min:year_max)
+#year_min <- period_dates$year - 5
+#year_max <-  period_dates$year + 5
+#gbif_year <- gbif %>% filter(year %in% year_min:year_max)
 
 # Reproject 
-gbif_sf <- st_as_sf(gbif, coords = c("longitude", "latitude"), crs = 4326)  #UPDATE HERE 
+gbif_sf <- st_as_sf(gbif_year, coords = c("longitude", "latitude"), crs = 4326)  
 gbif_sf <- st_transform(gbif_sf, st_crs(df_occ_sf))  
 
 # Select time period 
