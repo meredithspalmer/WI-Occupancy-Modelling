@@ -76,7 +76,7 @@ rm(dat_seq, dat_images, overview_images, overview_seq)
 ## Load species model outputs -------------------------------------------------
 
 (filenames <- list.files("Model outputs", full.names = TRUE))
-species_name <- "Tapirus pinchaque"
+species_name <- "Pan troglodytes"
 
 # Model outputs 
 file_species <- gsub(" ", "_", species_name)
@@ -229,56 +229,50 @@ dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>%
 plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
 plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
 
+# GBIF data
+gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
+gbif_sf_proj <- st_transform(gbif_sf, crs = st_crs(ref))
+
 # Get bounding box for all sites in range or with species detections
 plot_coords <- as.data.frame(coords) 
 crs <- crs(ref)
 plot_coords_sf <- st_as_sf(plot_coords, coords = c("x", "y"), crs = crs)  
 bbox_detect <- st_bbox(plot_coords_sf)
 
-# get bounding box for expert range maps 
+# Get bounding box for expert range maps 
 bbox_mmd <- st_bbox(mmd_map)
 
-# union of both bboxes (whichever is larger)
+# Get bounding box for GBIF 
+bbox_gbif <- st_bbox(gbif_sf_proj)
+
+# Union of all bboxes (whichever is larger)
 bbox_union <- st_bbox(
-  c(xmin = min(bbox_detect["xmin"], bbox_mmd["xmin"]),
-    ymin = min(bbox_detect["ymin"], bbox_mmd["ymin"]),
-    xmax = max(bbox_detect["xmax"], bbox_mmd["xmax"]),
-    ymax = max(bbox_detect["ymax"], bbox_mmd["ymax"])),
+  c(xmin = min(bbox_detect["xmin"], bbox_mmd["xmin"], bbox_gbif["xmin"]),
+    ymin = min(bbox_detect["ymin"], bbox_mmd["ymin"], bbox_gbif["ymin"]),
+    xmax = max(bbox_detect["xmax"], bbox_mmd["xmax"], bbox_gbif["xmax"]),
+    ymax = max(bbox_detect["ymax"], bbox_mmd["ymax"], bbox_gbif["ymax"])),
   crs = st_crs(ref)
 )
 
-# crop world to union bbox
+# Crop world to union bbox
 crs_union <- st_crs(ref)
 world_proj <- st_transform(world, crs_union)
 world_cropped <- st_crop(world_proj, bbox_union)
 
-# Plot detection sites ----
-world <- ne_countries(scale = "medium", returnclass = "sf")
-world <- st_transform(world, crs = crs)
-
-# Plot
-ggplot() + 
-  geom_sf(data = world, fill = "gray90", color = "gray60", linewidth = 0.3) +
+# Plot zoomed to bbox  
+(speciesDet <- ggplot() +
+  geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
   geom_spatraster(data = mmd_map) + 
-  geom_sf(data = plot_coords_sf, color = "#ece7f2", size = 2) + 
-  geom_sf(data = plot_sp_coords_proj, color = "#2b8cbe", size = 2) +  
+  geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +                  
+  geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) +      
+  geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) +  
   scale_fill_viridis_c(na.value = NA) +
   theme_minimal() + 
   theme(legend.position = "none") + 
-  labs(title = "Species Detection Sites")
-
-# Plot zoomed to bbox  
-(speciesDet <- ggplot() +
-    geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
-    geom_spatraster(data = mmd_map) + 
-    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +           
-    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet") + 
-    scale_fill_viridis_c(na.value = NA) +
-    theme_minimal() + theme(legend.position = "none") + 
-    labs(title = "Species Detection Sites [Zoomed]", 
-         subtitle = bquote(italic(.(as.name(target_species))))) + 
-    theme(plot.background = element_rect(fill = "white", color = NA),
-          panel.background = element_rect(fill = "white", color = NA)))
+  labs(title = "Species Detection Sites [Zoomed]", 
+       subtitle = bquote(italic(.(as.name(target_species))))) + 
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)))
 
 file_name <- paste(file_path, "/", target_species, "_speciesDetections.jpg", sep="")
 ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "in", bg = "white")
@@ -697,20 +691,20 @@ world_proj <- st_transform(world, st_crs(df_occ_sf))
 world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
 
 (gbif_plot <- ggplot() +
-                geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
-                geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.8) +
-                scale_fill_viridis_c(option = "C", direction = -1, na.value = NA, name = "Predicted Occupancy") +
-                geom_sf(data = gbif_sf, color = "black", fill = "black", size = 1.5, alpha = 0.4, shape = 21) +
-                coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
-                         ylim = c(min(plot_df$y), max(plot_df$y)),
-                         expand = FALSE) +
-                labs(x = NULL, y = NULL,
-                     title = paste0("Predicted occupancy vs. GBIF sightings (P", period_sel, 
-                                    " / ",  year_of_interest, ")"),
-                     subtitle = bquote(italic(.(target_species)))) +
-                theme_minimal() +
-                theme(plot.background = element_rect(fill = "white", color = NA),
-                      panel.background = element_rect(fill = "white", color = NA)))
+    geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+    geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.8) +
+    scale_fill_viridis_c(option = "C", direction = -1, na.value = NA, name = "Predicted Occupancy") +
+    geom_sf(data = gbif_sf, color = "black", fill = "black", size = 1.5, alpha = 0.4, shape = 21) +
+    coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
+             ylim = c(min(plot_df$y), max(plot_df$y)),
+             expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         title = paste0("Predicted occupancy vs. GBIF sightings (P", period_sel, 
+                        " / ",  year_of_interest, ")"),
+         subtitle = bquote(italic(.(target_species)))) +
+    theme_minimal() +
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
 
 file_name <- paste(file_path, "/", file_species, "_gbifComp.jpg", sep="")
 ggsave(filename = file_name, plot = gbif_plot, width = 6, height = 5, units = "in", bg = "white")
