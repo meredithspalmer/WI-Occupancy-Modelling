@@ -158,7 +158,7 @@ head(periods)
 ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 
 
-# Load and format species MMD range map data ----------------------------------
+# Load and format species range map data -------------------------------------
 
 # Target species name
 target_species <- "Ceratotherium simum"
