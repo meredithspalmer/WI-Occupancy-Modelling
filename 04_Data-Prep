@@ -254,11 +254,10 @@ writeRaster(extended_raster, filename = file_name, overwrite = TRUE)
 dat_sp <- all_dat %>% filter(sp_binomial == target_species)
 nrow(dat_sp)
 
-# Retain all records of the projects in which the target species was detected
-#dat <- all_dat %>% filter(project_id %in% unique(dat_sp$project_id)) 
-
-# Retain all records of projects that fall within MMD species range map AND projects that 
+# Retain all records of projects that fall within extended range map AND projects that 
 # contain species (some are outside the MMD range maps)
+# -> this problem should be solved by using extended rather than MMD range maps
+
 sites <- all_dat[c("project_id", "latitude", "longitude")] %>% distinct()
 #mmd_map_wgs <- project(mmd_map, "EPSG:4326")
 mmd_map_wgs <- project(extended_raster, "EPSG:4326") 
@@ -409,10 +408,84 @@ ggsave(filename = plot_file, plot = last_plot(), width = 10, height = 6, dpi = 3
 
 ## Truncate data based on temporal consistency --------------------------------
 
+# If large gaps (>= 2 years), trim data so model not having to predict over blank time 
+# Trimming manually now -- come up with an automated rule to streamline for future? 
 
-PLOT TWO PLOTS TOGETHER 
+set_date <- "2010-01-01"
+dat_filtered <- dat %>% filter(sensor_start_date >= as.Date(set_date))
+dat_sp_filtered <- dat_sp %>% filter(sensor_start_date >= as.Date(set_date))
 
+# Visualize as above 
+dat_temp_filtered <- dat_filtered %>%
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
+         record_date = as.Date(record_date)) %>%
+  dplyr::select(project_id, deployment_location_id, proj_depl, record_date,
+                sensor_start_date, sensor_end_date) %>%
+  distinct()
 
+#  Aggregate deployments to get one start/end per deployment
+deploy_dates_filtered <- dat_temp_filtered %>%
+  group_by(project_id, deployment_location_id, proj_depl) %>%
+  summarise(start = min(sensor_start_date, na.rm = TRUE),
+            end   = max(sensor_end_date, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(start) %>%
+  mutate(y_pos = row_number())  
+
+# Merge y_pos back to dat_temp (for deployments)
+dat_temp_filtered <- dat_temp_filtered %>%
+  dplyr::select(project_id, deployment_location_id, proj_depl, record_date) %>%
+  distinct() %>%
+  left_join(deploy_dates %>% dplyr::select(proj_depl, y_pos, start, end), 
+            by = "proj_depl")
+
+# Prepare species detection points, aligned to deployments
+dat_sp_temp_filtered <- dat_sp_filtered %>%
+  mutate(proj_depl = paste(project_id, deployment_location_id, sep = "_"),
+         record_date = as.Date(record_date)) %>%
+  dplyr::select(project_id, deployment_location_id, proj_depl, record_date) %>%
+  distinct() %>%
+  semi_join(deploy_dates, by = "proj_depl") %>%
+  left_join(deploy_dates %>% dplyr::select(proj_depl, y_pos), by = "proj_depl") %>%
+  filter(!is.na(y_pos) & !is.na(record_date))
+
+# Calculate summary statistics for subtitle
+num_deployments <- n_distinct(dat_temp_filtered$proj_depl)
+date_range <- range(dat_temp_filtered$record_date, na.rm = TRUE)
+date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ", 
+                          format(date_range[2], "%Y-%m-%d"))
+
+# Create Gantt-style plot
+(deployPlotTRIM <- ggplot() +
+    geom_linerange(data = deploy_dates_filtered, aes(y = y_pos, xmin = start, xmax = end,
+                                                     color = as.factor(project_id)), 
+                   linewidth = 2, alpha = 0.7) + #deployment timelines
+    geom_point(data = dat_sp_temp_filtered, aes(x = record_date, y = y_pos), color = "black",
+               size = 1.5, alpha = 0.8) + #species detections 
+    scale_x_date(date_breaks = "6 months", date_labels = "%Y-%m") +
+    scale_y_continuous(breaks = deploy_dates_filtered$y_pos,
+                       labels = deploy_dates_filtered$proj_depl,
+                       expand = expansion(add = c(0.5, 0.5))) +
+    labs(y = "Deployments (chronological)", x = "Date",
+         title = bquote("Deployments through time TRIMMED: " * italic(.(target_species))),
+         subtitle = paste0("Deployments: ", num_deployments, "\nDate range: ", 
+                           date_range_text)) +
+    theme_classic() +
+    theme(axis.text.y = element_blank(), 
+          axis.ticks.y = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+          axis.title = element_text(face = "bold"),
+          legend.position = "none"))
+
+library(gridExtra)
+(deployPlotComp <- grid.arrange(deployPlot, deployPlotTRIM, ncol = 2))
+
+file_name = paste0("Model outputs/", species_file, "/", species_file, "_deployPlotTRIM.jpg")
+ggsave(filename = file_name, plot = deployPlotComp, width = 10, height = 4, units = "in")
+
+# Update data 
+dat <- dat_filtered
+dat_sp <- dat_sp_filtered
 
 # After doing checks, clean original data for outliers ------------------------
 #dat <- dat %>% filter(latitude != min(latitude)) #remove weird location
