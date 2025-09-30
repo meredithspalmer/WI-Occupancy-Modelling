@@ -322,61 +322,77 @@ ggsave(filename = file_name, plot = speciesDet, width = 6, height = 5, units = "
 
 ## Update size of predicted area, based on WI and GBIF detections -------------
 
+## Update size of predicted area, based on WI and GBIF detections ------------- 
+
 # Hopefully one of these contains the species 
-homerange_species <- homerange %>% filter(Species == species_name)
-#disp_species <- disp_weighted %>% filter(Species == species_name)
+homerange_species <- homerange %>% filter(Species == species_name) 
+#disp_species <- disp_weighted %>% filter(Species == species_name) 
 
-# Buffer in km → m
-buffer <- homerange_species$Homerange * 10
-buffer_m <- buffer * 1000
+# Buffer in km → m 
+buffer <- homerange_species$Homerange * 10 
+buffer_m <- buffer * 1000 
 
-# Gather detection points
-all_points <- rbind(gbif_sf_proj %>% dplyr::select(geometry),
-                    plot_sp_coords_proj %>% dplyr::select(geometry))
+# Gather detection points 
+all_points <- rbind(gbif_sf_proj %>% 
+                      dplyr::select(geometry), plot_sp_coords_proj %>% 
+                      dplyr::select(geometry)) 
 
-# Convert to sf and buffer
-all_points_sf <- st_as_sf(all_points, crs = st_crs(ref))
-points_buffered <- st_buffer(all_points_sf, dist = buffer_m)
+# Convert to sf and buffer 
+all_points_sf <- st_as_sf(all_points, crs = st_crs(ref)) 
+points_buffered <- st_buffer(all_points_sf, dist = buffer_m) 
 
-# Dissolve to one polygon
-points_union <- st_union(points_buffered) %>%
-  st_make_valid() %>%
-  st_buffer(0) %>%
+# Dissolve to one polygon 
+points_union <- st_union(points_buffered) %>% 
+  st_make_valid() %>% 
+  st_buffer(0) %>% 
   st_cast("MULTIPOLYGON")
 
 # Convert expert range raster to polygon
-mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>%
-  st_as_sf() %>%
-  st_make_valid() %>%
-  st_buffer(0) %>%
-  st_cast("MULTIPOLYGON")
+mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>% 
+  st_as_sf() %>% 
+  st_make_valid() %>% 
+  st_buffer(0) %>% 
+  st_cast("MULTIPOLYGON") 
 
-# Union expert range with buffered detections
-extended_range <- st_union(mmd_poly, points_union) %>%
-  st_make_valid()
+# Union expert range with buffered detections 
+extended_range <- st_union(mmd_poly, points_union) %>% st_make_valid() 
 
-# Convert back to raster aligned with `mmd_map`
-extended_raster <- terra::rasterize(vect(extended_range), mmd_map, field = 1, background = NA)
+# Convert back to raster aligned with mmd_map 
+extended_raster <- terra::rasterize(vect(extended_range), mmd_map, field = 1, background = NA) 
 
-# Plot with BOTH ranges
-(speciesDetExtended <- ggplot() +
-    geom_sf(data = world_cropped, fill = "gray90", color = "gray60") +
-    geom_spatraster(data = mmd_map) +   # Original expert range (raster)
-    scale_fill_gradient(name = "Expert range", low = "gray85", high = "gray50", na.value = NA) +
-    geom_sf(data = extended_range, fill = "lightblue", color = "blue", alpha = 0.3) +  # Extended
-    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) +                  
-    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) +      
-    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) +  
+# Extend bounding box 
+ext_bbox <- st_bbox(extended_range) 
+multiplier <- 0.5 
+
+# Compute width and height
+x_buffer <- (ext_bbox["xmax"] - ext_bbox["xmin"]) * 0.01
+y_buffer <- (ext_bbox["ymax"] - ext_bbox["ymin"]) * 0.01
+
+# Apply buffer 
+xmin <- ext_bbox["xmin"] - x_buffer 
+xmax <- ext_bbox["xmax"] + x_buffer 
+ymin <- ext_bbox["ymin"] - y_buffer 
+ymax <- ext_bbox["ymax"] + y_buffer 
+
+# Create new bbox 
+ext_bbox_buffered <- c(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax) 
+names(ext_bbox_buffered) <- c("xmin", "ymin", "xmax", "ymax")
+
+# Crop world to union bbox
+world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
+
+# Plot with updated bounding box 
+(speciesDetExtended <- ggplot() + 
+    geom_sf(data = world_cropped_buffered, fill = "gray90", color = "gray60") + 
+    geom_sf(data = extended_range, fill = "lightblue", color = "blue", alpha = 0.3) + 
+    geom_sf(data = plot_coords_sf, shape = 1, size = 2, alpha = 0.5) + 
+    geom_sf(data = plot_sp_coords_proj, shape = 16, size = 2, color = "violet", alpha = 0.7) + 
+    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.7) + 
+    coord_sf(xlim = c(ext_bbox_buffered["xmin"], ext_bbox_buffered["xmax"]), 
+             ylim = c(ext_bbox_buffered["ymin"], ext_bbox_buffered["ymax"])) + 
     theme_minimal() + 
-    theme(legend.position = "right") + 
-    labs(
-      title = "Species Detection Sites [Zoomed]",
-      subtitle = bquote(italic(.(target_species)))
-    ) +
-    theme(
-      plot.background = element_rect(fill = "white", color = NA),
-      panel.background = element_rect(fill = "white", color = NA)
-    ))
+    labs(title = "Species Detection Sites [Zoomed]", 
+         subtitle = bquote(italic(.(target_species)))))
 
 
 ## Predictions (run predict ONE TIME!) ----------------------------------------
