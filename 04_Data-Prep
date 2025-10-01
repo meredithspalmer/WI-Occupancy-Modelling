@@ -161,13 +161,16 @@ ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 # Load and format species range map data -------------------------------------
 
 # Target species name
-target_species <- "Lycaon pictus"
+target_species <- "Ursus thibetanus"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
 
 # GBIF data 
 gbif_species <- gbif %>% filter(verbatimsciname == target_species) 
+
+# for Panthera onca, one extreme point to remove
+#gbif_species <- gbif_species[!gbif_species$latitude > 40,]
 
 # Range map data 
 mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
@@ -190,6 +193,8 @@ homerange_species <- homerange %>% filter(Species == target_species)
 # Buffer of 1 order of magnitude the home range size (km → m) 
 buffer <- homerange_species$Homerange * 10 
 buffer_m <- buffer * 1000 
+# NOTE: did not expand for Lycaon pictus: extremely large; went to *2 as 1318 km2 max homerange (otherwise in antarctica)
+# NOTE: no data for Panthera unica; using value of 24 * 10 * 100 
 
 # GBIF data
 gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
@@ -411,7 +416,16 @@ ggsave(filename = plot_file, plot = last_plot(), width = 10, height = 6, dpi = 3
 # If large gaps (>= 2 years), trim data so model not having to predict over blank time 
 # Trimming manually now -- come up with an automated rule to streamline for future? 
 
-set_date <- "2010-01-01"
+# Record trimmings: 
+# - Ceratotherium simum: 2010-01-01
+# - Lynx pardinus: 2020-01-01
+# - Melursus ursinus: 2014-11-01
+# - Panthera onca: 2008-01-01
+# - Panthera uncia: 2009-06-01
+# - Tapirus indicus: 2010-02-01
+# - Tapirus terrestris: 2008-07-01
+
+set_date <- "2008-07-01"
 dat_filtered <- dat %>% filter(sensor_start_date >= as.Date(set_date))
 dat_sp_filtered <- dat_sp %>% filter(sensor_start_date >= as.Date(set_date))
 
