@@ -34,15 +34,14 @@ library(tmap)
 library(tmaptools)
 library(tsibble)
 library(viridis)
+library(lwgeom)
 
 ## Prep detection matrix, effort, and julian date -----------------------------
 
 # Load and format WI data -----------------------------------------------------
 
 # Load data 
-#overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
 overview_seq <- read.csv("WI data/sequences_updated_20240710.csv")
-#overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
 overview_images <- read.csv("WI data/images_updated_20240714.csv")
 
 # Format data
@@ -161,7 +160,7 @@ ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 # Load and format species range map data -------------------------------------
 
 # Target species name
-target_species <- "Ursus thibetanus"
+target_species <- "Acinonyx jubatus"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
@@ -186,19 +185,16 @@ dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>%
 plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
 plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
 
-# Home range size
-homerange_species <- homerange %>% filter(Species == target_species) 
-#disp_species <- disp_weighted %>% filter(Species == target_species) 
-
-# Buffer of 1 order of magnitude the home range size (km → m) 
-buffer <- homerange_species$Homerange * 10 
-buffer_m <- buffer * 1000 
-# NOTE: did not expand for Lycaon pictus: extremely large; went to *2 as 1318 km2 max homerange (otherwise in antarctica)
-# NOTE: no data for Panthera unica; using value of 24 * 10 * 100 
-
 # GBIF data
 gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
 gbif_sf_proj <- st_transform(gbif_sf, crs = st_crs(ref))
+
+# Home range size
+homerange_species <- homerange %>% filter(Species == species_name) 
+
+# Buffer of 1 order of magnitude the home range size (km → m) 
+buffer <- homerange_species$Homerange * 2.5
+buffer_m <- buffer * 1000 
 
 # Gather detection points 
 all_points <- rbind(gbif_sf_proj %>% 
@@ -223,32 +219,22 @@ mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>%
   st_cast("MULTIPOLYGON") 
 
 # Union expert range with buffered detections 
-extended_range <- st_sf(geometry = st_union(mmd_poly, points_union) %>% st_make_valid())
-extended_range$presence <- 1
+extended_range <- st_union(mmd_poly, points_union) %>% st_make_valid() 
 
-# Set CRS and resolution 
-crs_use <- crs(mmd_map)  
-res_km <- 10000  # 10 km resolution
-st_crs(extended_range) <- crs_use
+# Trim to land 
+land <- ne_countries(scale = "medium", returnclass = "sf") %>% st_make_valid()
+target_crs <- crs(extended_range)  # World Cylindrical Equal Area (meters, global support)
+land_proj <- st_transform(land, target_crs)
+extended_range <- st_intersection(extended_range, land_proj)
 
-# Convert to SpatVector
-ext_vect <- vect(extended_range)
-
-# Create an empty raster template covering the polygon extent
-ext_raster <- rast(xmin = xmin(ext_vect),
-                   xmax = xmax(ext_vect),
-                   ymin = ymin(ext_vect),
-                   ymax = ymax(ext_vect),
-                   resolution = res_km,
-                   crs = crs_use)
-
-# Rasterize polygon
-extended_raster <- rasterize(ext_vect, ext_raster, field = "presence", background = NA, touches = TRUE)
+# Convert back to raster aligned with mmd_map 
+extended_raster <- terra::rasterize(vect(extended_range), ref, field = 1, background = NA) 
 
 # Plot to check
 plot(extended_range$geometry)
 plot(extended_raster, add = TRUE, border = "red")
 
+# Save 
 (file_name = paste0("Model outputs/", species_file, "/", species_file, "_extendedRange.tif"))
 writeRaster(extended_raster, filename = file_name, overwrite = TRUE)
 
