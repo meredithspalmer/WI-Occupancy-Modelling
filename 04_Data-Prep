@@ -20,6 +20,8 @@ library(gridExtra)
 library(lubridate)
 library(purrr)
 library(raster)
+library(rnaturalearth)
+library(rnaturalearthdata)
 library(reshape2)
 library(rlist)
 library(sf)
@@ -34,14 +36,15 @@ library(tmap)
 library(tmaptools)
 library(tsibble)
 library(viridis)
-library(lwgeom)
 
 ## Prep detection matrix, effort, and julian date -----------------------------
 
 # Load and format WI data -----------------------------------------------------
 
 # Load data 
+#overview_seq <- open_dataset("WI data/sequences_updated_20240710_parquet")
 overview_seq <- read.csv("WI data/sequences_updated_20240710.csv")
+#overview_images <- open_dataset("WI data/images_updated_20240714_parquet")
 overview_images <- read.csv("WI data/images_updated_20240714.csv")
 
 # Format data
@@ -185,21 +188,23 @@ dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>%
 plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
 plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
 
-# GBIF data
-gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
-gbif_sf_proj <- st_transform(gbif_sf, crs = st_crs(ref))
-
 # Home range size
-homerange_species <- homerange %>% filter(Species == species_name) 
+homerange_species <- homerange %>% filter(Species == target_species) 
+#disp_species <- disp_weighted %>% filter(Species == target_species) 
 
 # Buffer of 1 order of magnitude the home range size (km → m) 
 buffer <- homerange_species$Homerange * 2.5
 buffer_m <- buffer * 1000 
+# NOTE: did not expand for Lycaon pictus: extremely large; went to *2 as 1318 km2 max homerange (otherwise in antarctica)
+# NOTE: no data for Panthera unica; using value of 24 * 10 * 100 
+
+# GBIF data
+gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
+gbif_sf_proj <- st_transform(gbif_sf, crs = st_crs(ref))
 
 # Gather detection points 
-all_points <- rbind(gbif_sf_proj %>% 
-                      dplyr::select(geometry), plot_sp_coords_proj %>% 
-                      dplyr::select(geometry)) 
+all_points <- rbind(gbif_sf_proj %>% dplyr::select(geometry), 
+                    plot_sp_coords_proj %>% dplyr::select(geometry)) 
 
 # Convert to sf and buffer 
 all_points_sf <- st_as_sf(all_points, crs = st_crs(ref)) 
@@ -219,72 +224,144 @@ mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>%
   st_cast("MULTIPOLYGON") 
 
 # Union expert range with buffered detections 
-extended_range <- st_union(mmd_poly, points_union) %>% st_make_valid() 
+extended_range <- st_sf(geometry = st_union(mmd_poly, points_union) %>% st_make_valid())
+extended_range$presence <- 1
 
-# Trim to land 
-land <- ne_countries(scale = "medium", returnclass = "sf") %>% st_make_valid()
-target_crs <- crs(extended_range)  # World Cylindrical Equal Area (meters, global support)
-land_proj <- st_transform(land, target_crs)
-extended_range <- st_intersection(extended_range, land_proj)
+# Clip to land
+land <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  st_transform(st_crs(extended_range)) %>%
+  st_make_valid()
+extended_range <- st_intersection(extended_range, land)
 
-# Convert back to raster aligned with mmd_map 
-extended_raster <- terra::rasterize(vect(extended_range), ref, field = 1, background = NA) 
+# Set CRS and resolution 
+crs_use <- crs(mmd_map)  
+res_km <- 10000  # 10 km resolution
+st_crs(extended_range) <- crs_use
+
+# Convert to SpatVector
+ext_vect <- vect(extended_range)
+
+# Create an empty raster template covering the polygon extent
+ext_raster <- rast(xmin = xmin(ext_vect),
+                   xmax = xmax(ext_vect),
+                   ymin = ymin(ext_vect),
+                   ymax = ymax(ext_vect),
+                   resolution = res_km,
+                   crs = crs_use)
+
+# Rasterize polygon
+extended_raster <- rasterize(ext_vect, ext_raster, field = "presence", background = NA, touches = TRUE)
 
 # Plot to check
 plot(extended_range$geometry)
 plot(extended_raster, add = TRUE, border = "red")
 
-# Save 
 (file_name = paste0("Model outputs/", species_file, "/", species_file, "_extendedRange.tif"))
 writeRaster(extended_raster, filename = file_name, overwrite = TRUE)
 
 
 # Subset data by species ------------------------------------------------------
 
-# Extract data for a species
+all_dat$id <- paste(all_dat$project_id, all_dat$deployment_location_id)
+
+# Extract data for species
 dat_sp <- all_dat %>% filter(sp_binomial == target_species)
-nrow(dat_sp)
 
-# Retain all records of projects that fall within extended range map AND projects that 
-# contain species (some are outside the MMD range maps)
-# -> this problem should be solved by using extended rather than MMD range maps
+# Subset sites in extended range
+#sites <- all_dat %>% dplyr::select(project_id, latitude, longitude) %>% distinct()
+sites <- all_dat %>% dplyr::select(id, latitude, longitude) %>% distinct()
+sites_sf <- st_as_sf(sites, coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(st_crs(extended_raster))
 
-sites <- all_dat[c("project_id", "latitude", "longitude")] %>% distinct()
-#mmd_map_wgs <- project(mmd_map, "EPSG:4326")
-mmd_map_wgs <- project(extended_raster, "EPSG:4326") 
-cells <- terra::cellFromXY(mmd_map_wgs, as.matrix(sites[, c("longitude", "latitude")]))
-vals <- terra::values(mmd_map_wgs)[cells]
+# Extract raster values at site locations
+coords_proj <- st_coordinates(sites_sf)
+cells <- terra::cellFromXY(extended_raster, coords_proj)
+vals <- terra::values(extended_raster)[cells]
 
-sites_in_range <- sites[vals == 1, ]
-sites_in_range_clean <- sites_in_range %>% filter(!is.na(longitude), !is.na(latitude))
+# Sites overlapping extended range
+sites_in_range <- sites_sf[vals == 1, ]
+coords_ir <- st_coordinates(sites_in_range)
+sites_in_range_clean <- sites_in_range %>%
+  mutate(longitude = coords_ir[,1],
+         latitude  = coords_ir[,2]) %>%
+  st_drop_geometry() %>%
+  distinct()
+#sites_in_range_clean <- sites_in_range_clean %>% drop_na(project_id, latitude, longitude)
+sites_in_range_clean <- sites_in_range_clean %>% drop_na(id, latitude, longitude)
 
-sites_sp <- dat_sp %>% dplyr::select(project_id, latitude, longitude) %>% distinct()
+# Keep all species detection sites, project to same CRS
+sites_sp_sf <- st_as_sf(dat_sp %>% dplyr::select(id, latitude, longitude) %>% distinct(),
+                        coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(st_crs(sites_in_range))
+coords_sp <- st_coordinates(sites_sp_sf)
+sites_sp <- sites_sp_sf %>%
+  mutate(longitude = coords_sp[,1],
+         latitude  = coords_sp[,2]) %>%
+  st_drop_geometry()
+
+# Combine
 sites_keep <- bind_rows(sites_in_range_clean, sites_sp) %>% distinct()
-dat <- all_dat %>% semi_join(sites_keep, by = c("project_id", "latitude", "longitude"))
+sites_keep_sf <- st_as_sf(sites_keep,
+                          coords = c("longitude", "latitude"),
+                          crs = crs(sites_in_range))
+sites_keep_ll <- st_transform(sites_keep_sf, crs = 4326)
+sites_keep <- sites_keep_ll %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  bind_cols(sites_keep_ll %>% st_drop_geometry()) %>%
+  rename(longitude = X, latitude = Y)
 
-spp_sites <- dat[c("project_id", "latitude", "longitude")] %>% distinct()
+# Subset original data
+#dat <- all_dat %>% semi_join(sites_keep, by = c("project_id", "latitude", "longitude"))
+dat <- all_dat %>% semi_join(sites_keep, by = "id")
 
-# Check by plotting 
-ras_df <- as.data.frame(mmd_map_wgs, xy = TRUE, na.rm = TRUE)
-names(ras_df)[3] <- "species"
+# Check counts
+nrow(sites_in_range_clean)
+nrow(sites_keep)
 
-ggplot() +
-  geom_tile(data = ras_df, aes(x = x, y = y, fill = species)) +
-  scale_fill_viridis_c(na.value = NA, option = "viridis") +
-  geom_point(data = sites, aes(x = longitude, y = latitude),
-             color = "gray50", size = 1, alpha = 0.5, na.rm = TRUE) +
-  geom_point(data = spp_sites, aes(x = longitude, y = latitude),
-             color = "red", size = 1.5, na.rm = TRUE) +
-  coord_equal() +
-  theme_minimal() +
-  labs(title = paste("Species distribution and site points:", target_species),
-       x = "Longitude", y = "Latitude", fill = "Presence")
+# Bounding box 
+ext_bbox <- st_bbox(extended_range) 
+x_buffer <- (ext_bbox["xmax"] - ext_bbox["xmin"]) * 0.01
+y_buffer <- (ext_bbox["ymax"] - ext_bbox["ymin"]) * 0.01
 
-# Compare to number of sites pulled before
-nrow(spp_sites)
-length(unique(dat_sp$project_id))
+# Apply buffer 
+xmin <- ext_bbox["xmin"] - x_buffer 
+xmax <- ext_bbox["xmax"] + x_buffer 
+ymin <- ext_bbox["ymin"] - y_buffer 
+ymax <- ext_bbox["ymax"] + y_buffer 
 
-# Check start and end dates: if issue, flip (note: many of these are 1 day depls)
+# Create new bbox 
+ext_bbox_buffered <- c(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax) 
+names(ext_bbox_buffered) <- c("xmin", "ymin", "xmax", "ymax")
+
+# Crop world to union bbox
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(extended_range))
+world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
+
+# Plot 
+(speciesDetExtended <- ggplot() +
+    geom_sf(data = world_cropped_buffered, fill = "gray90", color = "gray60") +
+    geom_sf(data = mmd_poly, fill = "#FFA500", color = "darkorange", alpha = 0.4) +
+    geom_sf(data = extended_range, fill = "#1E90FF", color = "blue", alpha = 0.3) +
+    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.5) +
+    geom_sf(data = sites_in_range, shape = 1, size = 2, alpha = 0.5) +   # FIXED
+    geom_sf(data = st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326) %>%
+              st_transform(st_crs(extended_range)),
+            shape = 16, size = 2, color = "violet", alpha = 0.7) +
+    coord_sf(xlim = c(ext_bbox_buffered["xmin"], ext_bbox_buffered["xmax"]),
+             ylim = c(ext_bbox_buffered["ymin"], ext_bbox_buffered["ymax"])) +
+    theme_minimal() +
+    labs(title = "Species Detection Sites: Extended Range",
+         subtitle = bquote(italic(.(target_species)))))
+
+ggsave(filename = paste0("Model outputs/", species_file, "/", species_file, "_speciesDetectionsExtended.jpg"),
+       plot = speciesDetExtended, width = 6, height = 5, units = "in", bg = "white")
+
+
+## Check start and end dates --------------------------------------------------
+# if issue, flip (note: many of these are 1 day depls)
+
 nrow(dat %>% filter(sensor_end_date <= sensor_start_date))
 head(dat %>% filter(sensor_end_date <= sensor_start_date))
 dat_sp <- dat_sp %>%
@@ -293,6 +370,7 @@ dat_sp <- dat_sp %>%
 dat <- dat %>%
   mutate(sensor_start_date = pmin(sensor_start_date, sensor_end_date),
          sensor_end_date   = pmax(sensor_start_date, sensor_end_date))
+
 
 ## Spatial and temporal checks ------------------------------------------------
 
