@@ -10,189 +10,135 @@ set.seed(123)
 rm(list=ls()); gc()
 
 # Load libraries
-library(tidyverse)
-library(ggplot2)
 library(coda)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
 
-# Load species 
-model_files <- list.files("Model outputs", pattern = "_svcTPGOcc\\.RData$", recursive = TRUE, full.names = TRUE) 
-species_list <- gsub("_", " ", gsub("_svcTPGOcc\\.RData", "", basename(model_files)))
-species_list
-
-# Covariate labels 
-cov_labels <- c(road_dist   = "Dist to Roads",
-                tri         = "Terrain Ruggedness",
-                river_dist  = "Dist to Rivers",
-                coeff_var   = "Coefficient of Variation",
-                cities_lg   = "Dist to Cities",
-                crop        = "Proportion Crop",
-                gpw         = "Human Population",
-                gfc         = "Forest Loss",
-                precseas    = "Seasonal Precip",
-                wdpa        = "Protected Area Status",
-                evi         = "Vegetation",
-                trend       = "Trend (time)")
-
-
-## Helper functions -----------------------------------------------------------
-
-# Extract occupancy response curves for a single species
-occ_response <- function(out, dat_ls, covariates, n_points = 100) {
-  beta_draws <- as.matrix(out$beta.samples)
-  beta_names <- colnames(beta_draws)
-  
-  cov_means <- sapply(dat_ls$occ.covs, mean, na.rm = TRUE)
-  cov_sds   <- sapply(dat_ls$occ.covs, sd, na.rm = TRUE)
-  
-  results <- list()
-  
-  for (cov_name in covariates) {
-    beta_col <- paste0("scale(", cov_name, ")")
-    if (!(beta_col %in% beta_names)) next
-    
-    cov_seq <- seq(min(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
-                   max(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
-                   length.out = n_points)
-    cov_seq_scaled <- (cov_seq - cov_means[cov_name]) / cov_sds[cov_name]
-    
-    X_pred <- matrix(0, nrow = n_points, ncol = ncol(beta_draws))
-    colnames(X_pred) <- beta_names
-    if ("(Intercept)" %in% beta_names) X_pred[, "(Intercept)"] <- 1
-    X_pred[, beta_col] <- cov_seq_scaled
-    
-    eta <- X_pred %*% t(beta_draws)
-    psi <- plogis(eta)
-    
-    results[[cov_name]] <- data.frame(
-      covariate = cov_seq,
-      mean = rowMeans(psi),
-      low = apply(psi, 1, quantile, 0.025),
-      high = apply(psi, 1, quantile, 0.975),
-      variable = cov_name
-    )
-  }
-  
-  bind_rows(results)
-}
-
-# Extract posterior summaries of covariate effects
-extract_beta_summary <- function(out, species_name) {
-  # Ensure beta.samples is in matrix form, regardless of class
-  if (inherits(out$beta.samples, "mcmc.list")) {
-    beta_mat <- as.matrix(out$beta.samples)
-  } else if (inherits(out$beta.samples, "mcmc")) {
-    beta_mat <- as.matrix(as.mcmc.list(out$beta.samples))
-  } else if (is.matrix(out$beta.samples)) {
-    beta_mat <- out$beta.samples
-  } else {
-    stop("Unrecognized format for out$beta.samples")
-  }
-  
-  beta_df <- as.data.frame(beta_mat)
-  
-  summary_df <- beta_df %>%
-    tidyr::pivot_longer(everything(), names_to = "term", values_to = "value") %>%
-    dplyr::group_by(term) %>%
-    dplyr::summarise(
-      mean  = mean(value),
-      lower = quantile(value, 0.025),
-      upper = quantile(value, 0.975),
-      .groups = "drop"
-    ) %>%
-    dplyr::mutate(species = species_name)
-  
-  return(summary_df)
-}
-
-
-## Loop through all species ---------------------------------------------------
-
-all_responses <- list()
-all_betas <- list()
-
-for (species_name in species_list) {
-  message("Processing ", species_name, "...")
-  file_species <- gsub(" ", "_", species_name)
-  file_path <- filenames[grep(file_species, filenames)]
-  filename <- paste0(file_path, "/", file_species, "_svcTPGOcc.RData")
-  
-  load(filename)
-  
-  # Extract responses for all available covariates
-  covs_to_plot <- intersect(names(dat_ls$occ.covs), names(cov_labels))
-  res <- occ_response(out, dat_ls, covariates = covs_to_plot)
-  res$species <- species_name
-  all_responses[[species_name]] <- res
-  
-  # Extract coefficient summaries
-  all_betas[[species_name]] <- extract_beta_summary(out, species_name)
-}
-
-# Combine data frames
-plot_df_all <- bind_rows(all_responses)
-beta_summary_all <- bind_rows(all_betas)
-
-## Multi-species plots --------------------------------------------------------
-
-# Format covariate labels
-plot_df_all$variable <- factor(
-  plot_df_all$variable,
-  levels = names(cov_labels),
-  labels = cov_labels[names(cov_labels)]
+# Define species groups
+species_groups <- list(
+  Bears = c("Helarctos malayanus", "Ursus thibetanus", "Melursus ursinus", "Tremarctos ornatus"),
+  BigCats = c("Panthera onca", "Panthera pardus", "Panthera uncia", "Panthera tigris",
+              "Lynx pardinus", "Acinonyx jubatus"),
+  Tapirs = c("Tapirus bairdii", "Tapirus terrestris", "Tapirus pinchaque", "Tapirus indicus"),
+  Elephants = c("Loxodonta cyclotis", "Elephas maximus"),
+  Rhinos = c("Ceratotherium simum", "Diceros bicornis"),
+  Primates = c("Pan troglodytes", "Gorilla beringei", "Gorilla gorilla", "Pongo pygmaeus"),
+  Canids = c("Lycaon pictus")
 )
 
-# (A) Multi-species covariate responses
-(p_covariate <- ggplot(plot_df_all, aes(x = covariate, y = mean, color = species, fill = species)) +
-  geom_ribbon(aes(ymin = low, ymax = high), alpha = 0.1, color = NA) +
-  geom_line(linewidth = 1) +
-  facet_wrap(~ variable, scales = "free_x", ncol = 2) +
-  labs(x = "Covariate value", y = "Occupancy probability",
-       title = "Comparative occupancy responses across species") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom"))
+# Covariate labels (anthropogenic + trend)
+cov_labels <- c(
+  road_dist   = "Dist to Roads",
+  cities_lg   = "Dist to Cities",
+  crop        = "Proportion Crop",
+  gpw         = "Human Population",
+  gfc         = "Forest Loss",
+  wdpa        = "Protected Area Status",
+  trend       = "Trend (time)"
+)
 
-^ work on this 
-
-# (B) Time trend only
-(p_time <- plot_df_all %>%
-  filter(variable == "Trend (time)") %>%
-  ggplot(aes(x = covariate, y = mean, color = species)) +
-  geom_line(linewidth = 1.2) +
-  geom_ribbon(aes(ymin = low, ymax = high, fill = species), alpha = 0.1, color = NA) +
-  labs(x = "Time", y = "Occupancy probability",
-       title = "Occupancy change through time across species") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom"))
-
-# Save plots
-ggsave("Model outputs/AllSpecies_occResponses.jpg", p_covariate, width = 8, height = 6, units = "in", bg = "white")
-ggsave("Model outputs/AllSpecies_trendComparison.jpg", p_time, width = 6, height = 5, units = "in", bg = "white")
-
-## -----------------------------------------------------------
-## 5. Summarize and visualize posterior β effects
-## -----------------------------------------------------------
-
-# Clean up term names for readability
-beta_summary_all$term_clean <- gsub("scale\\(|\\)", "", beta_summary_all$term)
-beta_summary_all$term_clean <- factor(beta_summary_all$term_clean,
-                                      levels = names(cov_labels),
-                                      labels = cov_labels[names(cov_labels)])
-
-# Forest plot
-(p_forest <- ggplot(beta_summary_all, aes(x = mean, y = term_clean, color = species)) +
-  geom_point(position = position_dodge(width = 0.5)) +
-  geom_errorbarh(aes(xmin = lower, xmax = upper),
-                 height = 0, position = position_dodge(width = 0.5)) +
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  labs(x = "Effect size (logit scale)", y = "Covariate",
-       title = "Posterior covariate effects on occupancy across species") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom"))
-
-ggsave("Model outputs/AllSpecies_forestPlot.jpg", p_forest, width = 8, height = 6, units = "in", bg = "white")
+# Prepare file list
+filenames <- list.files("Model outputs", pattern = "_svcTPGOcc\\.RData$", 
+                        recursive = TRUE, full.names = TRUE)
 
 
-## Export summary table -------------------------------------------------------
-
-head(beta_summary_all)
-write.csv(beta_summary_all, "Model outputs/AllSpecies_betaSummary.csv", row.names = FALSE)
+## Loop through groups --------------------------------------------------------
+for (group_name in names(species_groups)) {
+  species_list <- species_groups[[group_name]]
+  message("Processing group: ", group_name)
+  
+  group_responses <- list()
+  group_betas <- list()
+  
+  for (species_name in species_list) {
+    message("  Processing species: ", species_name)
+    
+    file_species <- gsub(" ", "_", species_name)
+    filename <- filenames[grep(file_species, filenames)]
+    
+    load(filename)
+    
+    # Ensure beta.samples is mcmc.list
+    if (inherits(out$beta.samples, "mcmc")) {
+      out$beta.samples <- as.mcmc.list(out$beta.samples)
+    }
+    
+    # Extract only the selected covariates
+    covs_to_plot <- intersect(names(dat_ls$occ.covs), names(cov_labels))
+    res <- occ_response(out, dat_ls, covariates = covs_to_plot)
+    res$species <- species_name
+    group_responses[[species_name]] <- res
+    
+    # Extract beta summaries
+    group_betas[[species_name]] <- extract_beta_summary(out, species_name)
+  }
+  
+  # Combine data for the group
+  plot_df <- bind_rows(group_responses) %>%
+    filter(variable %in% names(cov_labels))
+  
+  beta_df <- bind_rows(group_betas) %>%
+    mutate(term_clean = gsub("scale\\(|\\)", "", term)) %>%
+    filter(term_clean %in% names(cov_labels))
+  
+  # Factorize variables for plotting
+  plot_df$variable <- factor(plot_df$variable,
+                             levels = names(cov_labels),
+                             labels = cov_labels[names(cov_labels)])
+  
+  beta_df$term_clean <- factor(beta_df$term_clean,
+                               levels = names(cov_labels),
+                               labels = cov_labels[names(cov_labels)])
+  
+  # Occupancy response plot (all covariates)
+  (p_cov <- ggplot(plot_df %>% filter(variable != "Trend (time)"),
+                  aes(x = covariate, y = mean, color = species, fill = species)) +
+    geom_ribbon(aes(ymin = low, ymax = high), alpha = 0.1, color = NA) +
+    geom_line(linewidth = 1) +
+    facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+    labs(title = paste("Occupancy responses:", group_name),
+         x = "Covariate value", y = "Occupancy probability") +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom"))
+  
+  ggsave(paste0("Model outputs/", group_name, "_occResponses.jpg"),
+         p_cov, width = 8, height = 6, units = "in", bg = "white")
+  
+  # Temporal trend plot
+  if ("Trend (time)" %in% plot_df$variable) {
+    (plot_time <- plot_df %>%
+      filter(variable == "Trend (time)") %>%
+      ggplot(aes(x = covariate, y = mean, color = species)) +
+      geom_line(linewidth = 1) +
+      geom_ribbon(aes(ymin = low, ymax = high, fill = species), alpha = 0.1, color = NA) +
+      labs(title = paste("Occupancy trends over time:", group_name),
+           x = "Time", y = "Occupancy probability") +
+      theme_minimal(base_size = 12) +
+      theme(legend.position = "bottom"))
+    
+    ggsave(paste0("Model outputs/", group_name, "_trendPlot.jpg"),
+           plot_time, width = 6, height = 5, units = "in", bg = "white")
+  }
+  
+  # Forest plot of beta coefficients
+  (p_forest <- ggplot(beta_df %>% filter(term_clean != "Trend (time)"),
+                     aes(x = mean, y = term_clean, color = species)) +
+    geom_point(position = position_dodge(width = 0.5)) +
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+                   position = position_dodge(width = 0.5)) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    labs(x = "Effect size (logit scale)", y = "Covariate",
+         title = paste("Posterior β effects:", group_name)) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom"))
+  
+  ggsave(paste0("Model outputs/", group_name, "_forestPlot.jpg"),
+         p_forest, width = 8, height = 6, units = "in", bg = "white")
+  
+  # Save combined tables
+  write.csv(plot_df, paste0("Model outputs/", group_name, "_occResponses.csv"), row.names = FALSE)
+  write.csv(beta_df, paste0("Model outputs/", group_name, "_betaSummary.csv"), row.names = FALSE)
+  
+  message("✅ Finished group: ", group_name)
+}
