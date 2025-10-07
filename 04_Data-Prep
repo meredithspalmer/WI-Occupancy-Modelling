@@ -323,6 +323,9 @@ values_at_points <- terra::extract(range_map, dat_sp_vect)
 dat_sp_inside <- dat_sp[!is.na(values_at_points[,2]), ]
 cat("Points inside raster:", nrow(dat_sp_inside), "\n")
 
+# Update database 
+dat_sp <- dat_sp_inside
+
 # Convert for plotting
 range_map_df <- as.data.frame(range_map, xy = TRUE)
 raster_col <- colnames(range_map_df)[3]  # grab the actual raster layer name
@@ -389,7 +392,6 @@ nrow(sites_in_range_clean)
 nrow(sites_keep)
 
 # Bounding box 
-#ext_bbox <- st_bbox(extended_range) 
 ext_bbox <- st_bbox(range_map) 
 x_buffer <- (ext_bbox["xmax"] - ext_bbox["xmin"]) * 0.01
 y_buffer <- (ext_bbox["ymax"] - ext_bbox["ymin"]) * 0.01
@@ -406,7 +408,6 @@ names(ext_bbox_buffered) <- c("xmin", "ymin", "xmax", "ymax")
 
 # Crop world to union bbox
 world <- ne_countries(scale = "medium", returnclass = "sf")
-#world_proj <- st_transform(world, st_crs(extended_range))
 world_proj <- st_transform(world, st_crs(range_map))
 world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
 
@@ -428,6 +429,7 @@ world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
 
 ggsave(filename = paste0("Model outputs/", species_file, "/", species_file, "_speciesDetectionsExtended.jpg"),
        plot = speciesDetExtended, width = 6, height = 5, units = "in", bg = "white")
+
 
 
 ## Check start and end dates --------------------------------------------------
@@ -472,6 +474,7 @@ dat_map_range <- tm_shape(World) +
   tm_style("col_blind") +
   tm_layout(legend.show = FALSE)
 print(dat_map_range)
+
 
 # Temporal coverage ----------------------------------------------------------- 
 
