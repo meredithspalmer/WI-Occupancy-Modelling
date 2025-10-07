@@ -492,6 +492,7 @@ deploy_dates <- dat_temp %>%
   summarise(start = min(sensor_start_date, na.rm = TRUE),
             end   = max(sensor_end_date, na.rm = TRUE),
             .groups = "drop") %>%
+  filter(end <= as.Date("2024-09-30")) %>% 
   arrange(start) %>%
   mutate(y_pos = row_number())  
 
@@ -547,6 +548,9 @@ species_dir <- file.path(parent_dir, gsub(" ", "_", target_species))
 if (!dir.exists(species_dir)) {dir.create(species_dir, recursive = TRUE)}
 plot_file <- file.path(species_dir, paste0(gsub(" ", "_", target_species), "_deployment_plot_original.png"))
 ggsave(filename = plot_file, plot = last_plot(), width = 10, height = 6, dpi = 300)
+
+dat <- dat %>% filter(sensor_end_date <= as.Date("2024-09-30"))
+dat_sp <- dat_sp %>% filter(sensor_end_date <= as.Date("2024-09-30"))
 
 
 ## Truncate data based on temporal consistency --------------------------------
