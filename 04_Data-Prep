@@ -290,27 +290,64 @@ extended_raster <- rasterize(ext_vect, ext_raster, field = "presence",
 plot(extended_range$geometry)
 plot(extended_raster, add = TRUE, border = "red")
 
+# Evaluate in map below - may not want to use/save 
 (file_name = paste0("Model outputs/", species_file, "/", species_file, "_extendedRange.tif"))
 writeRaster(extended_raster, filename = file_name, overwrite = TRUE)
 
 
-# Subset data by species ------------------------------------------------------
+## Decide if want to move forward with MMD map or extended map ----------------
+# some of these high volume species are loaded with mis-IDs in WI and GBIF both 
+
+range_map <- mmd_map 
+#range_map <- extended_raster
+
+
+## Subset data by species -----------------------------------------------------
 
 all_dat$id <- paste(all_dat$project_id, all_dat$deployment_location_id)
 
-# Extract data for species
-dat_sp <- all_dat %>% filter(sp_binomial == target_species)
 
-# Subset sites in extended range
-#sites <- all_dat %>% dplyr::select(project_id, latitude, longitude) %>% distinct()
+## Extract data for species ---
+dat_sp <- all_dat %>% filter(sp_binomial == target_species) 
+
+# Subset to species data found within range map 
+dat_sp_vect <- vect(dat_sp, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+
+# Transform points to raster CRS if needed
+if (!compareCRS(dat_sp_vect, range_map)) {
+  dat_sp_vect <- project(dat_sp_vect, crs(range_map))
+}
+
+# Extract raster values and filter points inside raster
+values_at_points <- terra::extract(range_map, dat_sp_vect)
+dat_sp_inside <- dat_sp[!is.na(values_at_points[,2]), ]
+cat("Points inside raster:", nrow(dat_sp_inside), "\n")
+
+# Convert for plotting
+range_map_df <- as.data.frame(range_map, xy = TRUE)
+raster_col <- colnames(range_map_df)[3]  # grab the actual raster layer name
+dat_sp_inside_sf <- st_as_sf(dat_sp_inside, coords = c("longitude", "latitude"), crs = "EPSG:4326")
+dat_sp_inside_sf <- st_transform(dat_sp_inside_sf, crs(range_map))
+
+# Check
+ggplot() +
+  geom_tile(data = range_map_df, aes(x = x, y = y, fill = .data[[raster_col]])) +
+  scale_fill_viridis_c(na.value = "white") +
+  geom_sf(data = dat_sp_inside_sf, color = "red", size = 1) +
+  theme_minimal() +
+  labs(title = "Sightings points inside mmd_map",
+       x = "Longitude", y = "Latitude", fill = "Raster value")
+
+
+## Subset sites in range map / extended range --- 
 sites <- all_dat %>% dplyr::select(id, latitude, longitude) %>% distinct()
 sites_sf <- st_as_sf(sites, coords = c("longitude", "latitude"), crs = 4326) %>%
-  st_transform(st_crs(extended_raster))
+  st_transform(st_crs(range_map))
 
 # Extract raster values at site locations
 coords_proj <- st_coordinates(sites_sf)
-cells <- terra::cellFromXY(extended_raster, coords_proj)
-vals <- terra::values(extended_raster)[cells]
+cells <- terra::cellFromXY(range_map, coords_proj)
+vals <- terra::values(range_map)[cells]
 
 # Sites overlapping extended range
 sites_in_range <- sites_sf[vals == 1, ]
@@ -352,7 +389,8 @@ nrow(sites_in_range_clean)
 nrow(sites_keep)
 
 # Bounding box 
-ext_bbox <- st_bbox(extended_range) 
+#ext_bbox <- st_bbox(extended_range) 
+ext_bbox <- st_bbox(range_map) 
 x_buffer <- (ext_bbox["xmax"] - ext_bbox["xmin"]) * 0.01
 y_buffer <- (ext_bbox["ymax"] - ext_bbox["ymin"]) * 0.01
 
@@ -368,17 +406,18 @@ names(ext_bbox_buffered) <- c("xmin", "ymin", "xmax", "ymax")
 
 # Crop world to union bbox
 world <- ne_countries(scale = "medium", returnclass = "sf")
-world_proj <- st_transform(world, st_crs(extended_range))
+#world_proj <- st_transform(world, st_crs(extended_range))
+world_proj <- st_transform(world, st_crs(range_map))
 world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
 
 # Plot 
 (speciesDetExtended <- ggplot() +
     geom_sf(data = world_cropped_buffered, fill = "gray90", color = "gray60") +
     geom_sf(data = mmd_poly, fill = "#FFA500", color = "darkorange", alpha = 0.4) +
-    geom_sf(data = extended_range, fill = "#1E90FF", color = "blue", alpha = 0.3) +
-    geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.5) +
+    #geom_sf(data = extended_range, fill = "#1E90FF", color = "blue", alpha = 0.3) +
+    #geom_sf(data = gbif_sf_proj, shape = 17, size = 2, color = "darkgreen", alpha = 0.5) +
     geom_sf(data = sites_in_range, shape = 1, size = 2, alpha = 0.5) +   # FIXED
-    geom_sf(data = st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326) %>%
+    geom_sf(data = st_as_sf(dat_sp_inside, coords = c("longitude", "latitude"), crs = 4326) %>%
               st_transform(st_crs(extended_range)),
             shape = 16, size = 2, color = "violet", alpha = 0.7) +
     coord_sf(xlim = c(ext_bbox_buffered["xmin"], ext_bbox_buffered["xmax"]),
