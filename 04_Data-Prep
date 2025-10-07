@@ -163,7 +163,7 @@ ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
 # Load and format species range map data -------------------------------------
 
 # Target species name
-target_species <- "Acinonyx jubatus"
+target_species <- "Odocoileus hemionus"
 
 # Download data 
 species_file <- gsub(" ", "_", target_species)
@@ -188,69 +188,103 @@ dat_sp <- all_dat %>% filter(sp_binomial == target_species) %>%
 plot_sp_coords <- st_as_sf(dat_sp, coords = c("longitude", "latitude"), crs = 4326)
 plot_sp_coords_proj <- st_transform(plot_sp_coords, crs = st_crs(ref))
 
-# Home range size
-homerange_species <- homerange %>% filter(Species == target_species) 
-#disp_species <- disp_weighted %>% filter(Species == target_species) 
-
-# Buffer of 1 order of magnitude the home range size (km → m) 
-buffer <- homerange_species$Homerange * 2.5
-buffer_m <- buffer * 1000 
-# NOTE: did not expand for Lycaon pictus: extremely large; went to *2 as 1318 km2 max homerange (otherwise in antarctica)
-# NOTE: no data for Panthera unica; using value of 24 * 10 * 100 
-
-# GBIF data
+# GBIF data 
 gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
 gbif_sf_proj <- st_transform(gbif_sf, crs = st_crs(ref))
 
-# Gather detection points 
-all_points <- rbind(gbif_sf_proj %>% dplyr::select(geometry), 
-                    plot_sp_coords_proj %>% dplyr::select(geometry)) 
+# Dispersal / range buffer 
+range_value <- disp_weighted %>% filter(Species == target_species)
 
-# Convert to sf and buffer 
-all_points_sf <- st_as_sf(all_points, crs = st_crs(ref)) 
-points_buffered <- st_buffer(all_points_sf, dist = buffer_m) 
+if (nrow(range_value) == 0) {
+  # If no dispersal distance, use homerange instead: 
+  homerange_species <- homerange %>% filter(Species == target_species)
+  # If no homerange, error out: 
+  if (any(homerange_species$Homerange == -999)) {
+    stop("Error: Homerange value of -999 detected. Please check input data.")
+  } else {
+    range_value <- homerange_species %>%
+      mutate(Homerange = Homerange / 4)
+  }
+}
 
-# Dissolve to one polygon 
-points_union <- st_union(points_buffered) %>% 
-  st_make_valid() %>% 
-  st_buffer(0) %>% 
+# Buffer and convert km → m 
+buffer <- as.numeric(range_value[2]) * 6
+buffer_m <- buffer * 1000 
+
+# Combine detection points   
+gbif_coords <- gbif_sf_proj %>%
+  mutate(longitude = st_coordinates(.)[, 1],
+         latitude = st_coordinates(.)[, 2]) %>%
+  st_drop_geometry()
+
+plot_coords <- plot_sp_coords_proj %>%
+  mutate(longitude = st_coordinates(.)[, 1],
+         latitude = st_coordinates(.)[, 2]) %>%
+  st_drop_geometry()
+
+all_points <- bind_rows(gbif_coords, plot_coords) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(ref))
+
+# Buffer 
+points_buffered <- st_buffer(all_points, dist = buffer_m)
+
+# Union buffered points into polygon  
+points_union <- st_union(points_buffered) %>%
+  st_make_valid() %>%
+  st_buffer(0) %>%
   st_cast("MULTIPOLYGON")
 
-# Convert expert range raster to polygon
-mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>% 
-  st_as_sf() %>% 
-  st_make_valid() %>% 
-  st_buffer(0) %>% 
-  st_cast("MULTIPOLYGON") 
+# Expert range (MMD) polygon  
+mmd_poly <- as.polygons(mmd_map, dissolve = TRUE) %>%
+  st_as_sf() %>%
+  st_make_valid() %>%
+  st_buffer(0) %>%
+  st_cast("MULTIPOLYGON")
 
-# Union expert range with buffered detections 
-extended_range <- st_sf(geometry = st_union(mmd_poly, points_union) %>% st_make_valid())
-extended_range$presence <- 1
+# Merge expert range with detections 
+extended_range <- st_union(mmd_poly, points_union) %>% st_make_valid()
 
-# Clip to land
-land <- ne_countries(scale = "medium", returnclass = "sf") %>%
-  st_transform(st_crs(extended_range)) %>%
-  st_make_valid()
-extended_range <- st_intersection(extended_range, land)
+# Clip to land 
+land <- ne_countries(scale = "medium", returnclass = "sf") %>% st_make_valid()
+land_proj <- st_transform(land, st_crs(extended_range))
 
-# Set CRS and resolution 
-crs_use <- crs(mmd_map)  
-res_km <- 10000  # 10 km resolution
-st_crs(extended_range) <- crs_use
+extended_clean <- extended_range %>%
+  st_snap_to_grid(100) %>%
+  st_set_precision(1 / 100) %>%
+  st_make_valid() %>%
+  st_buffer(0)
 
-# Convert to SpatVector
-ext_vect <- vect(extended_range)
+land_clean <- land_proj %>%
+  st_snap_to_grid(100) %>%
+  st_set_precision(1 / 100) %>%
+  st_make_valid() %>%
+  st_buffer(0)
 
-# Create an empty raster template covering the polygon extent
+extended_range <- st_intersection(extended_clean, land_clean)
+extended_range <- st_union(extended_range) %>% st_make_valid()
+plot(extended_range)
+
+# Ensure extended_terrestrial is an sf with a field
+if (!inherits(extended_range, "sf")) {
+  extended_range <- st_sf(geometry = extended_range)
+}
+extended_range$presence <- 1L
+
+# Convert to terra SpatVector
+ext_vect <- vect(as(extended_range, "Spatial"))
+
+# Create raster template
+res_m <- 10000  # 10 km resolution
 ext_raster <- rast(xmin = xmin(ext_vect),
                    xmax = xmax(ext_vect),
                    ymin = ymin(ext_vect),
                    ymax = ymax(ext_vect),
-                   resolution = res_km,
-                   crs = crs_use)
+                   resolution = res_m,
+                   crs = crs(ext_vect))
 
-# Rasterize polygon
-extended_raster <- rasterize(ext_vect, ext_raster, field = "presence", background = NA, touches = TRUE)
+# Rasterize
+extended_raster <- rasterize(ext_vect, ext_raster, field = "presence", 
+                             background = NA, touches = TRUE)
 
 # Plot to check
 plot(extended_range$geometry)
@@ -286,7 +320,6 @@ sites_in_range_clean <- sites_in_range %>%
          latitude  = coords_ir[,2]) %>%
   st_drop_geometry() %>%
   distinct()
-#sites_in_range_clean <- sites_in_range_clean %>% drop_na(project_id, latitude, longitude)
 sites_in_range_clean <- sites_in_range_clean %>% drop_na(id, latitude, longitude)
 
 # Keep all species detection sites, project to same CRS
@@ -312,7 +345,6 @@ sites_keep <- sites_keep_ll %>%
   rename(longitude = X, latitude = Y)
 
 # Subset original data
-#dat <- all_dat %>% semi_join(sites_keep, by = c("project_id", "latitude", "longitude"))
 dat <- all_dat %>% semi_join(sites_keep, by = "id")
 
 # Check counts
