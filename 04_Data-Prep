@@ -566,6 +566,10 @@ dat_sp <- dat_sp %>% filter(sensor_end_date <= as.Date("2024-09-30"))
 # - Panthera uncia: 2009-06-01
 # - Tapirus indicus: 2010-02-01
 # - Tapirus terrestris: 2008-07-01
+# - Trichosurus vulpecula: 2011-05-01
+# - Vulpes vulpes: 2006-12-01
+# - Tayassu pecari: 2008-01-01
+# - Cuniculus paca: 2008-01-01
 
 set_date <- "2008-07-01"
 dat_filtered <- dat %>% filter(sensor_start_date >= as.Date(set_date))
