@@ -174,10 +174,16 @@ gbif_species <- gbif %>% filter(verbatimsciname == target_species)
 # for Panthera onca, one extreme point to remove
 #gbif_species <- gbif_species[!gbif_species$latitude > 40,]
 
-# Range map data 
+# Range map data -- mamms
 mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
-mmd_map <- rast(mmd_map_path)
 
+# Range map data -- birds 
+mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/birds/jetz_maps/jetz_maps_v2020/rasters_cea/", species_file, ".tif", sep="")
+
+mmd_map <- rast(mmd_map_path)
+mmd_map <- rast(mmd_map_path); plot(mmd_map)
+
+#range_map <- mmd_map 
 
 ## Compute extended range map -------------------------------------------------
 
