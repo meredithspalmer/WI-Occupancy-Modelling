@@ -17,14 +17,22 @@ library(ggplot2)
 
 # Define species groups
 species_groups <- list(
-  Bears = c("Helarctos malayanus", "Ursus thibetanus", "Melursus ursinus", "Tremarctos ornatus"),
+  Bears = c("Helarctos malayanus", "Ursus thibetanus", "Melursus ursinus", 
+            "Tremarctos ornatus", "Ursus americanus"),
   BigCats = c("Panthera onca", "Panthera pardus", "Panthera uncia", "Panthera tigris",
               "Lynx pardinus", "Acinonyx jubatus"),
-  Tapirs = c("Tapirus bairdii", "Tapirus terrestris", "Tapirus pinchaque", "Tapirus indicus"),
-  Elephants = c("Loxodonta cyclotis", "Elephas maximus"),
+  Tapirs = c("Tapirus bairdii", "Tapirus terrestris", "Tapirus pinchaque", 
+             "Tapirus indicus"),
+  Elephants = c("Loxodonta cyclotis", "Elephas maximus", "Loxodonta africana"),
   Rhinos = c("Ceratotherium simum", "Diceros bicornis"),
-  Primates = c("Pan troglodytes", "Gorilla beringei", "Gorilla gorilla", "Pongo pygmaeus"),
-  Canids = c("Lycaon pictus")
+  Primates = c("Pan troglodytes", "Gorilla beringei", "Gorilla gorilla", 
+               "Pongo pygmaeus"),
+  Canids = c("Canis lupus", "Lycaon pictus", "Vulpes vulpes"), #Canis latrans, Urocyon cinereoargenteus are running 
+  Ungulates = c("Antilocapra americana", "Odocoileus hemionus", "Odocoileus virginianus",
+                "Dicotyles tajacu", "Tayassu pecari", "Sus scrofa"), 
+  Marsupials = c("Notamacropus rufogriseus", "Trichosurus vulpecula", "Macropus giganteus"), 
+  SmallMammals = c("Sciurus carolinensis", "Sciurus griseus", "Cuniculus paca", 
+                   "Otospermophilus beecheyi", "Dasyprocta punctata") #Procyon lotor is running 
 )
 
 # Covariate labels (anthropogenic + trend)
@@ -41,6 +49,69 @@ cov_labels <- c(
 # Prepare file list
 filenames <- list.files("Model outputs", pattern = "_svcTPGOcc\\.RData$", 
                         recursive = TRUE, full.names = TRUE)
+
+# Function to extract occupancy response curves
+occ_response <- function(out, dat_ls, covariates, n_points = 100) {
+  beta_draws <- as.matrix(out$beta.samples)
+  beta_names <- colnames(beta_draws)
+  
+  cov_means <- sapply(dat_ls$occ.covs, mean, na.rm = TRUE)
+  cov_sds   <- sapply(dat_ls$occ.covs, sd, na.rm = TRUE)
+  
+  results <- list()
+  
+  for (cov_name in covariates) {
+    beta_col <- paste0("scale(", cov_name, ")")
+    if (!(beta_col %in% beta_names)) {
+      stop(paste("No column in beta.samples matches", beta_col,
+                 "\nAvailable:", paste(beta_names, collapse = ", ")))
+    }
+    
+    cov_seq <- seq(min(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
+                   max(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
+                   length.out = n_points)
+    cov_seq_scaled <- (cov_seq - cov_means[cov_name]) / cov_sds[cov_name]
+    
+    # design matrix
+    X_pred <- matrix(0, nrow = n_points, ncol = ncol(beta_draws))
+    colnames(X_pred) <- beta_names
+    
+    # intercept
+    if ("(Intercept)" %in% beta_names) {
+      X_pred[, "(Intercept)"] <- 1
+    }
+    
+    # focal covariate
+    X_pred[, beta_col] <- cov_seq_scaled
+    
+    # predict
+    eta <- X_pred %*% t(beta_draws)
+    psi <- plogis(eta)
+    
+    results[[cov_name]] <- data.frame(
+      covariate = cov_seq,
+      mean = rowMeans(psi),
+      low = apply(psi, 1, quantile, 0.025),
+      high = apply(psi, 1, quantile, 0.975),
+      variable = cov_name
+    )
+  }
+  
+  dplyr::bind_rows(results)
+}
+
+# Function to extract summary statistics 
+extract_beta_summary <- function(out, species_name) {
+  beta_df <- as.data.frame(as.matrix(out$beta.samples))
+  summary_df <- beta_df %>%
+    pivot_longer(everything(), names_to = "term", values_to = "value") %>%
+    group_by(term) %>%
+    summarise(mean = mean(value),
+              lower = quantile(value, 0.025),
+              upper = quantile(value, 0.975)) %>%
+    mutate(species = species_name)
+  return(summary_df)
+}
 
 
 ## Loop through groups --------------------------------------------------------
@@ -93,14 +164,14 @@ for (group_name in names(species_groups)) {
   
   # Occupancy response plot (all covariates)
   (p_cov <- ggplot(plot_df %>% filter(variable != "Trend (time)"),
-                  aes(x = covariate, y = mean, color = species, fill = species)) +
-    geom_ribbon(aes(ymin = low, ymax = high), alpha = 0.1, color = NA) +
-    geom_line(linewidth = 1) +
-    facet_wrap(~ variable, scales = "free_x", ncol = 2) +
-    labs(title = paste("Occupancy responses:", group_name),
-         x = "Covariate value", y = "Occupancy probability") +
-    theme_minimal(base_size = 12) +
-    theme(legend.position = "bottom"))
+                   aes(x = covariate, y = mean, color = species, fill = species)) +
+      geom_ribbon(aes(ymin = low, ymax = high), alpha = 0.1, color = NA) +
+      geom_line(linewidth = 1) +
+      facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+      labs(title = paste("Occupancy responses:", group_name),
+           x = "Covariate value", y = "Occupancy probability") +
+      theme_minimal(base_size = 12) +
+      theme(legend.position = "bottom"))
   
   ggsave(paste0("Model outputs/", group_name, "_occResponses.jpg"),
          p_cov, width = 8, height = 6, units = "in", bg = "white")
@@ -108,14 +179,14 @@ for (group_name in names(species_groups)) {
   # Temporal trend plot
   if ("Trend (time)" %in% plot_df$variable) {
     (plot_time <- plot_df %>%
-      filter(variable == "Trend (time)") %>%
-      ggplot(aes(x = covariate, y = mean, color = species)) +
-      geom_line(linewidth = 1) +
-      geom_ribbon(aes(ymin = low, ymax = high, fill = species), alpha = 0.1, color = NA) +
-      labs(title = paste("Occupancy trends over time:", group_name),
-           x = "Time", y = "Occupancy probability") +
-      theme_minimal(base_size = 12) +
-      theme(legend.position = "bottom"))
+       filter(variable == "Trend (time)") %>%
+       ggplot(aes(x = covariate, y = mean, color = species)) +
+       geom_line(linewidth = 1) +
+       geom_ribbon(aes(ymin = low, ymax = high, fill = species), alpha = 0.1, color = NA) +
+       labs(title = paste("Occupancy trends over time:", group_name),
+            x = "Time", y = "Occupancy probability") +
+       theme_minimal(base_size = 12) +
+       theme(legend.position = "bottom"))
     
     ggsave(paste0("Model outputs/", group_name, "_trendPlot.jpg"),
            plot_time, width = 6, height = 5, units = "in", bg = "white")
@@ -123,15 +194,15 @@ for (group_name in names(species_groups)) {
   
   # Forest plot of beta coefficients
   (p_forest <- ggplot(beta_df %>% filter(term_clean != "Trend (time)"),
-                     aes(x = mean, y = term_clean, color = species)) +
-    geom_point(position = position_dodge(width = 0.5)) +
-    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
-                   position = position_dodge(width = 0.5)) +
-    geom_vline(xintercept = 0, linetype = "dashed") +
-    labs(x = "Effect size (logit scale)", y = "Covariate",
-         title = paste("Posterior β effects:", group_name)) +
-    theme_minimal(base_size = 12) +
-    theme(legend.position = "bottom"))
+                      aes(x = mean, y = term_clean, color = species)) +
+      geom_point(position = position_dodge(width = 0.5)) +
+      geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+                     position = position_dodge(width = 0.5)) +
+      geom_vline(xintercept = 0, linetype = "dashed") +
+      labs(x = "Effect size (logit scale)", y = "Covariate",
+           title = paste("Posterior β effects:", group_name)) +
+      theme_minimal(base_size = 12) +
+      theme(legend.position = "bottom"))
   
   ggsave(paste0("Model outputs/", group_name, "_forestPlot.jpg"),
          p_forest, width = 8, height = 6, units = "in", bg = "white")
