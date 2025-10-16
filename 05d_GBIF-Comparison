@@ -1,0 +1,317 @@
+###############################
+## GBIF vs. WI OM comparison ##
+###############################
+
+## Set workspace --------------------------------------------------------------
+
+# Workspace 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+rm(list=ls()); gc()
+set.seed(123)
+
+# Libraries
+library(dplyr)
+library(tidyr)
+library(sf)
+library(lubridate)
+library(stringr)
+library(pROC)
+library(ggplot2)
+library(readr)
+library(terra)
+
+
+## Load reference data ---------------------------------------------------------
+
+gbif <- read.csv("WI_GBIF/GBIF_clean.csv")
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+
+# Create periods template
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
+
+
+## Set species -----------------------------------------------------------------
+
+target_species <- "Acinonyx jubatus"
+file_species <- gsub(" ", "_", target_species)
+
+
+## Load species data -----------------------------------------------------------
+
+# Predictions 
+file_path <- "Model outputs/"
+file_name <- paste0(file_path, file_species, "/", file_species, "_modelout.csv")
+df_occ <- read.csv(file_name)
+
+# GBIF
+gbif_species <- gbif %>%
+  filter(verbatimsciname == target_species) %>%
+  filter(!flags %in% c("UNCERTAINTY_OVER_25KM")) %>% 
+  filter(!is.na(latitude) & !is.na(longitude))
+
+
+## Prepare occupancy grid and merge with coordinates -----------------------------
+
+# Assign cell_IDs to model outputs
+occ_vect <- vect(df_occ, geom = c("x", "y"), crs = crs(ref))
+cell_values <- terra::extract(ref, occ_vect)
+df_occ$cell_ID <- cell_values[, 2]
+
+# Assign years to model outputs 
+df_occ <- df_occ %>% 
+  left_join(periods %>% dplyr::select(period_counter, year), by = c("period" = "period_counter"))
+
+# Extract coordinates as matrix for terra
+gbif_sf <- st_as_sf(gbif_species, coords = c("longitude", "latitude"), crs = 4326)
+gbif_sf <- st_transform(gbif_sf, crs(ref))
+gbif_coords <- st_coordinates(gbif_sf)
+
+# Compute bounding box of GBIF points in projected meters
+gbif_bbox <- ext(cbind(gbif_coords))
+buffer <- 10000 #10km buffer
+ref_crop <- crop(ref, gbif_bbox + buffer)
+
+# Assign raster cell_ID to GBIF points
+gbif_cell <- terra::extract(ref_crop, gbif_coords)
+gbif_sf$cell_ID <- gbif_cell[,1] 
+gbif_sf <- gbif_sf %>% filter(!is.na(cell_ID))
+
+# Aggregate GBIF counts per cell and year
+gbif_counts <- gbif_sf %>%
+  st_drop_geometry() %>%
+  group_by(cell_ID, year) %>%
+  summarise(gbif_count = n(), .groups = "drop")
+
+# Join with predicted occupancy
+df_occ_with_gbif <- df_occ %>%
+  left_join(gbif_counts, by = c("cell_ID", "year")) %>%
+  mutate(gbif_count = ifelse(is.na(gbif_count), 0, gbif_count))
+
+
+## Visualizations & checks  ----------------------------------------------------
+
+# Plot mean occ per year by total GBIF per year --------------------------------
+
+yearly_summary <- df_occ_with_gbif %>%
+  group_by(year) %>%
+  summarise(mean_pred_occ = mean(mean_occ, na.rm = TRUE),
+            mean_gbif_count = mean(gbif_count, na.rm = TRUE),
+            total_gbif_count = sum(gbif_count, na.rm = TRUE),
+            n_cells = n_distinct(cell_ID)) %>%
+  ungroup()
+
+yearly_long <- yearly_summary %>%
+  select(year, mean_pred_occ, total_gbif_count) %>%
+  pivot_longer(cols = -year, names_to = "metric", values_to = "value") %>% 
+  mutate(metric = recode(metric,
+                         mean_pred_occ = "Predicted occupancy",
+                         total_gbif_count = "GBIF records"))
+
+(valuePlot <- ggplot(yearly_long, aes(x = year, y = value)) +
+  geom_line(aes(color = metric), size = 1.2) +
+  geom_point(aes(color = metric), size = 2) +
+  facet_wrap(~metric, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("Predicted occupancy" = "#0072B2", "GBIF records" = "#D55E00")) +
+  labs(x = "Year",
+       y = "Value",
+       title = "Temporal occupancy & detection dynamics",
+       color = "") +
+  theme_minimal(base_size = 13) + 
+  theme(legend.position = "none"))
+
+file_name <- paste(file_path, file_species, "/", file_species, "_OMvsGBIF.jpg", sep="")
+ggsave(filename = file_name, plot = valuePlot, width = 7, height = 5, units = "in", bg = "white")
+
+
+# Group by year to compute summary metrics -------------------------------------
+
+year_summary <- df_occ_with_gbif %>%
+  group_by(year) %>%
+  summarise(mean_occ_detected = mean(mean_occ[gbif_count > 0], na.rm = TRUE),
+            mean_occ_not_detected = mean(mean_occ[gbif_count == 0], na.rm = TRUE),
+            cor_occ_gbif = cor(mean_occ, gbif_count, method = "spearman", use = "pairwise"))
+
+(corrPlot <- ggplot(year_summary, aes(x = year, y = cor_occ_gbif)) +
+  geom_line(color = "darkblue") +
+  geom_point(color = "darkblue") +
+  theme_minimal() +
+  labs(title = "Correlation between OM and GBIF over time",
+       x = "Year",
+       y = "Correlation (occupancy prediction ~ GBIF count)"))
+
+file_name <- paste(file_path, file_species, "/", file_species, "_corrPlot.jpg", sep="")
+ggsave(filename = file_name, plot = corrPlot, width = 7, height = 5, units = "in", bg = "white")
+
+
+# Compute AUC and TSS metrics --------------------------------------------------
+
+# AUC tells you if sites with higher predicted occupancy truly tend to have GBIF detections (want >0.8)
+# TSS tells you whether, at a certain occupancy threshold, your model accurately predicts presence vs absence relative to GBIF data (want >0.5)
+
+# Create presence/absence variable for GBIF
+df_occ_with_gbif <- df_occ_with_gbif %>%
+  mutate(GBIF_presence = as.integer(gbif_count > 0))
+
+# Function to compute AUC and TSS per year
+get_accuracy_metrics <- function(df, threshold = 0.5) {
+  # If only one class present, metrics are undefined
+  if (length(unique(df$GBIF_presence)) < 2) {
+    return(data.frame(AUC = NA, TSS = NA))
+  }
+  
+  # Calculate AUC
+  roc_obj <- pROC::roc(df$GBIF_presence, df$mean_occ, quiet = TRUE)
+  auc_val <- pROC::auc(roc_obj)
+  
+  # Threshold predicted occupancy to get binary prediction
+  df <- df %>%
+    mutate(pred_presence = ifelse(mean_occ >= threshold, 1, 0))
+  
+  # Confusion matrix, ensuring all combinations exist
+  conf <- table(factor(df$GBIF_presence, levels = c(0, 1)),
+                factor(df$pred_presence, levels = c(0, 1)))
+  
+  # Extract counts safely
+  TP <- conf["1", "1"]
+  TN <- conf["0", "0"]
+  FP <- conf["0", "1"]
+  FN <- conf["1", "0"]
+  
+  # Calculate sensitivity and specificity
+  sensitivity <- ifelse((TP + FN) == 0, NA, TP / (TP + FN))
+  specificity <- ifelse((TN + FP) == 0, NA, TN / (TN + FP))
+  
+  # True Skill Statistic
+  tss_val <- sensitivity + specificity - 1
+  
+  data.frame(AUC = as.numeric(auc_val), TSS = tss_val)
+}
+
+# Apply by year
+year_metrics <- df_occ_with_gbif %>%
+  group_by(year) %>%
+  do(get_accuracy_metrics(.)) %>%
+  ungroup()
+
+year_metrics_long <- year_metrics %>%
+  tidyr::pivot_longer(cols = c(AUC, TSS), names_to = "Metric", values_to = "Value")
+
+(AUC_TSS <- ggplot(year_metrics_long, aes(x = year, y = Value, color = Metric)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  # Reference lines for "good" discrimination
+  geom_hline(data = data.frame(Metric = c("AUC", "TSS"), yint = c(0.8, 0.5)),
+             aes(yintercept = yint, color = Metric),
+             linetype = "dashed", alpha = 0.5, show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "Temporal stability of OM accuracy vs GBIF detections",
+       x = "Year",
+       y = "Accuracy metric value",
+       color = "Metric") +
+  scale_color_manual(values = c("AUC" = "darkblue", "TSS" = "firebrick")))
+
+file_name <- paste(file_path, file_species, "/", file_species, "_AUC_TSS.jpg", sep="")
+ggsave(filename = file_name, plot = AUC_TSS, width = 7, height = 5, units = "in", bg = "white")
+
+# Temporal trends in occupancy model accuracy compared to GBIF detections. The plot shows annual values of two accuracy metrics: the Area Under the Receiver Operating Characteristic Curve (AUC; dark blue) and the True Skill Statistic (TSS; firebrick). Dashed horizontal lines indicate commonly used thresholds for “good” model discrimination (AUC = 0.8; TSS = 0.5). Points and lines represent yearly estimates, highlighting the temporal stability of the occupancy model’s ability to discriminate between sites with and without GBIF-recorded species presence.
+
+
+## FIX EVERYTHING BELOW ---- 
+
+## spatial map of per cell accuracy 
+
+# Ensure GBIF presence variable
+df_occ_with_gbif <- df_occ_with_gbif %>%
+  mutate(GBIF_presence = as.integer(gbif_count > 0))
+
+# Per-cell summary statistics
+cell_accuracy <- df_occ_with_gbif %>%
+  group_by(cell_ID) %>%
+  summarise(
+    n_years = n(),
+    mean_occ_val = mean(mean_occ, na.rm = TRUE),
+    mean_gbif_val = mean(GBIF_presence, na.rm = TRUE),
+    corr = cor(mean_occ, GBIF_presence, use = "pairwise.complete.obs"),
+    diff = mean(mean_occ - GBIF_presence, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+head(cell_accuracy)
+
+# Load your reference raster
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+
+# Create a lookup table as a dataframe (needed for joining)
+ref_df <- as.data.frame(ref, xy = TRUE)
+colnames(ref_df) <- c("x", "y", "cell_ID")
+
+# Merge accuracy metrics with raster cell IDs
+spatial_acc_df <- ref_df %>%
+  left_join(cell_accuracy, by = "cell_ID")
+
+# Convert back to a SpatRaster
+r_acc <- rast(spatial_acc_df, type = "xyz", crs = crs(ref))
+names(r_acc) <- "corr"
+
+# Write raster to file (optional)
+#writeRaster(r_acc, "outputs/spatial_accuracy_corr.tif", overwrite = TRUE)
+
+library(ggplot2)
+library(terra)
+
+# Convert raster to data frame for plotting
+r_df <- as.data.frame(r_acc, xy = TRUE)
+
+ggplot(r_df, aes(x = x, y = y, fill = corr)) +
+  geom_raster() +
+  scale_fill_gradient2(
+    low = "firebrick", mid = "white", high = "darkgreen",
+    midpoint = 0, na.value = "grey80"
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Spatial correlation between predicted occupancy and GBIF presence",
+    fill = "Correlation (r)"
+  )
+
+# by year 
+years <- sort(unique(df_occ_with_gbif$year))
+
+r_list <- list()
+
+for (yr in years) {
+  temp <- df_occ_with_gbif %>%
+    filter(year == yr) %>%
+    group_by(cell_ID) %>%
+    summarise(mean_occ = mean(mean_occ), mean_gbif = mean(GBIF_presence)) %>%
+    mutate(diff = mean_occ - mean_gbif)
+  
+  spatial_acc_df <- ref_df %>%
+    left_join(temp, by = "cell_ID")
+  
+  r_list[[as.character(yr)]] <- rast(spatial_acc_df, type = "xyz", crs = crs(ref))
+}
+
+# Stack all yearly maps
+r_stack <- rast(r_list)
+names(r_stack) <- paste0("Year_", years)
+
+# Optional: write to disk
+writeRaster(r_stack, "outputs/spatial_accuracy_by_year.tif", overwrite = TRUE)
+
+plot(r_stack[["Year_2010"]], main = "Occupancy – GBIF difference (2010)")
