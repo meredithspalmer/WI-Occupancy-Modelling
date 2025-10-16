@@ -46,7 +46,7 @@ periods$period_counter <- 1:nrow(periods)
 
 ## Set species -----------------------------------------------------------------
 
-target_species <- "Acinonyx jubatus"
+target_species <- "Melursus ursinus"
 file_species <- gsub(" ", "_", target_species)
 
 
@@ -145,13 +145,30 @@ year_summary <- df_occ_with_gbif %>%
             mean_occ_not_detected = mean(mean_occ[gbif_count == 0], na.rm = TRUE),
             cor_occ_gbif = cor(mean_occ, gbif_count, method = "spearman", use = "pairwise"))
 
-(corrPlot <- ggplot(year_summary, aes(x = year, y = cor_occ_gbif)) +
-  geom_line(color = "darkblue") +
-  geom_point(color = "darkblue") +
-  theme_minimal() +
-  labs(title = "Correlation between OM and GBIF over time",
-       x = "Year",
-       y = "Correlation (occupancy prediction ~ GBIF count)"))
+year_summary <- df_occ_with_gbif %>%
+  group_by(year) %>%
+  summarise(
+    mean_occ_detected = mean(mean_occ[gbif_count > 0], na.rm = TRUE),
+    mean_occ_not_detected = mean(mean_occ[gbif_count == 0], na.rm = TRUE),
+    cor_occ_gbif = {
+      # check for sufficient variation before computing correlation
+      if (length(unique(mean_occ)) > 1 && length(unique(gbif_count)) > 1) {
+        cor(mean_occ, gbif_count, method = "spearman", use = "pairwise.complete.obs")
+      } else {
+        NA_real_
+      }
+    },
+    .groups = "drop")
+
+(corrPlot <- year_summary %>%
+    filter(!is.na(cor_occ_gbif)) %>%
+    ggplot(aes(x = year, y = cor_occ_gbif)) +
+    geom_line(color = "darkblue") +
+    geom_point(color = "darkblue") +
+    theme_minimal() +
+    labs(title = "Correlation between OM and GBIF over time",
+         x = "Year",
+         y = "Correlation (occupancy prediction ~ GBIF count)"))
 
 file_name <- paste(file_path, file_species, "/", file_species, "_corrPlot.jpg", sep="")
 ggsave(filename = file_name, plot = corrPlot, width = 7, height = 5, units = "in", bg = "white")
@@ -210,24 +227,26 @@ year_metrics <- df_occ_with_gbif %>%
 year_metrics_long <- year_metrics %>%
   tidyr::pivot_longer(cols = c(AUC, TSS), names_to = "Metric", values_to = "Value")
 
-(AUC_TSS <- ggplot(year_metrics_long, aes(x = year, y = Value, color = Metric)) +
-  geom_line(size = 1.2) +
-  geom_point(size = 2) +
-  # Reference lines for "good" discrimination
-  geom_hline(data = data.frame(Metric = c("AUC", "TSS"), yint = c(0.8, 0.5)),
-             aes(yintercept = yint, color = Metric),
-             linetype = "dashed", alpha = 0.5, show.legend = FALSE) +
-  theme_minimal() +
-  labs(title = "Temporal stability of OM accuracy vs GBIF detections",
-       x = "Year",
-       y = "Accuracy metric value",
-       color = "Metric") +
-  scale_color_manual(values = c("AUC" = "darkblue", "TSS" = "firebrick")))
+(AUC_TSS <- year_metrics_long %>%
+    filter(!is.na(Value)) %>%
+    ggplot(aes(x = year, y = Value, color = Metric)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 2) +
+    geom_hline(data = data.frame(Metric = c("AUC", "TSS"), yint = c(0.8, 0.5)),
+               aes(yintercept = yint, color = Metric),
+               linetype = "dashed", alpha = 0.5, show.legend = FALSE) +
+    theme_minimal() +
+    labs(title = "Temporal stability of OM accuracy vs GBIF detections",
+         x = "Year",
+         y = "Accuracy metric value",
+         color = "Metric") +
+    scale_color_manual(values = c("AUC" = "darkblue", "TSS" = "firebrick")))
 
 file_name <- paste(file_path, file_species, "/", file_species, "_AUC_TSS.jpg", sep="")
 ggsave(filename = file_name, plot = AUC_TSS, width = 7, height = 5, units = "in", bg = "white")
 
 # Temporal trends in occupancy model accuracy compared to GBIF detections. The plot shows annual values of two accuracy metrics: the Area Under the Receiver Operating Characteristic Curve (AUC; dark blue) and the True Skill Statistic (TSS; firebrick). Dashed horizontal lines indicate commonly used thresholds for “good” model discrimination (AUC = 0.8; TSS = 0.5). Points and lines represent yearly estimates, highlighting the temporal stability of the occupancy model’s ability to discriminate between sites with and without GBIF-recorded species presence.
+
 
 
 ## FIX EVERYTHING BELOW ---- 
