@@ -1,3 +1,192 @@
+v2
+
+###############################
+## GBIF vs. WI OM comparison ##
+###############################
+
+## Set workspace --------------------------------------------------------------
+
+# Workspace 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+rm(list=ls()); gc()
+set.seed(123)
+
+# Libraries
+library(dplyr)
+library(tidyr)
+library(sf)
+library(lubridate)
+library(stringr)
+library(pROC)
+library(ggplot2)
+library(readr)
+library(terra)
+library(sf)
+library(FNN)   
+
+
+## Load reference data ---------------------------------------------------------
+
+gbif <- read.csv("WI_GBIF/GBIF_clean.csv")
+ref <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+
+
+## Create periods template -----------------------------------------------------
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
+
+
+## Set species -----------------------------------------------------------------
+
+target_species <- "Melursus ursinus"
+file_species <- gsub(" ", "_", target_species)
+
+
+## Load species data -----------------------------------------------------------
+
+# Predictions 
+file_path <- "Model outputs/"
+file_name <- paste0(file_path, file_species, "/", file_species, "_modelout.csv")
+df_occ <- read.csv(file_name)
+
+# GBIF
+gbif_species <- gbif %>%
+  filter(verbatimsciname == target_species) %>%
+  filter(!flags %in% c("UNCERTAINTY_OVER_25KM")) %>% 
+  filter(!is.na(latitude) & !is.na(longitude))
+
+
+## Prepare data ----------------------------------------------------------------
+
+# Harmonize period labels
+df_occ <- df_occ %>%
+  mutate(period = ifelse(grepl("^Period_", period), period, paste0("Period_", period)))
+
+periods_year <- periods %>%
+  group_by(year) %>%
+  summarise(period = max(period)) %>%
+  mutate(period = ifelse(grepl("^Period_", period), period, paste0("Period_", period)))
+
+# Match GBIF years to model periods
+gbif_periods <- gbif_species %>%
+  left_join(periods_year, by = "year") %>%
+  filter(!is.na(period))
+
+# Reproject GBIF points 
+gbif_sf <- st_as_sf(gbif_periods, coords = c("longitude", "latitude"), crs = 4326)
+gbif_proj <- st_transform(gbif_sf, 6933)
+
+# Create SF object from model predictions 
+occ_sf <- st_as_sf(df_occ, coords = c("x", "y"), crs = 6933)
+
+## Nearest-neighbor match ------------------------------------------------------
+# -> Between GBIF points and occupancy centroids by period 
+
+occ_extracted_list <- list()
+
+for (p in unique(gbif_proj$period)) {
+  gbif_p <- gbif_proj %>% filter(period == p)
+  occ_p  <- df_occ %>% filter(period == p)
+  
+  if (nrow(gbif_p) == 0 | nrow(occ_p) == 0) next
+  
+  # Nearest neighbor mapping
+  nn <- get.knnx(occ_p[, c("x", "y")], st_coordinates(gbif_p), k = 1)
+  gbif_p$mean_occ <- occ_p$mean_occ[nn$nn.index[, 1]]
+  gbif_p$dist_m   <- nn$nn.dist[, 1]
+  
+  occ_extracted_list[[p]] <- gbif_p
+}
+
+# Combine all periods
+occ_extracted <- do.call(rbind, occ_extracted_list)
+
+# Keep only plausible matches (e.g. within 10 km radius)
+occ_extracted <- occ_extracted %>%
+  filter(dist_m <= 10000) %>%
+  st_drop_geometry()
+
+summary(occ_extracted$mean_occ)
+cat("✅ Extracted occupancy values for", nrow(occ_extracted), "GBIF records\n")
+
+
+## Visualizations --------------------------------------------------------------
+
+## Distribution of predicted occupancy values at GBIF presence locations
+#Histogram showing the frequency distribution of predicted occupancy probabilities (mean_occ) extracted from species distribution models at the locations of GBIF sighting records. The overlaid kernel density curve indicates the relative likelihood of GBIF presences occurring across the modeled occupancy gradient. Higher values correspond to grid cells predicted to have greater occupancy probability, reflecting stronger model support for species presence.
+
+ggplot(occ_extracted, aes(x = mean_occ)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "steelblue", alpha = 0.6) +
+  geom_density(color = "darkred", size = 1) +
+  theme_minimal() +
+  labs(title = "Distribution of Predicted Occupancy at GBIF Presence Locations",
+       x = "Predicted occupancy", 
+       y = "Density")
+
+
+## Yearly variation in predicted occupancy values at GBIF presence locations.
+#Boxplots summarizing predicted occupancy for GBIF records by year of observation. Each box represents the interquartile range of occupancy predictions across all GBIF presences recorded in a given year, with the median shown as a horizontal line. The distribution of values across years provides a temporal perspective on how well field detections align with spatial predictions through time, potentially reflecting environmental change, sampling bias, or model stability.
+
+ggplot(occ_extracted, aes(x = factor(year), y = mean_occ)) +
+  geom_boxplot(fill = "tan", color = "black", outlier.alpha = 0.3) +
+  theme_minimal() +
+  labs(title = "Predicted Occupancy by Year at GBIF Presence Locations",
+       x = "Year",
+       y = "Predicted occupancy (mean_occ)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+## Density or quantile comparison
+# Plot kernel density estimates for: 
+#    All modeled grid cells (df_occ$mean_occ), and
+#    GBIF presence cells (occ_extracted$mean_occ)
+# If GBIF presences cluster at higher predicted values, the presence curve should be shifted to the right
+
+ggplot() +
+  geom_density(data = df_occ, aes(mean_occ), color = "gray", size = 1, alpha = 0.5) +
+  geom_density(data = occ_extracted, aes(mean_occ), color = "darkred", size = 1) +
+  theme_minimal() +
+  labs(title = "Occupancy density: model domain vs. GBIF presences",
+       x = "Predicted occupancy", y = "Density",
+       caption = "Gray = all modeled cells; Red = GBIF presences")
+
+
+## Stats and summaries ---------------------------------------------------------
+
+## Correlation between the annual mean occupancy at GBIF points and year 
+#  Tests whether GBIF detections over time tend to shift toward higher/lower occupancy regions (e.g., sampling bias, habitat change, or range dynamics)
+
+cor.test(occ_summary$year, occ_summary$mean_occ, method = "spearman")
+
+
+## Data summarized by year 
+
+occ_summary <- occ_extracted %>%
+  group_by(year) %>%
+  summarise(
+    mean_occ = mean(mean_occ, na.rm = TRUE),
+    sd_occ   = sd(mean_occ, na.rm = TRUE),
+    n        = n()
+  )
+print(occ_summary)
+
+
+
+v1
+
 ###############################
 ## GBIF vs. WI OM comparison ##
 ###############################
