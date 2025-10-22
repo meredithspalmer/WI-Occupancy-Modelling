@@ -51,7 +51,7 @@ periods$period_counter <- 1:nrow(periods)
 
 ## Set species -----------------------------------------------------------------
 
-target_species <- "Melursus ursinus"
+target_species <- "Sus scrofa"
 file_species <- gsub(" ", "_", target_species)
 
 
@@ -128,40 +128,58 @@ cat("✅ Extracted occupancy values for", nrow(occ_extracted), "GBIF records\n")
 ## Distribution of predicted occupancy values at GBIF presence locations
 #Histogram showing the frequency distribution of predicted occupancy probabilities (mean_occ) extracted from species distribution models at the locations of GBIF sighting records. The overlaid kernel density curve indicates the relative likelihood of GBIF presences occurring across the modeled occupancy gradient. Higher values correspond to grid cells predicted to have greater occupancy probability, reflecting stronger model support for species presence.
 
-ggplot(occ_extracted, aes(x = mean_occ)) +
+(p1 <- ggplot(occ_extracted, aes(x = mean_occ)) +
   geom_histogram(aes(y = ..density..), bins = 30, fill = "steelblue", alpha = 0.6) +
   geom_density(color = "darkred", size = 1) +
   theme_minimal() +
-  labs(title = "Distribution of Predicted Occupancy at GBIF Presence Locations",
+  labs(title = "Predicted occupancy at GBIF presence locations",
        x = "Predicted occupancy", 
-       y = "Density")
+       y = "Density"))
+
+file_name <- paste(file_path, file_species, "/", file_species, "_freqDistr.jpg", sep="")
+ggsave(filename = file_name, plot = p1, width = 7, height = 5, units = "in", bg = "white")
 
 
-## Yearly variation in predicted occupancy values at GBIF presence locations.
+## Yearly variation in predicted occupancy values at GBIF presence locations  
 #Boxplots summarizing predicted occupancy for GBIF records by year of observation. Each box represents the interquartile range of occupancy predictions across all GBIF presences recorded in a given year, with the median shown as a horizontal line. The distribution of values across years provides a temporal perspective on how well field detections align with spatial predictions through time, potentially reflecting environmental change, sampling bias, or model stability.
 
-ggplot(occ_extracted, aes(x = factor(year), y = mean_occ)) +
+(p2 <- ggplot(occ_extracted, aes(x = factor(year), y = mean_occ)) +
   geom_boxplot(fill = "tan", color = "black", outlier.alpha = 0.3) +
   theme_minimal() +
-  labs(title = "Predicted Occupancy by Year at GBIF Presence Locations",
+  labs(title = "Annual predicted occupancy at GBIF presence locations",
        x = "Year",
-       y = "Predicted occupancy (mean_occ)") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+       y = "Predicted occupancy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+
+file_name <- paste(file_path, file_species, "/", file_species, "_occAtGBIF.jpg", sep="")
+ggsave(filename = file_name, plot = p2, width = 7, height = 5, units = "in", bg = "white")
 
 
-## Density or quantile comparison
+## Density or quantile comparison with KS test 
 # Plot kernel density estimates for: 
 #    All modeled grid cells (df_occ$mean_occ), and
 #    GBIF presence cells (occ_extracted$mean_occ)
 # If GBIF presences cluster at higher predicted values, the presence curve should be shifted to the right
+# KS D measures the maximum difference between the two distributions.
+#    p < 0.05 → distributions differ significantly (GBIF presences are not drawn from the same predicted occupancy distribution as random model cells).
 
-ggplot() +
+ks_res <- ks.test(df_occ$mean_occ, occ_extracted$mean_occ)
+ks_D <- round(ks_res$statistic, 3)
+ks_p <- signif(ks_res$p.value, 3)
+
+## Comparison of predicted occupancy distributions between the full model domain and GBIF presence locations.
+#Kernel density curves illustrate the distribution of predicted occupancy probabilities across all modeled grid cells (gray) and at locations of GBIF detections (red). A rightward shift of the red curve indicates that GBIF presences occur preferentially in areas predicted to have higher occupancy probabilities. The two distributions were compared using a Kolmogorov–Smirnov (KS) test (D = [insert D value], p = [insert p value]), which quantifies the maximum difference between their cumulative distributions. A significant result indicates that GBIF presences are not randomly distributed with respect to model-predicted occupancy, but are biased toward regions of higher predicted suitability.
+(p3 <- ggplot() +
   geom_density(data = df_occ, aes(mean_occ), color = "gray", size = 1, alpha = 0.5) +
   geom_density(data = occ_extracted, aes(mean_occ), color = "darkred", size = 1) +
   theme_minimal() +
-  labs(title = "Occupancy density: model domain vs. GBIF presences",
-       x = "Predicted occupancy", y = "Density",
-       caption = "Gray = all modeled cells; Red = GBIF presences")
+  labs(
+    title = "Occupancy density: model domain vs. GBIF presences",
+    x = "Predicted occupancy",
+    y = "Density",
+    caption = paste0("Gray = all modeled cells; Red = GBIF presences\n",
+                     "KS D = ", ks_D, ", p = ", ks_p)) +
+  theme(plot.caption = element_text(hjust = 0.5)))
 
 
 ## Stats and summaries ---------------------------------------------------------
@@ -169,19 +187,8 @@ ggplot() +
 ## Correlation between the annual mean occupancy at GBIF points and year 
 #  Tests whether GBIF detections over time tend to shift toward higher/lower occupancy regions (e.g., sampling bias, habitat change, or range dynamics)
 
-cor.test(occ_summary$year, occ_summary$mean_occ, method = "spearman")
+#cor.test(occ_summary$year, occ_summary$mean_occ, method = "spearman")
 
-
-## Data summarized by year 
-
-occ_summary <- occ_extracted %>%
-  group_by(year) %>%
-  summarise(
-    mean_occ = mean(mean_occ, na.rm = TRUE),
-    sd_occ   = sd(mean_occ, na.rm = TRUE),
-    n        = n()
-  )
-print(occ_summary)
 
 
 
