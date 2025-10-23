@@ -5,7 +5,7 @@
 
 # Set working directory
 #setwd("/Users/meredithspalmer/Desktop/Work/Yale/Data/Wildlife Insights/Data")
-setwd("~/project/WI_2024/Wildlife Insights Data_2024")
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 rm(list=ls()); gc()
 
 # Load libraries
@@ -14,9 +14,13 @@ library(arrow)
 library(tidyverse)
 
 # Load data 
-template <- rast(x = "raster_100km2_with_cellID.tif")
-overview_seq <- open_dataset("sequences_updated_20240710_parquet")
-overview_images <- open_dataset("images_updated_20240714_parquet")
+#template <- rast(x = "raster_100km2_with_cellID.tif")
+template <- rast("Raw spatial layers/Global_1km_CEA_reference_raster.tif")
+template$cell_ID <- 1:ncell(template)
+writeRaster(template, "Raw spatial layers/raster_1km2_with_cellID.tif")
+
+overview_seq <- read.csv("WI data/sequences_updated_20240710.csv")
+overview_images <- read.csv("WI data/images_updated_20240714.csv")
 
 # Unique proj_depl locations
 loc_seq <- overview_seq |>
@@ -65,6 +69,6 @@ head(loc_cell_ID)
 sum(missing %in% unique(loc_cell_ID$proj_depl)) / length(missing) 
 
 # save
-write_csv(x = loc_cell_ID, file = "WI_loc_matching_cell_ID.csv")
+write.csv(loc_cell_ID, "WI data/WI_loc_matching_cell_ID_1km2.csv", row.names = F, overwrite = T)
 
 # DONE!
