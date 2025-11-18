@@ -27,12 +27,12 @@ species_groups <- list(
   Rhinos = c("Ceratotherium simum", "Diceros bicornis"),
   Primates = c("Pan troglodytes", "Gorilla beringei", "Gorilla gorilla", 
                "Pongo pygmaeus"),
-  Canids = c("Canis lupus", "Lycaon pictus", "Vulpes vulpes"), #Canis latrans, Urocyon cinereoargenteus are running 
+  Canids = c("Canis lupus", "Lycaon pictus", "Vulpes vulpes", "Canis latrans", "Urocyon cinereoargenteus"), 
   Ungulates = c("Antilocapra americana", "Odocoileus hemionus", "Odocoileus virginianus",
                 "Dicotyles tajacu", "Tayassu pecari", "Sus scrofa"), 
   Marsupials = c("Notamacropus rufogriseus", "Trichosurus vulpecula", "Macropus giganteus"), 
   SmallMammals = c("Sciurus carolinensis", "Sciurus griseus", "Cuniculus paca", 
-                   "Otospermophilus beecheyi", "Dasyprocta punctata") #Procyon lotor is running 
+                   "Otospermophilus beecheyi", "Dasyprocta punctata", "Procyon lotor")
 )
 
 # Covariate labels (anthropogenic + trend)
@@ -113,7 +113,6 @@ extract_beta_summary <- function(out, species_name) {
   return(summary_df)
 }
 
-
 ## Loop through groups --------------------------------------------------------
 for (group_name in names(species_groups)) {
   species_list <- species_groups[[group_name]]
@@ -178,15 +177,52 @@ for (group_name in names(species_groups)) {
   
   # Temporal trend plot
   if ("Trend (time)" %in% plot_df$variable) {
-    (plot_time <- plot_df %>%
-       filter(variable == "Trend (time)") %>%
-       ggplot(aes(x = covariate, y = mean, color = species)) +
-       geom_line(linewidth = 1) +
-       geom_ribbon(aes(ymin = low, ymax = high, fill = species), alpha = 0.1, color = NA) +
-       labs(title = paste("Occupancy trends over time:", group_name),
-            x = "Time", y = "Occupancy probability") +
-       theme_minimal(base_size = 12) +
-       theme(legend.position = "bottom"))
+    
+    period_dates <- periods %>%
+      mutate(month = case_when(
+        season == "Winter" ~ 1,
+        season == "Spring" ~ 4,
+        season == "Summer" ~ 7,
+        season == "Fall"   ~ 10),
+        period_date = ymd(paste(year, month, "01", sep = "-")),
+        label_year = ifelse(month == 4, as.character(year), ""))
+    
+    time_plot <- plot_df %>%
+      filter(variable == "Trend (time)") %>%
+      mutate(period_counter = as.integer(round(covariate))) %>%
+      left_join(period_dates, by = "period_counter")
+    
+    # build axis info
+    axis_df <- time_plot %>%
+      group_by(period_counter) %>%
+      summarise(covariate  = first(covariate),  
+                label_year = first(label_year),  
+                .groups = "drop") %>%
+      arrange(covariate)
+    breaks_x <- axis_df$covariate
+    
+    # fix labels 
+    labels_x <- rep("", length(breaks_x))
+    year_idx <- which(axis_df$label_year != "")
+    labels_x[year_idx] <- axis_df$label_year[year_idx]
+    grid_positions <- axis_df$covariate[year_idx]
+    
+    (plot_time <- ggplot(time_plot, aes(x = covariate, y = mean, color = species)) +
+        geom_line(linewidth = 1) +
+        geom_ribbon(aes(ymin = low, ymax = high, fill = species),
+                    alpha = 0.1, color = NA) +
+        scale_x_continuous(breaks = breaks_x,
+                           labels = labels_x) +
+        theme_minimal(base_size = 12) +
+        theme(legend.position = "bottom",
+              panel.grid.major.x = element_blank(),
+              panel.grid.minor.x = element_blank()) +
+        geom_vline(xintercept = grid_positions,
+                   color = "grey85",
+                   linewidth = 0.4) +
+        labs(title = paste("Occupancy trends over time:", group_name),
+             x = "Time",
+             y = "Occupancy probability"))
     
     ggsave(paste0("Model outputs/", group_name, "_trendPlot.jpg"),
            plot_time, width = 6, height = 5, units = "in", bg = "white")
