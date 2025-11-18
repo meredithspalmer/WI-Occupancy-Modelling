@@ -192,36 +192,41 @@ for (group_name in names(species_groups)) {
       mutate(period_counter = as.integer(round(covariate))) %>%
       left_join(period_dates, by = "period_counter")
     
-    # build axis info
-    axis_df <- time_plot %>%
-      group_by(period_counter) %>%
-      summarise(covariate  = first(covariate),  
-                label_year = first(label_year),  
-                .groups = "drop") %>%
-      arrange(covariate)
-    breaks_x <- axis_df$covariate
+    time_plot_clean <- time_plot %>%
+      filter(!is.na(period_date))   # keep only periods with a date
     
-    # fix labels 
+    axis_df <- time_plot_clean %>%
+      group_by(period_counter) %>%
+      summarise(
+        covariate  = first(covariate),
+        label_year = first(label_year),
+        .groups = "drop"
+      ) %>%
+      arrange(covariate)
+    
+    breaks_x <- axis_df$covariate
     labels_x <- rep("", length(breaks_x))
     year_idx <- which(axis_df$label_year != "")
     labels_x[year_idx] <- axis_df$label_year[year_idx]
+    
     grid_positions <- axis_df$covariate[year_idx]
     
-    (plot_time <- ggplot(time_plot, aes(x = covariate, y = mean, color = species)) +
+    (plot_time <- ggplot(time_plot_clean,
+                         aes(x = covariate, y = mean, color = species)) +
         geom_line(linewidth = 1) +
         geom_ribbon(aes(ymin = low, ymax = high, fill = species),
                     alpha = 0.1, color = NA) +
         scale_x_continuous(breaks = breaks_x,
-                           labels = labels_x) +
+                           labels = labels_x,
+                           expand = expansion(mult = c(0, 0))) +
         theme_minimal(base_size = 12) +
-        theme(legend.position = "bottom",
+        theme(legend.position    = "bottom",
               panel.grid.major.x = element_blank(),
               panel.grid.minor.x = element_blank()) +
         geom_vline(xintercept = grid_positions,
-                   color = "grey85",
-                   linewidth = 0.4) +
+                   color = "grey85", linewidth = 0.4) +
         labs(title = paste("Occupancy trends over time:", group_name),
-             x = "Time",
+             x = "",
              y = "Occupancy probability"))
     
     ggsave(paste0("Model outputs/", group_name, "_trendPlot.jpg"),
