@@ -1,0 +1,43 @@
+## WDPA
+
+years <- 1999:2024
+results_list <- vector("list", length(years))
+
+cell_id_r <- reference_land[["cell_ID"]]   # extract only this layer once
+
+# Pre-extract cell_ID as a vector (VERY fast, avoids repeat work)
+cell_ids <- values(cell_id_r, mat = FALSE)  # a simple numeric vector, length = ncell(reference)
+
+# Loop 
+for (i in seq_along(years)) {
+  # subset WDPA to all PAs that existed by this year
+  yr <- years[i]
+  wdpa_yr <- wdpa %>% filter(STATUS_YR <= yr)
+  
+  if (nrow(wdpa_yr) == 0) {
+    # If no PAs present yet, just create a vector of all zeros
+    inPA_vec <- rep(0, length(cell_ids))
+    
+  } else {
+    # Rasterize only the PA indicator, single layer
+    r_pa <- rasterize(vect(wdpa_yr), cell_id_r, field = 1, touches = TRUE)
+    
+    # Convert NA (outside PA) to 0
+    r_pa[is.na(r_pa)] <- 0
+    
+    # Extract PA indicator as a vector
+    inPA_vec <- values(r_pa, mat = FALSE)
+  }
+  
+  # Build data frame for year 
+  df <- data.frame(cell_ID = cell_ids, inPA = inPA_vec)
+  results_list[[i]] <- df
+  message("Finished year: ", yr)
+}
+
+results_df <- dplyr::bind_rows(results_list)
+head(results_df); unique(results_df$year)
+
+write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/1x1 km spatial layers/prop_wdpa_1km2.csv", row.names=F)
+
+
