@@ -1,4 +1,6 @@
-## WDPA 
+###################################################
+### Extract WDPA covariates at 1 km² resolution ###
+###################################################
 
 # Working directory 
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
@@ -60,3 +62,5 @@ for (yr in years) {
   message("Finished year ", yr, "  →  peak RAM: ", pryr::mem_used() / 1e9, " GB")
 }
 message("Done! File written to ", out_file)
+
+
