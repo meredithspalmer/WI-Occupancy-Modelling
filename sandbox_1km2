@@ -1,43 +1,62 @@
-## WDPA
+## WDPA 
 
-years <- 1999:2024
-results_list <- vector("list", length(years))
+# Working directory 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+rm(list=ls()); gc()
 
-cell_id_r <- reference_land[["cell_ID"]]   # extract only this layer once
+# Libraries 
+library(terra)
+library(sf)
+library(data.table)  
 
-# Pre-extract cell_ID as a vector (VERY fast, avoids repeat work)
-cell_ids <- values(cell_id_r, mat = FALSE)  # a simple numeric vector, length = ncell(reference)
+# Reference raster (only the cell_ID layer)
+reference_land <- rast("1x1 km spatial layers/reference_land_1km2_cropped.tif")
+cell_id_r <- reference_land[["cell_ID"]]
+
+# Pre-compute the cell_ID vector once 
+cell_ids <- values(cell_id_r, mat = FALSE)
+
+# Load the three WDPA shapefiles 
+shape1 <- st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp", quiet = TRUE)
+shape2 <- st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp", quiet = TRUE)
+shape3 <- st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp", quiet = TRUE)
+
+# Combine 
+wdpa_sf <- rbind(shape1, shape2, shape3)
+rm(shape1, shape2, shape3); gc()
+
+# Convert once to terra and reproject
+wdpa <- vect(wdpa_sf)
+wdpa <- project(wdpa, crs(reference_land))   # correct terra function
+rm(wdpa_sf); gc()
+
+# Output file 
+out_file <- "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/1x1 km spatial layers/inPA_by_year_1km2.csv"
+cat("cell_ID,year,inPA\n", file = out_file)  # header
 
 # Loop 
-for (i in seq_along(years)) {
-  # subset WDPA to all PAs that existed by this year
-  yr <- years[i]
-  wdpa_yr <- wdpa %>% filter(STATUS_YR <= yr)
+years <- 1999:2024
+
+for (yr in years) {
+  wdpa_yr <- wdpa[wdpa$STATUS_YR <= yr, ]   # subset SpatVector → very cheap
   
   if (nrow(wdpa_yr) == 0) {
-    # If no PAs present yet, just create a vector of all zeros
-    inPA_vec <- rep(0, length(cell_ids))
-    
+    inPA_vec <- integer(length(cell_ids))   # all zeros
   } else {
-    # Rasterize only the PA indicator, single layer
-    r_pa <- rasterize(vect(wdpa_yr), cell_id_r, field = 1, touches = TRUE)
-    
-    # Convert NA (outside PA) to 0
-    r_pa[is.na(r_pa)] <- 0
-    
-    # Extract PA indicator as a vector
+    r_pa <- rasterize(wdpa_yr, cell_id_r, field = 1, touches = TRUE, background = 0)
     inPA_vec <- values(r_pa, mat = FALSE)
   }
   
-  # Build data frame for year 
-  df <- data.frame(cell_ID = cell_ids, inPA = inPA_vec)
-  results_list[[i]] <- df
-  message("Finished year: ", yr)
+  # Write this year immediately as one line per cell (data.table is fast)
+  fwrite(
+    data.table(cell_ID = cell_ids, year = yr, inPA = inPA_vec),
+    out_file,
+    append = TRUE,
+    col.names = FALSE
+  )
+  
+  # Clean up and report
+  rm(wdpa_yr, r_pa, inPA_vec); gc()
+  message("Finished year ", yr, "  →  peak RAM: ", pryr::mem_used() / 1e9, " GB")
 }
-
-results_df <- dplyr::bind_rows(results_list)
-head(results_df); unique(results_df$year)
-
-write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/1x1 km spatial layers/prop_wdpa_1km2.csv", row.names=F)
-
-
+message("Done! File written to ", out_file)
