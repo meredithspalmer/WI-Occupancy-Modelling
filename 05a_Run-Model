@@ -158,7 +158,15 @@ precseas <- cov_subset("Covariates for modelling/primary_occ_covariates_precseas
 wdpa <- cov_subset("Covariates for modelling/primary_occ_covariates_WDPA_sites.csv", periods)
 evi <- cov_subset("Covariates for modelling/primary_occ_covariates_EVI_sites.csv", periods) 
 gfc <- cov_subset("Covariates for modelling/primary_occ_covariates_GFC_sites.csv", periods)
-gpw <- cov_subset("Covariates for modelling/primary_occ_covariates_GPW_sites.csv", periods) 
+
+# log-transform 
+gpw <- read.csv("Covariates for modelling/primary_occ_covariates_GPW_sites.csv") %>% 
+  dplyr::select(-any_of("X")) %>% 
+  filter(cell_ID %in% cell_IDs) %>% 
+  arrange(cell_ID)
+gpw <- gpw %>% mutate(across(-cell_ID, log)) #log-transform 
+keep_cols <- intersect(paste0("X", unique(periods$period_counter)), names(gpw))
+gpw <- gpw[, keep_cols] %>% as.matrix()
 
 # Number of deployments 
 ndepl <- matrix(0, nrow = ncell, ncol = nperiod)
