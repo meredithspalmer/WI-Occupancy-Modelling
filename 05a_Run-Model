@@ -147,7 +147,11 @@ static <- read.csv("Covariates for modelling/site_level_covariates_site.csv") %>
   dplyr::select(-c(elevation, cities_md, cities_sm, x, y)) %>% #from Data-Explore code 
   filter(cell_ID %in% cell_IDs) %>% 
   arrange(cell_ID)
-nrow(static) #select out each column want as a vector 
+
+# Log values 
+static$log_road_dist <- log(static$road_dist)
+static$log_river_dist <- log(static$river_dist)
+static$log_coeff_var <- log(static$coeff_var)
 
 
 ## Covariates: primary occasion (dim: ncell x nperiods) -----------------------
