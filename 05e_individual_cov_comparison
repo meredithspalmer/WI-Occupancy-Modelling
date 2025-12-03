@@ -1,0 +1,221 @@
+## Iterate models: trend only + trend + each covariate individually ----------------
+
+library(spOccupancy)
+library(ggplot2)
+library(patchwork)
+
+target_species <- "Tapirus pinchaque"
+species_file   <- gsub(" ", "_", target_species)
+folder <- paste0("Model outputs/", species_file, "/Subsetting")
+if (!dir.exists(folder)) dir.create(folder, recursive = TRUE)
+
+# List of covariates to test individually (excluding trend)
+covariate_names <- c("crop", "gpw", "precseas", "wdpa", "evi", "gfc",
+                     "road_dist", "tri", "river_dist", "coeff_var", "cities_lg")
+log_these <- c("road_dist", "river_dist", "coeff_var")
+
+# Full occupancy formula  
+occ.covs.full <- list(
+  trend          = trend,
+  crop           = crop,
+  gpw            = gpw,
+  precseas       = precseas,
+  wdpa           = wdpa,
+  evi            = evi,
+  gfc            = gfc,
+  tri            = static$tri,
+  cities_lg      = static$cities_lg,
+  log_road_dist  = static$log_road_dist,      
+  log_river_dist = static$log_river_dist,     
+  log_coeff_var  = static$log_coeff_var       
+)
+
+# Detection formula 
+det.formula <- ~ effort + minjul + minjul_sq + ndepl + (1|proj)
+
+# Storage
+results_list <- list()
+plot_list    <- list()
+waic_df      <- data.frame(model = character(), WAIC = numeric(), stringsAsFactors = FALSE)
+
+# Pre-calculate things that don't change
+y_dat       <- yarray
+z.init      <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+dist.data   <- dist(coords)
+mean_dist   <- mean(dist.data)
+max_dist    <- max(dist.data)
+min_dist    <- min(dist.data)
+
+# Priors and tuning (same for all models)
+priors.list <- list(
+  alpha.normal = list(mean = 0, var = 2.72),
+  beta.normal  = list(mean = 0, var = 2.72),
+  sigma.sq.ig  = list(a = 2, b = 0.5),
+  phi.unif     = list(a = 3 / max_dist, b = 3 / min_dist)
+)
+tuning.list <- list(phi = 1, rho = 1)
+
+# MCMC settings
+n.batch     <- 400
+batch.length <- 25
+n.burn      <- 2000
+n.thin      <- 10
+n.report    <- 40
+n.chains    <- 3
+
+# Model set: first trend-only, then trend + each covariate
+model_names <- c("trend_only", paste0("trend_", covariate_names))
+
+# Loop 
+for (model_name in model_names) {
+  
+  cat("============================================================\n")
+  cat("Running model:", model_name, "\n")
+  
+  # Determine which covariates go into occ.covs for THIS model only
+  if (model_name == "trend_only") {
+    occ.covs.list <- list(trend = trend)
+    occ.formula   <- ~ scale(trend)
+    svc.cols      <- 1:2  # intercept + trend
+  } else {
+    cov_base <- sub("trend_", "", model_name)    
+    cov_name_in_data <- if (cov_base %in% log_these) {
+      paste0("log_", cov_base)
+    } else {
+      cov_base
+    }
+    occ.covs.list <- list(trend = occ.covs.full$trend)
+    occ.covs.list[[cov_name_in_data]] <- occ.covs.full[[cov_name_in_data]]
+    occ.formula <- as.formula(sprintf("~ scale(trend) + scale(%s)", cov_name_in_data))
+    svc.cols    <- 1:3
+  }
+  
+  # Full data list for this model only
+  dat_ls <- list(
+    y = yarray,
+    occ.covs = occ.covs.list,
+    det.covs = list(effort = effort,
+                    minjul = minjul,
+                    minjul_sq = minjul_sq,
+                    ndepl = ndepl,
+                    proj = proj),
+    coords = coords
+  )
+  
+  # Initial values (reuse where possible)
+  inits.list <- list(
+    beta = 0,
+    alpha = 0,
+    z = z.init,
+    phi = 3 / mean_dist,
+    sigma.sq = 0.5,
+    w = matrix(0, nrow = nrow(yarray), ncol = length(svc.cols)),
+    sigma.sq.t = 0.5
+  )
+  
+  # ------------------- Run the model -------------------
+  out <- svcTPGOcc(
+    occ.formula = occ.formula,
+    det.formula = det.formula,
+    data = dat_ls,
+    inits = inits.list,
+    n.batch = n.batch,
+    batch.length = batch.length,
+    priors = priors.list,
+    svc.cols = svc.cols,
+    cov.model = "exponential",
+    NNGP = TRUE,
+    n.neighbors = 5,
+    tuning = tuning.list,
+    n.report = n.report,
+    n.burn = n.burn,
+    n.thin = n.thin,
+    n.chains = n.chains,
+    verbose = TRUE,
+    ar1 = TRUE
+  )
+  
+  # ------------------- Save summary -------------------
+  sink(paste0(folder, "/", model_name, "_summary.txt"))
+  print(summary(out))
+  sink()
+  
+  # ------------------- WAIC -------------------
+  waic_val <- as.numeric(waicOcc(out)[3])
+  waic_df <- rbind(waic_df, data.frame(model = model_name, WAIC = waic_val))
+  
+  # ------------------- Plot occurrence coefficients -------------------
+  beta_samps <- out$beta.samples
+  beta_quant <- data.frame(
+    covariate = colnames(beta_samps),
+    mean      = colMeans(beta_samps),
+    t(apply(beta_samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
+  )
+  names(beta_quant)[3:6] <- c("q025", "q25", "q75", "q975")
+  beta_quant <- beta_quant[beta_quant$covariate != "(Intercept)", , drop = FALSE]
+  if (model_name == "trend_only") {
+    beta_quant$cov_name <- "Trend (time)"
+    beta_quant$cov_type <- "Trend"
+  } else {
+    this_cov <- sub("trend_", "", model_name)
+    nice_name <- switch(this_cov,
+                        crop = "Cropland cover",
+                        gpw = "Human population density (log)",
+                        precseas = "Precipitation",
+                        wdpa = "Protected area status",
+                        evi = "Vegetation index (EVI)",
+                        gfc = "Forest cover loss",
+                        road_dist = "Distance to roads (log)",
+                        tri = "Topographic ruggedness",
+                        river_dist = "Distance to rivers (log)",
+                        coeff_var = "Habitat heterogeneity (log)",
+                        cities_lg = "Distance to large cities",
+                        this_cov)  # fallback
+    beta_quant$cov_name <- ifelse(grepl("trend", beta_quant$covariate, ignore.case = TRUE),
+                                  "Trend (year)", nice_name)
+    beta_quant$cov_type <- ifelse(grepl("trend", beta_quant$covariate, ignore.case = TRUE),
+                                  "Trend", "Covariate")
+  }
+  beta_quant$cov_name <- factor(beta_quant$cov_name,
+                                levels = c(setdiff(beta_quant$cov_name, "Trend (time)"), 
+                                           "Trend (time)"))
+  cov_colors <- c("Covariate" = "#E69F00", "Trend"     = "#56B4E9")  
+  
+  p <- ggplot(beta_quant, aes(x = cov_name, y = mean, color = cov_type)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_errorbar(aes(ymin = q025, ymax = q975), 
+                  width = 0, size = 0.9, alpha = 0.8) +
+    geom_errorbar(aes(ymin = q25, ymax = q75), 
+                  width = 0, size = 2.2) +
+    geom_point(size = 4, shape = 21, fill = "white", stroke = 1.5) +
+    scale_color_manual(values = cov_colors, guide = "none") +  
+    coord_flip() +
+    theme_bw(base_size = 13) +
+    labs(title = paste0("Model: ", gsub("_", " + ", model_name)),
+         x = "", y = "Posterior estimate") +
+    theme(plot.title = element_text(size = 14, face = "bold"),
+          axis.text.y = element_text(size = 12, color = "black"))
+  
+  # Save individual plot
+  ggsave(filename = paste0(folder, "/occ_", model_name, ".jpg"),
+         plot = p, width = 8, height = ifelse(model_name == "trend_only", 3.2, 4.2), dpi = 300)
+  
+  # Store
+  plot_list[[model_name]] <- p
+  results_list[[model_name]] <- out
+  
+  cat("Finished:", model_name, "| WAIC =", round(waic_val, 2), "\n\n")
+}
+
+# ------------------- Combine plots -------------------
+combined_plot <- wrap_plots(plot_list, ncol = 3, byrow = FALSE) +
+  plot_annotation(title = "Univariate Models: Trend + One Covariate")
+
+ggsave("all_models_occ_params.jpg", plot = combined_plot,
+       width = 16, height = 10, dpi = 300)
+
+# Save WAIC table
+write.csv(waic_df %>% arrange(WAIC), paste0(folder, "/WAIC_comparison.csv"), row.names = FALSE)
+
+# Optional: View WAIC ranking
+print(waic_df %>% arrange(WAIC))
