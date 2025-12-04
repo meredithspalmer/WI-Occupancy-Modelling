@@ -208,11 +208,30 @@ for (model_name in model_names) {
 }
 
 # ------------------- Combine plots -------------------
-combined_plot <- wrap_plots(plot_list, ncol = 3, byrow = FALSE) +
-  plot_annotation(title = "Univariate Models: Trend + One Covariate")
+# ------------------- Combine plots -------------------
 
-ggsave("all_models_occ_params.jpg", plot = combined_plot,
-       width = 16, height = 10, dpi = 300)
+library(cowplot)
+
+# Split lists 
+plot_list_anthro <- plot_list[c("trend_crop", "trend_gpw", "trend_wdpa", 
+                                "trend_gfc", "trend_road_dist", "trend_cities_lg")]
+
+plot_list_enviro <- plot_list[c("trend_only", "trend_precseas", "trend_evi", 
+                                "trend_tri", "trend_river_dist", "trend_coeff_var")]
+
+# Build plots 
+(combined_anthro <- plot_grid(plotlist = plot_list_anthro, ncol = 3, label_size = 14,
+                             align = "hv"))
+
+(combined_enviro <- plot_grid(plotlist = plot_list_enviro, ncol = 3, label_size = 14,
+                             align = "hv"))
+
+# Save 
+ggsave(filename = paste0(folder, "/Univariate_models_anthropogenic.jpg"),
+       plot = final_anthro, width = 16, height = 6, dpi = 300, bg = "white")
+
+ggsave(filename = paste0(folder, "/Univariate_models_environmental.jpg"),
+       plot = final_enviro, width = 16, height = 10, dpi = 300, bg = "white")
 
 # Save WAIC table
 write.csv(waic_df %>% arrange(WAIC), paste0(folder, "/WAIC_comparison.csv"), row.names = FALSE)
