@@ -231,7 +231,7 @@ ggsave(filename = paste0(folder, "/Univariate_models_anthropogenic.jpg"),
        plot = final_anthro, width = 16, height = 6, dpi = 300, bg = "white")
 
 ggsave(filename = paste0(folder, "/Univariate_models_environmental.jpg"),
-       plot = final_enviro, width = 16, height = 10, dpi = 300, bg = "white")
+       plot = final_enviro, width = 16, height = 6, dpi = 300, bg = "white")
 
 # Save WAIC table
 write.csv(waic_df %>% arrange(WAIC), paste0(folder, "/WAIC_comparison.csv"), row.names = FALSE)
