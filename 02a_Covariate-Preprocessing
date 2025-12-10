@@ -486,9 +486,11 @@ write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km sp
 ### Prop Crop & Urban ##########################################################
 ################################################################################
 
-# Calculates the proportion of each grid cell containing crop or urban landscape
+# Calculates the proportion of each grid cell containing crop or forest landscape
 
-# Set working directory
+# Set workspace ---------------------------------------------------------------
+
+# Working directory 
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers")
 rm(list = ls()); gc()
 
@@ -500,122 +502,119 @@ library(mgcv)
 library(tidyr)
 library(rnaturalearth)
 
-# All terrestrial areas 
+
+# All terrestrial areas -------------------------------------------------------
+
+# Crop reference to land 
 reference <- reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif")
 land <- ne_countries(scale = "medium", returnclass = "sf")
 land_terra <- vect(land)
-if (crs(reference) != crs(land_terra)) {land_terra <- project(land_terra, crs(reference))}
+if (crs(reference) != crs(land_terra)) {
+  land_terra <- project(land_terra, crs(reference))
+  }
 reference_land <- mask(reference, land_terra)
 
-# NOTE some sites not captured in land mask -- add manually 
+# Manully add missing WI sites 
 site_cells <- read.csv("../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
 existing_ids <- reference_land$cell_ID
 missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
 add_raster <- reference
-add_raster[!values(add_raster) %in% missing_ids] <- NA
+add_raster <- ifel(reference %in% missing_ids, reference, NA)
 reference_land <- cover(reference_land, add_raster)
 
 # Load coordinates
 coords <- as.data.frame(reference, xy=T) 
 
-# Classes
+
+# Classes & functions ---------------------------------------------------------
+
+# LC classes 
 crop_class <- c(10,11,12,20,30,40)
 #urban_class <- 190
+forest_class <- c(50, 60, 61, 62, 70, 71, 72, 80, 81, 82, 90, 160, 170)
 
-# Function to calculate proportions using extract()
+# Function to calculate proportions
 calculate_proportion <- function(class_values, lc_raster, grid_raster) {
-  # Format rasters 
   binary_raster <- lc_raster %in% class_values
-  clipped_grid <- crop(grid_raster, binary_raster)
-  clipped_grid <- resample(clipped_grid, binary_raster, method="near")
+  clipped_grid  <- crop(grid_raster, binary_raster)
+  clipped_grid  <- resample(clipped_grid, binary_raster, method = "near")
   
-  # Convert to data.frame
-  df <- cbind(cell_ID = values(clipped_grid), value = values(binary_raster)) %>%
-    as.data.frame() %>%
-    filter(!is.na(cell_ID))  # remove NA zones
+  df <- data.frame(cell_ID = as.vector(clipped_grid),
+                   value   = as.vector(binary_raster)) %>% 
+    filter(!is.na(cell_ID))
   
-  names(df)[2] <- "value"
-  
-  # Aggregate mean per zone
   prop_df <- df %>%
     group_by(cell_ID) %>%
-    summarise(proportion = mean(value, na.rm=TRUE))
+    summarise(proportion = mean(value, na.rm = TRUE), .groups = "drop")
   
-  return(na.omit(prop_df))
+  return(prop_df)
 }
 
+
+# Process all files -----------------------------------------------------------
+
 years <- as.numeric(str_extract(basename(lc_files), "\\d{4}"))
+lc_files <- list.files("CCI landcover 1km2")
 
 # Process all files 
-crop_list <- lapply(seq_along(lc_files), function(i) {
-  file <- lc_files[i]
+class <- forest_class
+class_name <- "forest_class"
+
+prop_list <- lapply(seq_along(lc_files), function(i) {
+  file <- paste0("CCI landcover 1km2/", lc_files[i])
   landcover <- rast(file)
-  
-  # Reproject if CRS differs
   if (!compareGeom(landcover, reference_land, stopOnError = FALSE)) {
     landcover <- project(landcover, crs(reference_land), method="near")
   }
-  
-  crop_prop <- calculate_proportion(crop_class, landcover, reference_land)
-  crop_prop$year <- years[i]
-  
-  crop_prop
+  prop_list <- calculate_proportion(class, landcover, reference_land)
+  prop_list$year <- years[i]
+  prop_list
 })
+prop_all <- bind_rows(prop_list)
+head(prop_all)
 
-crop_all <- bind_rows(crop_list)
-write.csv(crop_all, "../10x10 km spatial layers/crop_proportion_all_years.csv", row.names=F)
+filename <- paste0("../10x10 km spatial layers/", class_name, "1993-2022.csv")
+write.csv(crop_all, filename, row.names=F)
 
-# Predict values for 2023, 2024 
-crop_all <- merge(crop_all, coords, all.x=T) %>% 
-  rename(crop_prop = proportion)
 
-# Ensure response is in (0,1). If you truly have 0/1s, shrink slightly toward the interior (Beta regression requires open interval).
-eps <- 1e-6
-crop_all <- crop_all %>%
-  mutate(
-    crop_prop_beta = pmin(pmax(crop_prop, eps), 1 - eps),
-    cell_ID = as.factor(cell_ID)
-  )
+# === SIMPLE PREDICTION FOR 2023–2024 ===
+forest_all <- merge(prop_all, coords, by.x = "cell_ID", by.y = "cell_ID", all.x = TRUE)
 
-# Fit a spatio-temporal GAM with Beta regression.
-fit <- bam(crop_prop_beta ~ s(x, y, bs = "ds", k = 30) + s(year, bs = "cr", k = 6),
-  data    = crop_all,
-  family  = betar(link = "logit"),
-  method  = "fREML",
-  discrete = TRUE
-)
+good_cells <- forest_all %>% group_by(cell_ID) %>% 
+  filter(n() >= 8) %>% #cells with enough years of data to predict 
+  pull(cell_ID) %>% unique()
+forest_good <- filter(forest_all, cell_ID %in% good_cells)
 
-# Predict on the response scale (already in (0,1) because of betar + logit)
-newdata$pred_crop_prop <- predict(fit, newdata = newdata, type = "response")
-newdata$pred_crop_prop <- pmin(pmax(newdata$pred_crop_prop, 0), 1)
-head(newdata)
-
-# The above can take a LONG time to run; do short version for now: 
-library(purrr)
-future_years <- data.frame(year = c(2023, 2024))
-
-pred_df <- crop_all %>%
+predictions <- forest_good %>%
   group_by(cell_ID, x, y) %>%
-  nest() %>%
-  mutate(
-    fit = map(data, ~ lm(crop_prop ~ splines::ns(year, df = 4), data = .x)), 
-    preds = map(fit, ~ {
-      tibble(
-        year = future_years$year,
-        crop_prop = predict(.x, newdata = future_years)
-      )
-    })
-  ) %>%
-  select(-data, -fit) %>%
-  unnest(preds)
+  do({
+    mod <- lm(proportion ~ year, data = .)                      
+    data.frame(year = c(2023, 2024),
+               proportion = predict(mod, newdata = data.frame(year = c(2023, 2024))))
+  }) %>%
+  ungroup()
 
-head(pred_df)
+poor_cells <- setdiff(forest_all$cell_ID, good_cells)
+if (length(poor_cells) > 0) {
+  last_vals <- forest_all %>%
+    filter(cell_ID %in% poor_cells) %>%
+    summarise(proportion = last(proportion), .by = cell_ID) %>%   # one row per cell
+    uncount(2, .id = "tmp") %>%                                   # duplicate
+    mutate(year = 2022 + tmp) %>%                                 # 2023 and 2024
+    select(-tmp)
+  predictions <- bind_rows(predictions, last_vals)
+}
 
-crop_all <- crop_all %>% select(-crop_prop_beta)
-crop_all <- rbind(crop_all, pred_df)
+predictions$proportion <- pmax(0, pmin(1, predictions$proportion))
 
-#write.csv(urban_all, "urban_proportion_all_years.csv", row.names=FALSE)
-write.csv(crop_all,  "crop_proportion_all_years.csv",  row.names=FALSE)
+forest_final <- bind_rows(
+  forest_all %>% dplyr::select(cell_ID, year, proportion),
+  predictions %>% dplyr::select(cell_ID, year, proportion)) %>%
+  mutate(proportion = pmax(0, pmin(1, proportion))) %>%    
+  arrange(cell_ID, year)
+head(forest_final)
+
+write.csv(forest_final, "../10x10 km spatial layers/forest_proportion_1993_2024.csv", row.names = FALSE)
 
 
 ############################################################################
