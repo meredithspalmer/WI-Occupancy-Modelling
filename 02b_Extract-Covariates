@@ -569,6 +569,54 @@ sub_cov_df <- df_mat[df_mat[, "cell_ID"] %in% site_cells$cell_ID, ]
 write.csv(sub_cov_df, "../Covariates for modelling/primary_occ_covariates_GPW_sites.csv", row.names = F)
 
 
+## 
+# Load TIF files 
+gwp_stack <- rast(list.files("10x10 km spatial layers/GWP", full.names = TRUE))
+
+# Extract cell_IDs
+extracted <- terra::zonal(gwp_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
+head(extracted)
+
+# Pivot long 
+df_long <- extracted %>%
+  pivot_longer(cols = -cell_ID,
+               names_to = "year",
+               values_to = "cov_value") %>%
+  mutate(year = as.integer(sub("GPW_", "", year)))
+
+# Add x & y coordinates
+coords <- as.data.frame(reference_land, xy=T)
+df_long <- merge(df_long, coords, all.x=T) 
+
+# Fit a smooth GAM model over space (x, y) and time (year)
+library()
+model <- gam(cov_value ~ s(x, y) + s(year, k=5),
+             data = df_long, na.action = na.exclude)
+
+# Make a full grid for prediction
+all_years <- c(1999, 2001:2004, 2006:2009, 2011:2014, 2016:2019, 2021:2024)
+newdata <- expand.grid(
+  cell_ID = unique(df_long$cell_ID),
+  year = all_years
+)
+
+missing_vals <- df_long[is.na(df_long$cov_value),] %>% 
+  dplyr::select(-cov_value)
+df_long <- df_long[!is.na(df_long$cov_value),]
+
+newdata <- merge(newdata, coords, all.x=T) 
+newdata <- rbind(newdata, missing_vals)
+
+# Predict missing + new years
+newdata$cov_value <- predict(model, newdata = newdata)
+
+# Combine
+df_long_combo <- rbind(df_long, newdata) %>%
+  dplyr::select(-c(x, y)) %>% 
+  arrange(cell_ID, year)
+
+write.csv(df_long_combo, "gwp_long_interpolated")
+
 ## Enhanced vegetation index (EVI) --------------------------------------------
 
 # Load TIF files 
