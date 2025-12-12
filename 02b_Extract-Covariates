@@ -712,6 +712,116 @@ subset_mat <- EVI_mat[EVI_mat$cell_ID %in% site_cells$cell_ID, ]
 write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
 
 
+## For pipeline
+
+library(data.table)
+library(terra)
+library(zoo)        # for na.approx (linear interpolation)
+library(lubridate)
+
+# Read reference 
+reference_land <- rast("10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
+
+# Load TIF files
+evi_files <- list.files("10x10 km spatial layers/EVI", full.names = TRUE)
+evi_list_raster <- lapply(evi_files, rast)
+evi_stack <- rast(evi_list_raster)
+names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
+
+# Extract mean values for each cell_ID
+extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
+extracted <- as.data.table(extracted)
+
+# Convert to long format with proper date
+dt_long <- melt(extracted,
+                id.vars = "cell_ID",
+                variable.name = "date_str",
+                value.name = "cov_value")
+setDT(dt_long)
+dt_long[, c("year", "doy") := tstrsplit(gsub("evi_", "", date_str), "_", fixed = TRUE)]
+dt_long[, year := as.integer(year)]
+dt_long[, doy := as.integer(doy)]
+dt_long[, obs_date := as.Date(doy - 1, origin = paste0(year, "-01-01"))]
+dt_long[, date_str := NULL]
+
+## Create full periods template
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
+head(periods)
+
+# Match each observation date to its 91-day period
+periods_dt <- as.data.table(periods)[, .(start_period, end_period, year, season)]
+
+# Use foverlaps to assign period info to each observation
+setkey(dt_long, obs_date, obs_date)
+setkey(periods_dt, start_period, end_period)
+
+dt_with_period <- dt_long[
+  periods_dt,
+  on = .(obs_date >= start_period, obs_date <= end_period),
+  .(cell_ID, cov_value, obs_date, year = i.year, season = i.season),
+  nomatch = NULL  
+]
+
+# Keep only relevant columns
+dt_with_period <- dt_with_period[, .(cell_ID, year, season, cov_value)]
+
+# Aggregate: mean EVI per cell × period (in case multiple rasters fall in one period)
+dt_period <- dt_with_period[
+  , .(cov_value = mean(cov_value, na.rm = TRUE)),
+  by = .(cell_ID, year, season)
+]
+
+# Create full grid: every cell_ID × every period (year + season)
+full_grid <- CJ(
+  cell_ID = unique(dt_period$cell_ID),
+  year = unique(periods$year),
+  season = unique(periods$season)
+)
+
+# Merge to ensure one row per cell × period
+dt_full <- merge(full_grid, dt_period, 
+                 by = c("cell_ID", "year", "season"), 
+                 all.x = TRUE)
+
+# Linear interpolation within each cell_ID over time
+# Order periods chronologically (assuming season order: Winter → Spring → Summer → Fall)
+season_order <- c("Spring", "Summer", "Fall", "Winter")
+dt_full[, season_factor := factor(season, levels = season_order)]
+dt_full <- dt_full[order(cell_ID, year, season_factor)]
+
+# Interpolate missing cov_value within each cell_ID
+dt_imputed <- dt_full[
+  , cov_value := na.approx(cov_value, na.rm = FALSE, rule = 2),   
+  by = cell_ID
+]
+
+# Final clean-up
+dt_final <- dt_imputed[, .(cell_ID, year, season, cov_value)]
+dt_final <- dt_final[order(cell_ID, year, season_factor)]
+
+# Remove helper column
+dt_final[, season_factor := NULL]
+
+# Save if desired
+fwrite(dt_final, "10x10 km spatial layers/evi_long_interpolated.csv", row.names=F)
+
+
+
+
 ## Global Forest Cover (GFC) --------------------------------------------------
 
 # Load TIF files 2001:2021 (NOTE: don't have the 2013 raster - download when can)
