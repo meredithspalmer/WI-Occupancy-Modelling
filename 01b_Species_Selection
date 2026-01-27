@@ -1,0 +1,444 @@
+################################
+###### Species Selection #######
+################################
+
+# Project: WI Occupancy Range Wide Trends
+# This file contains code to select species for final model, including 
+# 1) removing non-mammals, 
+# 2) ranking by data availability, and 
+# 3) calculating SIH scores 
+# It also produces a cleaned data set ready for ingestion in downstream analyses
+
+
+# Set worksace ----------------------------------------------------------------
+
+rm(list=ls()); gc()
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+set.seed(123)
+
+install.packages("rredlist")
+
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(taxize)
+library(terra)
+library(sf)
+library(countrycode)
+library(rnaturalearth)
+library(rnaturalearthdata)  
+library(rredlist)
+library(purrr)
+
+
+# Load data -------------------------------------------------------------------
+
+dat_seq    <- fread("WI data/sequences_updated_20240710.csv")
+dat_images <- fread("WI data/images_updated_20240714.csv")
+
+keep_cols <- c("project_id", "deployment_location_id", "record_date",
+               "sensor_start_date_and_time", "sensor_end_date_and_time",
+               "latitude", "longitude", "class", "sp_binomial")
+
+dat_seq <- dat_seq[
+  , .(
+    project_id                  = project_id,
+    deployment_location_id      = deployment_location_id,
+    record_date                 = as.IDate(sequence_date),   
+    sensor_start_date_and_time  = sensor_start_date_and_time,
+    sensor_end_date_and_time    = sensor_end_date_and_time,
+    latitude                    = latitude,
+    longitude                   = longitude,
+    class                       = class,
+    sp_binomial              = sp_binomial
+  )
+][
+  , (keep_cols) := lapply(.SD, function(x) if(is.character(x)) trimws(x) else x), 
+  .SDcols = keep_cols
+]
+
+dat_images <- dat_images[
+  Accepted_MOL != "Accepted_MOL" & !is.na(Accepted_MOL), #rm header as row
+  .(
+    project_id                  = project_id,
+    deployment_location_id      = deployment_location_id,
+    record_date                 = as.IDate(photo_date),
+    sensor_start_date_and_time  = sensor_start_date_and_time,
+    sensor_end_date_and_time    = sensor_end_date_and_time,
+    latitude                    = as.numeric(latitude),
+    longitude                   = as.numeric(longitude),
+    class                       = class,
+    sp_binomial                 = Accepted_MOL
+  )
+]
+
+# Combine datasets
+all_dat <- rbindlist(list(dat_seq, dat_images), use.names = TRUE, fill = TRUE)
+all_dat <- all_dat[
+  !is.na(record_date),   
+][
+  , `:=`(
+    sensor_start_date = as.IDate(sensor_start_date_and_time),
+    sensor_end_date   = as.IDate(sensor_end_date_and_time),
+    record_date       = as.IDate(record_date)
+  )
+][
+  , .(project_id, deployment_location_id, record_date,
+      sensor_start_date, sensor_end_date,
+      latitude, longitude, class, sp_binomial)
+]
+
+all_dat$proj_depl <- paste(all_dat$project_id, all_dat$deployment_location_id)
+all_dat <- all_dat[year(record_date) >= 2000]  
+full_dat <- all_dat
+
+
+# Number of records per species -----------------------------------------------
+
+head(all_dat)
+species_counts <- all_dat[, .N, by = sp_binomial]
+setnames(species_counts, "N", "record_count") 
+setorder(species_counts, -record_count)
+hist(species_counts$record_count)
+head(species_counts); tail(species_counts)
+
+
+# Subset mammals --------------------------------------------------------------
+
+species_counts[, class := NA_character_]
+unique_sp <- unique(species_counts$sp_binomial)
+
+cls <- classification(unique_sp, db = "ncbi", rows = 1) 
+cls_df <- data.table(sp_binomial = names(cls),
+                     tax_class  = sapply(cls, function(x) {
+                       if (is.data.frame(x) && "class" %in% x$rank) {
+                         x$name[x$rank == "class"]
+                         } else {
+                           NA_character_
+                           }}))
+species_counts <- merge(species_counts, cls_df, by = "sp_binomial", all.x = TRUE)
+table(species_counts$tax_class)
+
+# Examine NAs 
+nrow(species_counts[is.na(species_counts$tax_class),])
+View(species_counts[is.na(species_counts$tax_class),])
+
+# Rename (here and in all_dat)
+species_counts[species_counts$sp_binomial == "Cephalophus ogilbyi ssp. brookei",]$sp_binomial <- "Cephalophus ogilbyi"
+all_dat[all_dat$sp_binomial == "Cephalophus ogilbyi ssp. brookei",]$sp_binomial <- "Cephalophus ogilbyi"
+
+species_counts[species_counts$sp_binomial == "Cercopithecus petaurista ssp. buettikoferi",]$sp_binomial <- "Cercopithecus petaurista"
+all_dat[all_dat$sp_binomial == "Cercopithecus petaurista ssp. buettikoferi",]$sp_binomial <- "Cercopithecus petaurista"
+
+species_counts[species_counts$sp_binomial == "Lupulella adustus",]$sp_binomial <- "Lupulella adusta"
+all_dat[all_dat$sp_binomial == "Lupulella adustus",]$sp_binomial <- "Lupulella adusta" 
+
+species_counts[species_counts$sp_binomial == "Ursus U. arctos",]$sp_binomial <- "Ursus arctos"
+all_dat[all_dat$sp_binomial == "Ursus U. arctos",]$sp_binomial <- "Ursus arctos"
+
+species_counts[species_counts$sp_binomial == "Muntiacus rooseveltorum/truongsonensis"]$sp_binomial <- "Muntiacus rooseveltorum"
+all_dat[all_dat$sp_binomial == "Muntiacus rooseveltorum/truongsonensis"]$sp_binomial <- "Muntiacus rooseveltorum"
+
+mammals <- c("Alouatta arctoidea", 
+             "Bdeogale omnivora",
+             "Cebus cuscinus", 
+             "Cebus malitiosus",
+             "Cephalophus ogilbyi",
+             "Cercopithecus petaurista",
+             "Cercocebus sanjei", 
+             "Dasyprocta croconota", 
+             "Dasyprocta iacki", 
+             "Dasyprocta mexicana", 
+             "Dasyprocta prymnolopha", 
+             "Dasyprocta variegata", 
+             "Eliurus penicillatus",
+             "Eliurus petteri",
+             "Epixerus ebii",
+             "Euoticus pallidus",
+             "Euxerus erythropus",
+             "Funisciurus congicus", 
+             "Funisciurus isabella",
+             "Hydrochoerus isthmius",
+             "Hystrix pumila",
+             "Lupulella adusta",
+             "Lupulella mesomelas",
+             "Macropus parryi",
+             "Macrotarsomys petteri",
+             "Martes gwatkinsii",
+             "Microsciurus santanderensis",
+             "Mungos gambianus",
+             "Muntiacus rooseveltorum",
+             "Paramelomys naso",
+             "Paraxerus boehmi",
+             "Paraxerus lucifer",
+             "Paraxerus palliatus",
+             "Peromyscus melanurus",
+             "Plecturocebus aureipalatii",
+             "Plecturocebus ornatus",
+             "Presbytis siamensis",
+             "Proechimys canicollis",
+             "Proechimys chrysaeolus",
+             "Proechimys oconnelli",
+             "Saguinus tripartitus",
+             "Sciurus aestuans",
+             "Sciurus spadiceus",
+             "Sciurus stramineus",
+             "Semnopithecus dussumieri",
+             "Sminthopsis fuliginosus",
+             "Sus ahoenobarbus",
+             "Sylvilagus cognatus",
+             "Tragulus nigricans",
+             "Ursus arctos",
+             "Urva fusca",
+             "Urva smithii",
+             "Urva vitticolla")
+species_counts[species_counts$sp_binomial %in% mammals,]$tax_class <- "Mammalia"             
+
+birds <- c("Aramides calopterus",
+           "Aramides saracura",
+           "Arborophila davidi", 
+           "Ardea albus", 
+           "Ardea modestus",
+           "Ardea sumatrana",
+           "Atlapetes blancae", 
+           "Bostrychia olivacea", 
+           "Brachypteracias squamiger", 
+           "Calamonastes stierlingi",
+           "Campocolinus coqui", 
+           "Celeus ochraceus", 
+           "Chloropicus spodocephalus", 
+           "Ciccaba albitarsis", 
+           "Cinnyris osea", 
+           "Cisticola hunteri", 
+           "Colaptes cafer", 
+           "Coracias affinis", 
+           "Cossypha heinrichi", 
+           "Coua olivaceiceps", 
+           "Crax pinima", 
+           "Cyanocorax colliei", 
+           "Cyanocorax morio",
+           "Cynanthus cynanthus latirostris", 
+           "Cyornis lemprieri", 
+           "Dendroica aestiva",
+           "Dyaphorophyia ansorgei",
+           "Gallinago andina",
+           "Gallinago nemoricola",
+           "Gelochelidon macrotarsa",
+           "Gymnoris pyrgita",
+           "Hydrornis irena",
+           "Hylatomus pileatus",
+           "Hypnelus ruficollis",
+           "Ianthocincla konkakinhensis",
+           "Icterus bullockiorum",
+           "Leistes loyca",
+           "Leuconotopicus borealis",
+           "Lophorina paradisea",
+           "Malacoptila mystacalis",
+           "Myophonus horsfieldii",
+           "Nectarinia purpureiventris",
+           "Nicator gularis",
+           "Ortalis araucuan",
+           "Ortalis columbiana",
+           "Ortalis superciliaris",
+           "Otus fuliginosus",
+           "Passer pyrrhonotus",
+           "Penelope ortoni",
+           "Penelope perspicax",
+           "Phalcoboenus chimango",
+           "Pheugopedius fasciatoventris",
+           "Pseudibis davisoni",
+           "Pseudibis gigantea",
+           "Psophia dextralis",
+           "Psophia obscura",
+           "Psophia ochroptera",
+           "Pterocles decoratus",
+           "Pyrope pyrope",
+           "Rallus madagascariensis",
+           "Rhipidura nigritorquis",
+           "Rhipidura phoenicura",
+           "Sericornis NULL",
+           "Setophaga graysoni",
+           "Spilopelia suratensis",
+           "Stachyris herberti",
+           "Sugomel nigrum",
+           "Thaumatibis gigantea",
+           "Threskiornis bernieri",
+           "Tolmomyias viridiceps",
+           "Trochalopteron ngoclinhense",
+           "Turnix maculosus",
+           "Upupa marginata",
+           "Urile penicillatus",
+           "Urocissa whiteheadi",
+           "Urosphena neumanni",
+           "Vanellus senegallus")
+species_counts[species_counts$sp_binomial %in% birds,]$tax_class <- "Aves"   
+
+# Remove non-mammals
+unique(species_counts$tax_class)
+species_counts <- species_counts[species_counts$tax_class == "Mammalia",]
+all_dat <- all_dat[all_dat$sp_binomial %in% unique(species_counts$sp_binomial),]
+
+
+# Add species data ------------------------------------------------------------
+
+# Add species common names
+unique_sp <- unique(species_counts$sp_binomial)
+common_list <- sci2comm(unique_sp, db = "ncbi", simplify = TRUE)
+common_dt <- data.table(sp_binomial = unique_sp,
+                        common_name = sapply(common_list, function(x) if (length(x) > 0) x[1] else NA_character_))
+species_counts <- merge(species_counts, common_dt, by = "sp_binomial", all.x = TRUE)
+setcolorder(species_counts, c("sp_binomial", "common_name", "record_count", "tax_class"))
+
+# Add continent to all_dat
+world_countries <- ne_countries(scale = "medium", returnclass = "sf")
+points_sf <- st_as_sf(all_dat, coords = c("longitude", "latitude"), 
+                      crs = 4326, remove = FALSE)  
+joined <- st_join(points_sf, 
+                  world_countries["continent"], 
+                  join = st_intersects, 
+                  left = TRUE)
+all_dat[, continent := joined$continent]
+
+# Examine NAs -> most are coastal, so assign to nearest landmass 
+all_dat[is.na(continent),]
+
+nrow(na_rows <- which(is.na(all_dat$continent)))
+na_points_sf <- points_sf[na_rows, ]
+nearest_idx <- st_nearest_feature(na_points_sf, world_countries)
+nearest_continents <- world_countries$continent[nearest_idx]
+all_dat[na_rows, continent := nearest_continents]
+
+# Quick checks 
+table(all_dat$continent, useNA = "always")
+head(all_dat[, .(sp_binomial, latitude, longitude, continent)])
+
+# Add continent to species_counts
+# Primary (most frequent) continent per species
+species_continents <- all_dat[!is.na(continent), .(
+  primary_continent = names(sort(table(continent), decreasing = TRUE))[1]
+), by = sp_binomial]
+
+# Merge 
+species_counts <- merge(species_counts, species_continents, by = "sp_binomial",
+                        all.x = TRUE)
+
+
+# MMD range map for species? --------------------------------------------------
+
+# Raster directory
+# (I believe the first has habitat suitability and the second on the range outline, but need
+# only the range outline)
+raster_dir_1 <- "/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea"
+raster_dir_2 <- "/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters"
+
+# Raster exists yes/no
+species_counts[, has_raster := {
+  file_name <- paste0(gsub(" ", "_", sp_binomial), ".tif")
+  fifelse(
+    file.exists(file.path(raster_dir_1, file_name)) |
+      file.exists(file.path(raster_dir_2, file_name)),
+    "YES", "NO"
+  )
+}]
+
+# Explore missing results
+View(species_counts[species_counts$has_raster == "NO",])
+missing_rasters <- unique(species_counts[species_counts$has_raster == "NO",]$sp_binomial)
+
+# Clean
+species_counts <- species_counts[!species_counts$has_raster == "NO",]
+all_dat <- all_dat[!all_dat$sp_binomial %in% missing_rasters,]
+
+
+# Calculate SIH score ---------------------------------------------------------
+
+# Oliver et al. 2023 - Camera trapping expands the view into global biodiversity and its change 
+# Spatial biodiversity data coverage was assessed using the SII. The SII estimates the proportion of a species’ range with observations in a given year. For each species, their expected range was intersected with a 110 × 110 km equal area grid to determine the number of grid cells where they are expected to occur he SII is then computed as the proportion of expected occupied grid cells with observations in a given year. For example, a value of 0.5 indicates that 50% of grid cells in which a species is expected to occur had data. It is important to note that values are not necessarily expected to approach the maximum value of 1 as this would constitute complete coverage of species range in a single year. Even for well-documented species, such as birds, the global mean in annual data coverage is less than 20% [9].
+
+# Raster directors
+raster_dir_1 <- "/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea"
+raster_dir_2 <- "/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters"
+
+# CEA & global extent 
+cea_crs <- "+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+ext_global <- ext(-17000000, 17000000, -8900000, 8900000)
+
+# Create the 110 km grid 
+grid_110 <- rast(ext = ext_global, resolution = 110000, crs = cea_crs)
+values(grid_110) <- 1:ncell(grid_110)  # unique cell IDs
+
+# Prepare deployments
+deployments <- unique(full_dat[, .(proj_depl, latitude, longitude)])
+deploy_sf <- st_as_sf(deployments, coords = c("longitude", "latitude"), crs = 4326)
+deploy_vect <- vect(st_transform(deploy_sf, cea_crs))
+
+# Extract 110 km cell ID for every deployment point  
+deploy_cell_ids <- extract(grid_110, deploy_vect, method = "simple")[[1]]
+deployments[, grid_id_110km := deploy_cell_ids]
+
+# Results table
+results <- data.table(sp_binomial = character(),
+                      source_dir = character(),  
+                      total_range_110km = integer(),
+                      sampled_110km = integer())
+
+# Species to process
+unique_species <- unique(species_counts$sp_binomial)
+
+for (sp in unique_species) {
+  # Try first directory
+  file_name <- paste0(gsub(" ", "_", sp), ".tif")
+  path <- file.path(raster_dir_1, file_name)
+  source_used <- "cea"
+  
+  # Try second directory
+  if (!file.exists(path)) {
+    path <- file.path(raster_dir_2, file_name)
+    source_used <- "plain"
+  }
+  
+  # Skip if still not found
+  if (!file.exists(path)) {
+    message("No raster found for ", sp, " in either directory")
+    next
+  }
+  
+  # Aggregate to 110 km 
+  r <- rast(path)   
+  agg <- aggregate(r, fact = 110, fun = "sum", na.rm = TRUE)
+  
+  # Cell counts as "in range" if it has at least 1 presence pixel
+  in_range_110 <- agg > 0
+  total_range_110km <- as.integer(global(in_range_110, "sum", na.rm = TRUE))
+  
+  # Extract range presence at each deployment's 110 km cell location
+  vals_at_deploy <- extract(in_range_110, deploy_vect, method = "simple")[[1]]
+  
+  # Unique 110 km cells that are both in-range AND have at least one deployment
+  sampled_cells <- unique(deployments$grid_id_110km[vals_at_deploy == 1 & !is.na(vals_at_deploy)])
+  sampled_110km <- length(sampled_cells)
+  
+  # Store result
+  results <- rbind(results, list(sp, source_used, total_range_110km, sampled_110km))
+}
+
+# Add percentage and sort by coverage (highest first)
+results[, coverage_pct := round(100 * sampled_110km / total_range_110km, 1)]
+setorder(results, -coverage_pct)
+head(results)
+hist(results$coverage_pct)
+
+# Combine
+species_counts <- merge(species_counts,
+                        results[, .(sp_binomial, total_range_110km, sampled_110km, coverage_pct)],
+                        by = "sp_binomial",
+                        all.x = TRUE)
+head(species_counts) 
+
+
+# Save products ---------------------------------------------------------------
+
+setorder(species_counts, -record_count)
+fwrite(species_counts, file = "WI data/species_counts.csv")
+fwrite(all_dat, file = "WI data/all_dat.csv")
