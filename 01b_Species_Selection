@@ -16,8 +16,6 @@ rm(list=ls()); gc()
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 set.seed(123)
 
-install.packages("rredlist")
-
 library(data.table)
 library(dplyr)
 library(lubridate)
@@ -28,7 +26,6 @@ library(sf)
 library(countrycode)
 library(rnaturalearth)
 library(rnaturalearthdata)  
-library(rredlist)
 library(purrr)
 
 
@@ -94,14 +91,21 @@ all_dat <- all_dat[year(record_date) >= 2000]
 full_dat <- all_dat
 
 
-# Number of records per species -----------------------------------------------
+# Effort per species ----------------------------------------------------------
 
-head(all_dat)
+# Number of records 
 species_counts <- all_dat[, .N, by = sp_binomial]
 setnames(species_counts, "N", "record_count") 
 setorder(species_counts, -record_count)
 hist(species_counts$record_count)
 head(species_counts); tail(species_counts)
+
+# Number of deployments
+species_counts[all_dat[, .(unique_deployments = uniqueN(proj_depl)), by = sp_binomial],
+  unique_deployments := i.unique_deployments, on = "sp_binomial"]
+
+# Avg. Counts per Deployment 
+species_counts[, avg_records_per_deployment := round(record_count / unique_deployments, 1)]
 
 
 # Subset mammals --------------------------------------------------------------
@@ -278,6 +282,7 @@ species_counts[species_counts$sp_binomial %in% birds,]$tax_class <- "Aves"
 unique(species_counts$tax_class)
 species_counts <- species_counts[species_counts$tax_class == "Mammalia",]
 all_dat <- all_dat[all_dat$sp_binomial %in% unique(species_counts$sp_binomial),]
+unique(species_counts$tax_class)
 
 
 # Add species data ------------------------------------------------------------
@@ -435,6 +440,103 @@ species_counts <- merge(species_counts,
                         by = "sp_binomial",
                         all.x = TRUE)
 head(species_counts) 
+
+# Map species coverage function 
+visualize_species_coverage <- function(sp) {
+  
+  # Load range raster
+  file_name <- paste0(gsub(" ", "_", sp), ".tif")
+  path <- file.path(raster_dir_1, file_name)
+  if (!file.exists(path)) {
+    path <- file.path(raster_dir_2, file_name)
+  }
+  if (!file.exists(path)) {
+    stop(paste("No raster found for", sp, "in either directory"))
+  }
+  
+  r <- rast(path)
+  
+  # Binary presence
+  range_binary <- r > 0
+  range_binary[is.na(range_binary)] <- FALSE
+  
+  # Bounding box for zoom
+  bb_vec <- as.vector(ext(range_binary))
+  
+  # Aggregate range to 110 km grid (presence if any)
+  range_110 <- aggregate(range_binary, fact = 110, fun = "max", na.rm = TRUE)
+  range_110 <- resample(range_110, grid_110, method = "near")
+  range_110[is.na(range_110)] <- 0
+  range_110 <- range_110 > 0   # logical SpatRaster
+  
+  # Rasterize deployments to the grid (count per cell)
+  deployment_count <- rasterize(deploy_vect, grid_110, fun = "length")
+  deployment_count[is.na(deployment_count)] <- 0
+  
+  # Deployment presence (1 if any deployment, 0 otherwise)
+  deployment_presence <- deployment_count > 0
+  
+  # Status raster (colored only where deployments exist, restricted to range)
+  # 1 only if in range AND deployment, 0 otherwise
+  status_110 <- deployment_presence * range_110   
+  
+  # Diagnostic
+  cat("Status raster values summary:\n")
+  print(table(values(status_110), useNA = "ifany"))
+  status_factor <- as.factor(status_110)
+  
+  # Crop rasters and grid to the range bounding box
+  range_binary_cropped <- crop(range_binary, bb_vec)
+  status_factor_cropped <- crop(status_factor, bb_vec)
+  grid_cropped <- crop(as.polygons(grid_110, aggregate = FALSE), bb_vec)
+  vals <- extract(r, deploy_vect, method = "simple")[, 2]   
+  deploy_cropped <- deploy_vect[!is.na(vals) & vals > 0, ]
+  
+  # Get the SSI (coverage_pct) for this species from species_counts
+  ssi_value <- species_counts[sp_binomial == sp, coverage_pct]
+  if (length(ssi_value) == 0 || is.na(ssi_value)) {
+    ssi_value <- "NA"  
+  } else {
+    ssi_value <- round(ssi_value, 1)   
+  }
+  
+  ggplot() +
+    geom_spatraster(data = range_binary_cropped) +                  # species range
+    geom_spatraster(data = status_factor_cropped, alpha = 0.65) +   # SII grid    
+    scale_fill_manual(
+      values = c("FALSE" = "white",           
+                 "TRUE"  = "grey35",          
+                 "0"     = "transparent",     
+                 "1"     = "#4CAF50"),
+      labels = c("FALSE" = NULL,  
+                 "TRUE"  = NULL,   
+                 "0"     = "No camera trap",
+                 "1"     = "Camera trap present"),
+      name = "110 km Cell Status",
+      drop = FALSE) +
+    
+    geom_spatvector(
+      data = deploy_cropped,
+      color = "orange",
+      size = 1.5,           # adjust size as needed
+      alpha = 0.8,
+      shape = 16            # solid circle
+    ) + 
+    
+    geom_spatvector(data = grid_cropped, fill = NA, color = "grey", linewidth = 0.3) +
+    
+    labs(title = "CT Deployments in Range", 
+         subtitle = paste0(sp, ": SSI = ", ssi_value)) +
+    theme(plot.subtitle = element_text(face = "italic"))
+}
+
+# Run it for target species 
+(ssi_plot <- visualize_species_coverage(Panthera ))
+  
+# Save plot 
+sp <- "Panthera_onca"
+filename <- paste0("Model outputs/", sp, "/", sp, "-ssi_plot.jpg")
+ggsave(filename, plot = ssi_plot, width = 8, height = 6, dpi = 600)
 
 
 # Save products ---------------------------------------------------------------
