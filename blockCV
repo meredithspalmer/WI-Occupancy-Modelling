@@ -1,0 +1,122 @@
+## BLOCK CV IN SPATIALLY VARYING 
+
+# Install packages if needed
+# install.packages(c("spOccupancy", "blockCV", "sf", "terra", "ggplot2"))
+
+library(spOccupancy)
+library(blockCV)
+library(sf)      # For spatial data handling
+library(terra)   # For rasters if using environmental CV
+library(ggplot2) # For visualization
+
+# Step 1: Load and prepare your data
+# Assume data is already in spOccupancy format (adapt as needed)
+data.list <- list(
+  y = your_y_matrix,          # J (sites) x T (periods) x K (max reps) matrix of 0/1/NA
+  occ.covs = your_occ_covs,   # Matrix (J x p) for site covs; or list if time-varying (each J x T)
+  det.covs = your_det_covs,   # List of det covs (e.g., each J x (T*K) matrix)
+  coords = your_coords        # J x 2 matrix of site coordinates (e.g., Easting, Northing)
+)
+occ.formula <- ~ your_occ_covariates  # e.g., ~ elev + I(elev^2)
+det.formula <- ~ your_det_covariates  # e.g., ~ day + tod
+svc.cols <- c(1, 2)  # Columns in occ.formula that are spatially varying (e.g., intercept and elev)
+
+# Convert sites to sf object (assume projected CRS; use 4326 for lat-long)
+sites.sf <- st_as_sf(data.frame(data.list$coords), coords = c("X", "Y"), crs = your_crs)  # e.g., crs = 32618 for UTM
+
+# Optional: Load rasters for environmental CV or autocorrelation (if available)
+# rasters <- rast("path/to/your_raster_stack.tif")  # Stack of covariate rasters
+
+# Step 2: Estimate spatial autocorrelation to guide block size (optional but recommended)
+sac <- cv_spatial_autocor(x = sites.sf, num_sample = 5000)  # Or with rasters: r = rasters
+# Inspect sac$range for suggested block size (e.g., ~sac$range)
+
+# Step 3: Create spatial block folds
+cv.folds <- cv_spatial(
+  x = sites.sf,               # sf object of sites
+  k = 5,                      # Number of folds
+  size = sac$range * 1.5,     # Block size in units of coords (e.g., meters); adjust based on sac
+  hexagon = TRUE,             # Hexagonal blocks (default, reduces edge effects)
+  selection = "random",       # "systematic" or "checkerboard" alternatives
+  iteration = 50,             # Iterations for balanced random assignment
+  progress = TRUE
+)
+
+# Visualize folds
+cv_plot(cv = cv.folds, x = sites.sf)  # ggplot of fold assignments
+
+# Access fold info: cv.folds$folds_list is list of 5 elements, each with train/test indices (1:J)
+
+# Step 4: Perform block CV loop
+n.folds <- length(cv.folds$folds_list)
+metrics.list <- vector("list", n.folds)  # Store metrics per fold (e.g., AUC, log-lik)
+
+for (i in 1:n.folds) {
+  cat(paste("Fold", i, "\n"))
+  
+  # Get indices (site rows)
+  train.idx <- cv.folds$folds_list[[i]][[1]]  # Training site indices
+  test.idx <- cv.folds$folds_list[[i]][[2]]   # Testing site indices
+  
+  # Subset data for training (careful with dimensions)
+  data.train <- list(
+    y = data.list$y[train.idx, , , drop = FALSE],  # J_train x T x K
+    coords = data.list$coords[train.idx, , drop = FALSE]  # J_train x 2
+  )
+  
+  # Subset occ.covs: if matrix, subset rows; if list (time-varying), lapply subset
+  if (is.matrix(data.list$occ.covs) || is.data.frame(data.list$occ.covs)) {
+    data.train$occ.covs <- data.list$occ.covs[train.idx, , drop = FALSE]
+  } else if (is.list(data.list$occ.covs)) {
+    data.train$occ.covs <- lapply(data.list$occ.covs, function(cov) cov[train.idx, , drop = FALSE])
+  }
+  
+  # Subset det.covs: assume list; lapply subset by sites (first dim)
+  data.train$det.covs <- lapply(data.list$det.covs, function(cov) {
+    if (length(dim(cov)) == 3) cov[train.idx, , , drop = FALSE] else cov[train.idx, , drop = FALSE]
+  })
+  
+  # Fit model on training data
+  model <- svcTPGOcc(
+    occ.formula = occ.formula,
+    det.formula = det.formula,
+    data = data.train,
+    svc.cols = svc.cols,             # Spatially varying columns
+    inits = your_inits,              # List of initial values
+    priors = your_priors,            # List of priors
+    cov.model = "exponential",       # Spatial covariance
+    NNGP = TRUE,                     # For efficiency
+    n.neighbors = 5,
+    n.samples = 5000,                # MCMC settings; reduce for testing
+    n.burn = 3000,
+    n.thin = 20,
+    n.chains = 3
+  )
+  
+  # Prepare test data for prediction
+  X.0 <- model.matrix(occ.formula, data.frame(data.list$occ.covs[test.idx, ]))  # Design matrix for test occ.covs
+  coords.0 <- data.list$coords[test.idx, ]
+  
+  # Predict occupancy (psi) at test sites (returns n.samples x J_test x T)
+  pred <- predict(model, X.0 = X.0, coords.0 = coords.0)
+  
+  # Compute evaluation metrics (example: mean Brier score across sites/periods)
+  # Note: Adapt to your needs; here, use observed max detection per site-period as proxy for z
+  observed_z_proxy <- apply(data.list$y[test.idx, , ], c(1, 2), max, na.rm = TRUE)  # J_test x T (1 if detected any rep)
+  pred_psi_mean <- apply(pred$psi.0.samples, c(2, 3), mean)  # J_test x T mean psi
+  brier_score <- mean((pred_psi_mean - observed_z_proxy)^2, na.rm = TRUE)
+  
+  metrics.list[[i]] <- list(brier = brier_score, pred = pred)  # Store or add AUC, etc.
+}
+
+# Step 5: Summarize CV results
+cv_summary <- sapply(metrics.list, function(m) m$brier)
+mean_cv_brier <- mean(cv_summary)
+cat(paste("Mean CV Brier Score:", mean_cv_brier, "\n"))
+
+# Optional: For environmental cluster CV, replace Step 3 with:
+# cv.folds <- cv_cluster(x = sites.sf, r = rasters, k = 5, scale = TRUE)
+
+# For space-time cluster: Create 3D coords (scale time)
+# time_scaled <- scale(1:ncol(data.list$y)) * (sd(dist(data.list$coords)) / sd(1:ncol(data.list$y)))  # Example scaling
+# But requires expanding sites.sf to J*T rows (repeating coords, adding time); then cluster.
