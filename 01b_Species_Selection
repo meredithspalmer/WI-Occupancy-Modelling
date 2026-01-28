@@ -27,6 +27,7 @@ library(countrycode)
 library(rnaturalearth)
 library(rnaturalearthdata)  
 library(purrr)
+library(tidyterra)
 
 
 # Load data -------------------------------------------------------------------
@@ -361,85 +362,174 @@ all_dat <- all_dat[!all_dat$sp_binomial %in% missing_rasters,]
 # Oliver et al. 2023 - Camera trapping expands the view into global biodiversity and its change 
 # Spatial biodiversity data coverage was assessed using the SII. The SII estimates the proportion of a species’ range with observations in a given year. For each species, their expected range was intersected with a 110 × 110 km equal area grid to determine the number of grid cells where they are expected to occur he SII is then computed as the proportion of expected occupied grid cells with observations in a given year. For example, a value of 0.5 indicates that 50% of grid cells in which a species is expected to occur had data. It is important to note that values are not necessarily expected to approach the maximum value of 1 as this would constitute complete coverage of species range in a single year. Even for well-documented species, such as birds, the global mean in annual data coverage is less than 20% [9].
 
-# Raster directors
+# Raster directories
 raster_dir_1 <- "/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea"
 raster_dir_2 <- "/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters"
 
-# CEA & global extent 
+# CEA projection & global extent
 cea_crs <- "+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
 ext_global <- ext(-17000000, 17000000, -8900000, 8900000)
 
-# Create the 110 km grid 
+# Create the 110 km grid template (global)
 grid_110 <- rast(ext = ext_global, resolution = 110000, crs = cea_crs)
-values(grid_110) <- 1:ncell(grid_110)  # unique cell IDs
+values(grid_110) <- 1:ncell(grid_110)  # unique cell IDs (1-based)
 
-# Prepare deployments
+# Prepare deployment points once (outside loop)
 deployments <- unique(full_dat[, .(proj_depl, latitude, longitude)])
 deploy_sf <- st_as_sf(deployments, coords = c("longitude", "latitude"), crs = 4326)
 deploy_vect <- vect(st_transform(deploy_sf, cea_crs))
 
-# Extract 110 km cell ID for every deployment point  
+# Assign each deployment to its 110 km cell ID (done once)
 deploy_cell_ids <- extract(grid_110, deploy_vect, method = "simple")[[1]]
 deployments[, grid_id_110km := deploy_cell_ids]
 
-# Results table
-results <- data.table(sp_binomial = character(),
-                      source_dir = character(),  
-                      total_range_110km = integer(),
-                      sampled_110km = integer())
+# Initialize results table
+results <- data.table(
+  sp_binomial       = character(),
+  source_dir        = character(),
+  total_range_110km = integer(),
+  sampled_110km     = integer()
+)
 
-# Species to process
+# Species list
 unique_species <- unique(species_counts$sp_binomial)
 
+# Main loop over species
 for (sp in unique_species) {
-  # Try first directory
+  
+  # Find raster file
   file_name <- paste0(gsub(" ", "_", sp), ".tif")
   path <- file.path(raster_dir_1, file_name)
   source_used <- "cea"
   
-  # Try second directory
   if (!file.exists(path)) {
     path <- file.path(raster_dir_2, file_name)
     source_used <- "plain"
   }
   
-  # Skip if still not found
   if (!file.exists(path)) {
     message("No raster found for ", sp, " in either directory")
     next
   }
   
-  # Aggregate to 110 km 
-  r <- rast(path)   
-  agg <- aggregate(r, fact = 110, fun = "sum", na.rm = TRUE)
+  # Load fine-resolution range raster
+  r <- rast(path)
   
-  # Cell counts as "in range" if it has at least 1 presence pixel
-  in_range_110 <- agg > 0
-  total_range_110km <- as.integer(global(in_range_110, "sum", na.rm = TRUE))
+  # Reproject to exact match with grid_110 CRS
+  r_aligned <- project(r, cea_crs, method = "near")
   
-  # Extract range presence at each deployment's 110 km cell location
-  vals_at_deploy <- extract(in_range_110, deploy_vect, method = "simple")[[1]]
+  # Step 1: Try global resampling with "sum" (most accurate)
+  agg <- resample(r_aligned, grid_110, method = "sum")
   
-  # Unique 110 km cells that are both in-range AND have at least one deployment
-  sampled_cells <- unique(deployments$grid_id_110km[vals_at_deploy == 1 & !is.na(vals_at_deploy)])
-  sampled_110km <- length(sampled_cells)
+  # Check if successful
+  mm <- minmax(agg)
+  agg_sum_global <- global(agg, "sum", na.rm = TRUE)$sum
+  
+  success <- !all(is.nan(mm)) && !all(is.na(mm)) && !is.na(agg_sum_global) && agg_sum_global > 0
+  
+  if (!success) {
+    message("Species ", sp, ": 'sum' on global grid empty → trying 'near'")
+    agg <- resample(r_aligned, grid_110, method = "near")
+    
+    mm <- minmax(agg)
+    agg_sum_global <- global(agg, "sum", na.rm = TRUE)$sum
+    success <- !all(is.nan(mm)) && !all(is.na(mm)) && !is.na(agg_sum_global) && agg_sum_global > 0
+  }
+  
+  # Step 2: If both global methods fail → fallback to local cropping + resampling
+  if (!success) {
+    message("Species ", sp, ": global methods failed → falling back to local crop + resampling")
+    
+    # Buffer around source extent
+    buf <- 150000  # meters
+    e_src <- ext(r_aligned)
+    e_buf <- ext(xmin(e_src) - buf, xmax(e_src) + buf,
+                 ymin(e_src) - buf, ymax(e_src) + buf)
+    
+    # Local target grid
+    local_grid <- crop(grid_110, e_buf, snap = "near", extend = TRUE)
+    
+    # Resample onto local grid
+    agg_local <- resample(r_aligned, local_grid, method = "sum")
+    
+    mm <- minmax(agg_local)
+    if (all(is.nan(mm)) || all(is.na(mm))) {
+      message("Species ", sp, ": 'sum' on local grid empty → fallback 'near'")
+      agg_local <- resample(r_aligned, local_grid, method = "near")
+    }
+    
+    # Final check
+    mm <- minmax(agg_local)
+    if (all(is.nan(mm)) || all(is.na(mm))) {
+      message("Species ", sp, ": all resampling attempts failed → treating as zero range")
+      total_range_110km <- 0L
+      in_range_110 <- grid_110 * 0  # dummy
+    } else {
+      in_range_110 <- agg_local > 0
+      
+      # Map presence back to global (for consistency)
+      overlap_cells <- which(!is.na(values(in_range_110)))
+      global_cell_ids <- local_grid[overlap_cells]
+      
+      in_range_global <- rep(FALSE, ncell(grid_110))
+      in_range_global[global_cell_ids] <- values(in_range_110)[overlap_cells]
+      
+      total_range_110km <- as.integer(sum(in_range_global, na.rm = TRUE))
+      in_range_110 <- rast(grid_110)  # dummy raster
+      values(in_range_110) <- in_range_global  # fill with mapped values
+    }
+  } else {
+    # Success with global resampling
+    in_range_110 <- agg > 0
+    total_range_110km <- as.integer(global(in_range_110, "sum", na.rm = TRUE))
+  }
+  
+  # ────────────────────────────────────────────────────────────────
+  # Robust sampled cells calculation (matches visualize_species_coverage)
+  # ────────────────────────────────────────────────────────────────
+  
+  # Rasterize deployments → count per cell
+  dep_count <- rasterize(deploy_vect, grid_110, fun = "length", background = 0)
+  
+  # Presence in cell (≥1 deployment)
+  dep_presence <- dep_count > 0
+  
+  # Sampled = in range AND has deployment
+  sampled_raster <- in_range_110 & dep_presence
+  
+  # Number of sampled cells
+  sampled_110km <- as.integer(global(sampled_raster, "sum", na.rm = TRUE))
+  
+  # Optional diagnostic (uncomment if needed)
+  # message(sp, ": total_range = ", total_range_110km, " | sampled = ", sampled_110km)
   
   # Store result
   results <- rbind(results, list(sp, source_used, total_range_110km, sampled_110km))
 }
 
-# Add percentage and sort by coverage (highest first)
+# Post-processing
 results[, coverage_pct := round(100 * sampled_110km / total_range_110km, 1)]
+results[total_range_110km == 0, coverage_pct := NA_real_]
+
+# Remove zero-range species (19 species still not calculating)
+spp_to_remove <- results[results$total_range_110km < 0,]$sp_binomial
+results <- results[total_range_110km > 0]
+species_counts <- species_counts[!species_counts$sp_binomial %in% spp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% spp_to_remove,]
+
+# View 
 setorder(results, -coverage_pct)
 head(results)
-hist(results$coverage_pct)
 
-# Combine
+# Merge with species_counts
 species_counts <- merge(species_counts,
                         results[, .(sp_binomial, total_range_110km, sampled_110km, coverage_pct)],
                         by = "sp_binomial",
                         all.x = TRUE)
-head(species_counts) 
+
+# View
+head(species_counts)
+
 
 # Map species coverage function 
 visualize_species_coverage <- function(sp) {
@@ -488,7 +578,11 @@ visualize_species_coverage <- function(sp) {
   # Crop rasters and grid to the range bounding box
   range_binary_cropped <- crop(range_binary, bb_vec)
   status_factor_cropped <- crop(status_factor, bb_vec)
-  grid_cropped <- crop(as.polygons(grid_110, aggregate = FALSE), bb_vec)
+  
+  presence_on_grid <- resample(r > 0, grid_110, method = "near")
+  grid_cropped <- grid_110 * presence_on_grid   
+  grid_cropped <- as.polygons(grid_cropped, na.rm = TRUE, dissolve = FALSE)
+  
   vals <- extract(r, deploy_vect, method = "simple")[, 2]   
   deploy_cropped <- deploy_vect[!is.na(vals) & vals > 0, ]
   
@@ -519,11 +613,11 @@ visualize_species_coverage <- function(sp) {
       data = deploy_cropped,
       color = "orange",
       size = 1.5,           # adjust size as needed
-      alpha = 0.8,
+      alpha = 0.5,
       shape = 16            # solid circle
     ) + 
     
-    geom_spatvector(data = grid_cropped, fill = NA, color = "grey", linewidth = 0.3) +
+    geom_spatvector(data = grid_cropped, fill = NA, color = "grey35", linewidth = 0.3) +
     
     labs(title = "CT Deployments in Range", 
          subtitle = paste0(sp, ": SSI = ", ssi_value)) +
@@ -531,7 +625,7 @@ visualize_species_coverage <- function(sp) {
 }
 
 # Run it for target species 
-(ssi_plot <- visualize_species_coverage(Panthera ))
+(ssi_plot <- visualize_species_coverage("Acinonyx jubatus"))
   
 # Save plot 
 sp <- "Panthera_onca"
@@ -541,6 +635,11 @@ ggsave(filename, plot = ssi_plot, width = 8, height = 6, dpi = 600)
 
 # Save products ---------------------------------------------------------------
 
+# Quick check 
+unique_species <- unique(species_counts$sp_binomial); length(unique_species) 
+unique_species_alldat <- unique(all_dat$sp_binomial); length(unique_species_alldat)
+
+species_counts[, intersect(c("class", "has_raster"), names(.SD)) := NULL]
 setorder(species_counts, -record_count)
 fwrite(species_counts, file = "WI data/species_counts.csv")
 fwrite(all_dat, file = "WI data/all_dat.csv")
