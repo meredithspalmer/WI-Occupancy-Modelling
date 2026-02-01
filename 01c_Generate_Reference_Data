@@ -6,8 +6,9 @@
 # This file contains code to generate reference products, including: 
 # 1) Reference 1x1km2 raster, 
 # 2) Reference 10x10km2 raster,  
-# 3) Matching WI locations to cell_IDs for 1x1km2 raster, and 
-# 4) Matching WI locations to cell_IDs for 10x10km2 raster 
+# 3) Matching WI locations to cell_IDs for 1x1km2 raster,  
+# 4) Matching WI locations to cell_IDs for 10x10km2 raster, 
+# 5) Creating a global species raster 
 
 # Run 1x
 
@@ -111,3 +112,31 @@ loc_cell_ID_10km <- loc_sf |>
 
 # Save
 fwrite(loc_cell_ID_10km, "WI data/WI_loc_matching_cell_ID_10km2.csv")
+
+
+# Global species raster (all species mmd_maps combined) -----------------------
+
+# Load mmd range maps 
+all_dat <- fread("WI data/all_dat.csv")
+species <- unique(all_dat$sp_binomial)
+species_file <- gsub(" ", "_", species)
+rm(all_dat); gc()
+
+# Generate paths 
+mmd_map_paths <- paste0("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif")
+
+# Check 
+if (any(!file.exists(mmd_map_paths))) {
+  missing <- mmd_map_paths[!file.exists(mmd_map_paths)]
+  stop(length(missing), " files missing. First few:\n", 
+       paste(head(basename(missing), 5), collapse = "\n"))
+}
+
+# Load rasters (load as collection - handles differing extents)
+coll <- sprc(mmd_map_paths)
+
+# Combine (1 if any species is present, NA otherwise) 
+global_presence <- mosaic(coll, fun = "max", filename  = "global_species_raster.tif",   
+  overwrite = TRUE, gda = c("COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9", "BIGTIFF=YES"),
+  progress  = TRUE)
+
