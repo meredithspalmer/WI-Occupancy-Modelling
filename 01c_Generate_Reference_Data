@@ -1,0 +1,113 @@
+######################################
+###### Generate Reference Data #######
+######################################
+
+# Project: WI Occupancy Range Wide Trends
+# This file contains code to generate reference products, including: 
+# 1) Reference 1x1km2 raster, 
+# 2) Reference 10x10km2 raster,  
+# 3) Matching WI locations to cell_IDs for 1x1km2 raster, and 
+# 4) Matching WI locations to cell_IDs for 10x10km2 raster 
+
+# Run 1x
+
+# Set worksace ----------------------------------------------------------------
+
+# Workplace
+rm(list=ls()); gc()
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+set.seed(123)
+
+# Libraries 
+library(raster)
+library(terra)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(data.table)
+library(sf)
+
+
+### Rasters -------------------------------------------------------------------
+
+# Load reference raster 
+reference_1km <- rast("Raw spatial layers/Global_1km_CEA_reference_raster.tif")
+
+# Reference 1x1 km2 raster ----------------------------------------------------
+
+# Generate cell_ID
+cell_id_layer <- init(reference, fun = "cell")   
+reference_1km2_with_id <- c(reference, cell_id_layer)
+names(reference_1km2_with_id) <- c("Global_reference_raster_1km_CEA", "cell_ID")
+
+# Save
+writeRaster(reference_1km2_with_id, "1x1 km spatial layers/reference_1km2.tif",
+            overwrite = TRUE, datatype = "INT4S")
+
+
+# Reference 10x10 km2 raster --------------------------------------------------
+
+# Aggregate 
+reference_10km2 <- aggregate(reference_1km, fact=10) #10 units in each direction
+names(reference_10km2) <- "Global_reference_raster_10km2_CEA"
+
+# Generate cell_ID 
+cell_id_layer <- init(reference_10km2, fun = "cell")   
+reference_10km2_with_id <- c(reference_10km2, cell_id_layer)
+names(reference_10km2_with_id) <- c("Global_reference_raster_10km_CEA", "cell_ID")
+
+# Save
+writeRaster(reference_10km2_with_id, "10x10 km spatial layers/reference_10km2.tif",
+            overwrite = TRUE, datatype = "INT4S")
+
+
+### Site matching -------------------------------------------------------------
+
+# Load species data 
+loc <- fread("WI data/all_dat.csv")
+
+# Format data 
+loc <- loc |>
+  distinct() |> collect() |>                             
+  mutate(longitude = as.numeric(longitude),
+         latitude = as.numeric(latitude)) |>
+  filter(!is.na(longitude), !is.na(latitude)) |>
+  distinct(proj_depl, longitude, latitude, .keep_all = TRUE)   
+
+loc_sf <- loc |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) |>  
+  st_transform(crs(reference_1km)) 
+
+
+# Site matching to 1x1 km2 raster ---------------------------------------------
+
+# Extract cell_ID from raster
+loc_cell_1km <- terra::extract(reference_1km2_with_id, vect(loc_sf))  
+
+# Combine and deduplicate by proj_depl (keep first cell_ID if point falls in multiple)
+loc_cell_ID_1km <- loc_sf |>
+  mutate(cell_ID = loc_cell_1km$cell_ID) |>
+  st_drop_geometry() |>   
+  group_by(proj_depl) |>
+  slice_head(n = 1) |>    
+  ungroup()
+
+# Save
+fwrite(loc_cell_ID_1km, "WI data/WI_loc_matching_cell_ID_1km2.csv")
+
+
+# Site matching to 10x10 km2 raster -------------------------------------------
+
+# Extract cell_ID from raster
+loc_cell_10km <- terra::extract(reference_10km2_with_id, vect(loc_sf))  
+
+# Combine and deduplicate by proj_depl (keep first cell_ID if point falls in multiple)
+loc_cell_ID_10km <- loc_sf |>
+  mutate(cell_ID = loc_cell_10km$cell_ID) |>
+  st_drop_geometry() |>   
+  group_by(proj_depl) |>
+  slice_head(n = 1) |>    
+  ungroup()
+
+# Save
+fwrite(loc_cell_ID_10km, "WI data/WI_loc_matching_cell_ID_10km2.csv")
