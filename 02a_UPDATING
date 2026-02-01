@@ -1,0 +1,640 @@
+##################################################
+###### Covariate Download & Pre-Processing #######
+##################################################
+
+# Project: WI Occupancy Range Wide Trends
+
+# This file contains code to download and pre-process, including: 
+# 1) Downloading EVI data 
+# 2) Aggregating 1km2 products at 10km2 scale 
+
+# Run 1x
+# Note that some data are downloaded manually 
+
+
+# Set workspace ---------------------------------------------------------------
+
+# Workspace
+rm(list=ls()); gc()
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+set.seed(123)
+
+# Libraries 
+library(sf)
+library(terra)
+library(raster)
+library(dplyr)
+library(modisfast)
+library(spData)
+library(ggplot2)
+library(stringr)
+
+
+## Bulk download EVI files from EOSDID ----------------------------------------
+
+# Identify data to download --- 
+# Login to EOSDIS Earthdata with your username and password  
+log <- mf_login(credentials = c("USERNAME", "PASSWORD")) #update with your own 
+
+# Define MODIS collections and variables (bands) of interest
+# Run mf_list_collections() for an exhaustive list of collections available
+collection <- "MOD13A3.061" 
+# Run mf_list_variables("MOD13A3.061") for an exhaustive list of variables available for the collection "MOD13A3.061"
+variables <- c("_1_km_monthly_EVI") 
+
+# Run for each country for each year ---
+data(world)
+countries <- world$name_long
+
+# Set ROI of interest (update manually; easier than looping)
+i <-1 
+(where <- countries[i])
+country <- world[world$name_long == where,]
+roi <- st_as_sf(data.frame(id = where, geom = st_as_sfc(st_bbox(country))))
+ggplot() + geom_sf(data=roi) + geom_sf(data=country) # quick check
+
+# Loop through years 
+for(year in seq(2001,2024)){ 
+  
+  # Set time frame of interest 
+  (start.date <- paste0(year,"-01-01"))
+  (end.date <- paste0(year,"-12-31"))
+  (time_range <- as.Date(c(start.date, end.date)))
+  
+  # Get the URLs of the data
+  urls <- mf_get_url(
+    collection = collection,
+    variables = variables,
+    roi = roi,
+    time_range = time_range)
+  
+  # Download the data
+  res_dl <- mf_download_data(urls, parallel = TRUE)
+  
+  # Transform to raster 
+  r <- mf_import_data(
+    path = dirname(res_dl$destfile[1]),
+    collection = collection,
+    proj_epsg = 4326
+  )
+  
+  # Check and save 
+  terra::plot(r, col = rev(terrain.colors(20)))
+  (filename <- paste0(where,"_",year,".tif"))
+  writeRaster(r, filename)
+}
+
+
+## Aggregate 1km2 data to 10km2 scale -----------------------------------------
+
+# Clear workspace
+rm(list=ls()); gc()
+
+# Load 10x10km2 raster grid 
+ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
+
+# Load data layers 
+rasters_paths <- c(
+  road_dens  =    "1x1 km spatial layers/road_full_1km2.tif",
+  tri        =    "1x1 km spatial layers/tri_1km2_on_ref_grid.tif",
+  river_dist =    "1x1 km spatial layers/riv_1km2_on_ref_grid.tif",
+  coeff_var  =    "1x1 km spatial layers/cv_1km2_on_ref_grid.tif",
+  cities_lg  =    "1x1 km spatial layers/ha_large_1km2_on_ref_grid.tif", 
+  ann_temp_2010 = "Raw spatial layers/CHELSA_bio1_1981-2010_v2-1.tif", 
+  ann_temp_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio1_2011-2040_v2-1.tif", 
+  annprec_2010  = "Raw spatial layers/CHELSA_bio12_1981-2010_v2-1.tif", 
+  annprec_2040  = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio12_2011-2040_v2-1.tif", 
+  precseas_2010 = "Raw patial layers/Projected CHELSA/warped_CHELSA_bio15_1981-2010_v2-1.tif", 
+  precseas_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio15_2011-2040_v2-1.tif", 
+  precwarm_2010 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_1981-2010_v2-1.tif", 
+  precwarm_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif"
+)
+
+# Note that:
+# - for CHELSA layers (2011-2040), using GFDL-ESM4 model; National Oceanic and Atmospheric Administration, Geophysical Fluid Dynamics Laboratory, Princeton, NJ 08540, USA 
+# - CHELSA layers were reprojected using "nearest neighbour", and set to match extent and resolution of reference layers in QGIS
+# - for bio15 (seasonal precipitation; 1981-2010), HPC layer threw errors, so redownloaded and processed original data 
+# - for bio18 (precipitation in warmest quarter; 1981-2010), no HPC layer, so downloaded and processed 
+
+# Output directory
+out_dir <- "10x10 km spatial layers/"
+
+# Function: aggregate + align + save
+aggregate_to_10km <- function(input_path, layer_name, target_raster, out_dir, fun = "mean") {
+  
+  # Load raster
+  r <- rast(input_path)
+  
+  # Check CRS
+  if (crs(r) != crs(target_raster)) {
+    message("CRS mismatch for ", basename(input_path), " — reprojecting")
+    r <- project(r, target_raster, method = if (fun == "mean") "bilinear" else "near")
+  }
+  
+  # Aggregate and align 
+  r_agg <- aggregate(r, fact = 10, fun = fun, na.rm = TRUE, cores = cores)
+  r_agg <- resample(r_agg, target_raster, method = if (fun == "mean") "bilinear" else "near")
+  
+  # Rename 
+  new_name <- paste0(layer_name, "_10km")
+  names(r_agg) <- new_name
+  
+  # Save 
+  out_file <- file.path(out_dir, paste0(new_name, ".tif"))
+  writeRaster(r_agg, out_file, 
+              overwrite = TRUE,
+              datatype = "FLT4S",
+              gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"))
+  
+  message("Saved: ", out_file, " (layer: ", new_name, ")")
+  rm(r, r_agg); gc()
+}
+
+# Run on all files
+Map(
+  aggregate_to_10km,
+  input_path     = rasters_paths,
+  layer_name     = names(rasters_paths),
+  target_raster  = ref_raster,
+  out_dir        = out_dir
+)
+
+
+
+
+
+
+
+# GFC - create 2022, 2023 rasters
+# because files so large, only merge files that fall within reference raster 
+reference <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+site_cells <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+
+# gfc 2022 
+hansen_files <- list.files("Raw spatial layers/hansen_data_2022", pattern = "\\.tif$", full.names = TRUE)
+vrt_raster <- vrt(hansen_files)
+vrt_raster #because file so large, immediately crop to reference raster rather than saving
+vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+test <- crop(vrt_reproj, reference_sub)
+extracted <- terra::zonal(test, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+summary(extracted)
+sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
+write.csv(extracted, "gfc_2022.csv", row.names=F)
+
+# gfc 2023 
+hansen_files <- list.files("Raw spatial layers/hansen_data_2023", pattern = "\\.tif$", full.names = TRUE)
+vrt_raster <- vrt(hansen_files)
+vrt_raster #because file so large, immediately crop to reference raster rather than saving
+vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+test <- crop(vrt_reproj, reference_sub)
+extracted <- terra::zonal(test, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+head(extracted)
+summary(extracted)
+sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
+write.csv(extracted, "gfc_2023.csv", row.names=F)
+
+# gfc 2024 -- downloading direct from URL 
+tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
+tile_names <- basename(tile_urls)
+
+# Download files
+# Note: some produced HTTP status 404 errors - skip and record these 
+tmp_dir <- tempdir()
+local_files <- file.path(tmp_dir, tile_names)
+
+# Data frame to track download status
+download_status <- data.frame(
+  url = tile_urls,
+  destfile = local_files,
+  success = NA,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(tile_urls)) {
+  if (!file.exists(local_files[i])) {
+    result <- tryCatch({
+      download.file(tile_urls[i], destfile = local_files[i], mode="wb", quiet=TRUE)
+      TRUE
+    }, error = function(e) {
+      warning(paste("Failed to download:", tile_urls[i]))
+      FALSE
+    })
+    download_status$success[i] <- result
+  } else {
+    download_status$success[i] <- TRUE
+  }
+}
+
+# Filter to only successfully downloaded files
+successful_files <- download_status$destfile[download_status$success]
+failed_files <- download_status[!download_status$success, ]
+nrow(failed_files) / length(tile_names) * 100 
+# -> almost 50% of urls do not have data associated with them... could be ocean files? see how much matches up with reference raster before panicking 
+
+# Create VRT from successfully downloaded tiles
+vrt_file <- file.path(tmp_dir, "lossyear.vrt")
+vrt_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
+
+# Reproject 
+vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+vrt_crop <- crop(vrt_reproj, reference_sub)
+extracted <- terra::zonal(vrt_crop, reference_sub, fun = mean, na.rm = TRUE, df = TRUE) 
+
+# Check 
+head(extracted)
+summary(extracted)
+sum(is.na(extracted$spat_756866bc4e4a6_480902_o8up7yuDdJ6XHBX))/nrow(extracted) * 100 #<1%
+
+# Save
+write.csv(extracted, "gfc_2024.csv", row.names=F)
+
+################################################################################
+### Prop WDPA ##################################################################
+################################################################################
+
+# Calculates the proportion of each grid cell contained within a WDPA polygon
+
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers/WDPA_Jan2025_Public_shp")
+rm(list=ls()); gc()
+
+library(terra)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+library(tidyr)
+
+# Create and load reference rasters with all site ids -------------------------
+
+# All terrestrial areas 
+reference <- reference <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif")
+land <- ne_countries(scale = "medium", returnclass = "sf")
+land_terra <- vect(land)
+if (crs(reference) != crs(land_terra)) {land_terra <- project(land_terra, crs(reference))}
+reference_land <- mask(reference, land_terra)
+
+# NOTE some sites not captured in land mask -- add manually 
+site_cells <- read.csv("../../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+existing_ids <- reference_land$cell_ID
+missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
+add_raster <- reference
+add_raster[!values(add_raster) %in% missing_ids] <- NA
+reference_land <- cover(reference_land, add_raster)
+
+# Create 1km2 raster
+ref_1km <- rast("../../Raw spatial layers/Global_1km_CEA_reference_raster.tif") 
+
+# Load and format WDPA polygons -----------------------------------------------
+shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
+shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
+shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+wdpa <- rbind(shape1, shape2, shape3)
+wdpa <- st_transform(wdpa, crs(ref_1km))
+
+# Rasterize and extract protected area proportions ----------------------------
+years <- 1999:2024
+results_list <- vector("list", length(years))
+
+for (i in seq_along(years)) {
+  yr <- years[i]
+  wdpa_yr <- wdpa %>% filter(STATUS_YR <= yr)
+  
+  r1_pa <- rasterize(vect(wdpa_yr), ref_1km, field=1, touches=TRUE)
+  r1_pa[is.na(r1_pa)] <- 0  # convert NA to 0
+  
+  # Use nearest assignment: each 1km cell inherits ID of 10km cell it falls in
+  r1_id <- resample(reference_land, ref_1km, method="near")
+  
+  # Extract values as data frame
+  df <- data.frame(
+    cell_ID = as.vector(r1_id$cell_ID),
+    inPA   = as.vector(r1_pa$layer)) 
+  sum(is.na(df$cell_ID))
+  
+  # Proportion of 1km cells inside PA per 10km cell
+  summary_df <- df %>%
+    group_by(cell_ID) %>%
+    summarise(prop_in_PA = mean(inPA, na.rm=TRUE)) %>% 
+    mutate(year = yr)
+  
+  results_list[[i]] <- summary_df
+}
+
+results_df <- dplyr::bind_rows(results_list)
+head(results_df); unique(results_df$year)
+
+write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full_new.csv", row.names=F)
+
+
+################################################################################
+### Prop Crop & Urban ##########################################################
+################################################################################
+
+# Calculates the proportion of each grid cell containing crop or forest landscape
+
+# Set workspace ---------------------------------------------------------------
+
+# Working directory 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers")
+rm(list = ls()); gc()
+
+# Load libraries 
+library(terra)
+library(dplyr)
+library(stringr)
+library(mgcv)     
+library(tidyr)
+library(rnaturalearth)
+
+
+# All terrestrial areas -------------------------------------------------------
+
+# Crop reference to land 
+reference <- reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif")
+land <- ne_countries(scale = "medium", returnclass = "sf")
+land_terra <- vect(land)
+if (crs(reference) != crs(land_terra)) {
+  land_terra <- project(land_terra, crs(reference))
+}
+reference_land <- mask(reference, land_terra)
+
+# Manully add missing WI sites 
+site_cells <- read.csv("../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
+existing_ids <- reference_land$cell_ID
+missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
+add_raster <- reference
+add_raster <- ifel(reference %in% missing_ids, reference, NA)
+reference_land <- cover(reference_land, add_raster)
+
+# Load coordinates
+coords <- as.data.frame(reference, xy=T) 
+
+
+# Classes & functions ---------------------------------------------------------
+
+# LC classes 
+crop_class <- c(10,11,12,20,30,40)
+#urban_class <- 190
+forest_class <- c(50, 60, 61, 62, 70, 71, 72, 80, 81, 82, 90, 160, 170)
+
+# Function to calculate proportions
+calculate_proportion <- function(class_values, lc_raster, grid_raster) {
+  binary_raster <- lc_raster %in% class_values
+  clipped_grid  <- crop(grid_raster, binary_raster)
+  clipped_grid  <- resample(clipped_grid, binary_raster, method = "near")
+  
+  df <- data.frame(cell_ID = as.vector(clipped_grid),
+                   value   = as.vector(binary_raster)) %>% 
+    filter(!is.na(cell_ID))
+  
+  prop_df <- df %>%
+    group_by(cell_ID) %>%
+    summarise(proportion = mean(value, na.rm = TRUE), .groups = "drop")
+  
+  return(prop_df)
+}
+
+
+# Process all files -----------------------------------------------------------
+
+years <- as.numeric(str_extract(basename(lc_files), "\\d{4}"))
+lc_files <- list.files("CCI landcover 1km2")
+
+# Process all files 
+class <- forest_class
+class_name <- "forest_class"
+
+prop_list <- lapply(seq_along(lc_files), function(i) {
+  file <- paste0("CCI landcover 1km2/", lc_files[i])
+  landcover <- rast(file)
+  if (!compareGeom(landcover, reference_land, stopOnError = FALSE)) {
+    landcover <- project(landcover, crs(reference_land), method="near")
+  }
+  prop_list <- calculate_proportion(class, landcover, reference_land)
+  prop_list$year <- years[i]
+  prop_list
+})
+prop_all <- bind_rows(prop_list)
+head(prop_all)
+
+filename <- paste0("../10x10 km spatial layers/", class_name, "1993-2022.csv")
+write.csv(crop_all, filename, row.names=F)
+
+
+# === SIMPLE PREDICTION FOR 2023–2024 ===
+forest_all <- merge(prop_all, coords, by.x = "cell_ID", by.y = "cell_ID", all.x = TRUE)
+
+good_cells <- forest_all %>% group_by(cell_ID) %>% 
+  filter(n() >= 8) %>% #cells with enough years of data to predict 
+  pull(cell_ID) %>% unique()
+forest_good <- filter(forest_all, cell_ID %in% good_cells)
+
+predictions <- forest_good %>%
+  group_by(cell_ID, x, y) %>%
+  do({
+    mod <- lm(proportion ~ year, data = .)                      
+    data.frame(year = c(2023, 2024),
+               proportion = predict(mod, newdata = data.frame(year = c(2023, 2024))))
+  }) %>%
+  ungroup()
+
+poor_cells <- setdiff(forest_all$cell_ID, good_cells)
+if (length(poor_cells) > 0) {
+  last_vals <- forest_all %>%
+    filter(cell_ID %in% poor_cells) %>%
+    summarise(proportion = last(proportion), .by = cell_ID) %>%   # one row per cell
+    uncount(2, .id = "tmp") %>%                                   # duplicate
+    mutate(year = 2022 + tmp) %>%                                 # 2023 and 2024
+    select(-tmp)
+  predictions <- bind_rows(predictions, last_vals)
+}
+
+predictions$proportion <- pmax(0, pmin(1, predictions$proportion))
+
+forest_final <- bind_rows(
+  forest_all %>% dplyr::select(cell_ID, year, proportion),
+  predictions %>% dplyr::select(cell_ID, year, proportion)) %>%
+  mutate(proportion = pmax(0, pmin(1, proportion))) %>%    
+  arrange(cell_ID, year)
+head(forest_final)
+
+write.csv(forest_final, "../10x10 km spatial layers/forest_proportion_1993_2024.csv", row.names = FALSE)
+
+
+############################################################################
+#######  GFC  ##############################################################
+############################################################################
+
+library(terra)
+
+## Create reference raster ----------------------------------------------------
+# Load
+reference <- rast("raster_100km2_with_cellID.tif")
+
+# Limit to cell_IDs present in dataset 
+site_cells <- read.csv("WI_loc_matching_cell_ID.csv") 
+
+# Mask reference raster 
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
+
+## Load Hansen tile URLS ------------------------------------------------------
+
+# Extract filenames 
+tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
+tile_names <- basename(tile_urls)
+
+# -> if lots of missing data, use the 2023 version (https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/lossyear.txt)
+
+# Download tiles with error handling 
+tmp_dir <- tempdir()
+local_files <- file.path(tmp_dir, tile_names)
+
+download_status <- data.frame(
+  url = tile_urls,
+  destfile = local_files,
+  success = NA,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(tile_urls)) {
+  if (!file.exists(local_files[i])) {
+    result <- tryCatch({
+      download.file(tile_urls[i], destfile = local_files[i], mode = "wb", quiet = TRUE)
+      TRUE
+    }, error = function(e) {
+      warning(paste("Failed to download:", tile_urls[i]))
+      FALSE
+    })
+    download_status$success[i] <- result
+  } else {
+    download_status$success[i] <- TRUE
+  }
+}
+
+# Keep only successfully downloaded tiles
+successful_files <- download_status$destfile[download_status$success]
+
+# Create VRT 
+vrt_file <- file.path(tmp_dir, "lossyear.vrt")
+loss_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
+
+# Crop and mask to reference raster
+loss_raster_proj <- project(loss_raster, crs(reference_sub))
+#vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
+
+loss_raster_crop <- crop(loss_raster_proj, reference_sub)
+#vrt_crop <- crop(vrt_reproj, reference_sub)
+loss_raster_mask <- mask(loss_raster_crop, reference_sub)
+
+## Compute annual forest loss -------------------------------------------------
+
+# Hansen lossyear values: 1-23 (or 1:23 for 2001-2023)
+years <- 1:23
+yearly_loss <- list()
+
+for (y in years) {
+  # 1 if loss occurred in year y, 0 otherwise
+  r_y <- classify(loss_raster_mask, cbind(-Inf, y-1, 0,
+                                          y, y, 1,
+                                          y+1, Inf, 0))
+  yearly_loss[[y]] <- r_y
+}
+names(yearly_loss) <- paste0("year_", years)
+
+# Summarize loss per year
+annual_loss_count <- sapply(yearly_loss, function(r) {
+  global(r, fun = "sum", na.rm = TRUE)
+})
+
+# Convert pixel counts to area in hectares
+# Assuming raster resolution in meters CHECK!! 
+res_m <- res(loss_raster_mask)[1]  # x and y should be same
+pixel_area_ha <- (res_m^2) / 10000
+annual_loss_area_ha <- annual_loss_count * pixel_area_ha
+
+# Results
+loss_summary <- data.frame(
+  year = 2000 + years,  # adjust according to Hansen version
+  pixels_lost = annual_loss_count,
+  area_ha = annual_loss_area_ha
+)
+print(loss_summary)
+
+# Save masked raster 
+writeRaster(loss_raster_mask, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
+cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
+
+
+## trying 
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+library(terra)
+
+## Reference raster ---------------------------------------------------------
+reference <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
+site_cells <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv")
+reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues = FALSE)
+
+## Hansen data --------------------------------------------------------------
+tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
+tile_names <- basename(tile_urls)
+
+# Download tiles with error handling 
+tmp_dir <- tempdir()
+local_files <- file.path(tmp_dir, tile_names)
+
+download_status <- data.frame(
+  url = tile_urls,
+  destfile = local_files,
+  success = NA,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(tile_urls)) {
+  if (!file.exists(local_files[i])) {
+    result <- tryCatch({
+      download.file(tile_urls[i], destfile = local_files[i], mode = "wb", quiet = TRUE)
+      TRUE
+    }, error = function(e) {
+      warning(paste("Failed to download:", tile_urls[i]))
+      FALSE
+    })
+    download_status$success[i] <- result
+  } else {
+    download_status$success[i] <- TRUE
+  }
+}
+
+# Keep only successfully downloaded tiles
+successful_files <- download_status$destfile[download_status$success]
+
+# Create VRT 
+vrt_file <- file.path(tmp_dir, "lossyear.vrt")
+loss_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
+
+# Project → crop → mask in one clean pass
+loss_raster <- project(loss_raster, reference_sub, method = "near")
+loss_raster <- crop(loss_raster, reference_sub)
+loss_raster <- mask(loss_raster, reference_sub)
+
+# Optional sanity check
+compareGeom(loss_raster, reference_sub, crs = TRUE, res = TRUE, orig = TRUE)
+
+## Summarize forest loss ----------------------------------------------------
+loss_freq <- freq(loss_raster, digits = 0, value = TRUE)
+pixel_area_ha <- (res(loss_raster)[1]^2) / 10000
+
+# Filter to valid Hansen lossyear values (1:23)
+loss_freq <- loss_freq[loss_freq$value %in% 1:23, ]
+
+loss_summary <- data.frame(
+  year = 2000 + loss_freq$value,
+  pixels_lost = loss_freq$count,
+  area_ha = loss_freq$count * pixel_area_ha
+)
+print(loss_summary)
+write.csv(loss_summary, "loss_summary.csv", row.names = FALSE)
+
+## Save masked raster -------------------------------------------------------
+writeRaster(loss_raster, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
+cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
