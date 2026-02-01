@@ -625,7 +625,7 @@ visualize_species_coverage <- function(sp) {
 }
 
 # Run it for target species 
-(ssi_plot <- visualize_species_coverage("Acinonyx jubatus"))
+(ssi_plot <- visualize_species_coverage("Canis rufus"))
   
 # Save plot 
 sp <- "Panthera_onca"
@@ -641,5 +641,423 @@ unique_species_alldat <- unique(all_dat$sp_binomial); length(unique_species_alld
 
 species_counts[, intersect(c("class", "has_raster"), names(.SD)) := NULL]
 setorder(species_counts, -record_count)
+fwrite(species_counts, file = "WI data/species_counts.csv")
+fwrite(all_dat, file = "WI data/all_dat.csv")
+
+
+# Update products -------------------------------------------------------------
+
+# Load generated file 
+species_counts <- fread("WI data/species_counts.csv") %>% 
+  dplyr::select(-"common_name")
+all_dat <- fread("WI data/all_dat.csv")
+
+# Load manually updated file -- fixed common names, added broad categorizations
+species_updates <- fread("WI data/species_counts_updated.csv") %>% 
+  dplyr::select(c("sp_binomial", "common_name", "broad_class", "max_kg"))
+
+# Add new columns 
+species_counts <- merge(species_counts, species_updates, by = "sp_binomial",
+                        all.x = TRUE)
+head(species_counts)
+
+# Filtering: 
+unique(species_counts$broad_class)
+
+# Remove largely arboreal and semi-aquatic species species
+sp_to_remove <- species_counts[species_counts$broad_class %in% 
+                                 c("Seal/Sea Lion", "Bat", "Primate", "Semi-aquatic",
+                                   "Arboreal omnivore", "Arboreal carnivore", "Arboreal rodent",
+                                   "Arboreal marsupial", "Arboreal frugivore"),]$sp_binomial
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Remove species <= 2 kg
+sp_to_remove <- species_counts[max_kg <= 2 & !is.na(max_kg), sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Remove species where pct_coverage < 4
+sp_to_remove <- species_counts[coverage_pct < 4, sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Remove species where unique_deployments < 5
+sp_to_remove <- species_counts[unique_deployments < 5, sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Remove species where total_range_110km == NA 
+sp_to_remove <- species_counts[is.na(species_counts$total_range_110km),]$sp_binomial
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+
+# Group selection: Bear
+View(species_counts[species_counts$broad_class == "Bear",])
+# -> all good: 10 bears; min coverage_pct = 4.5% 
+
+# Group selection: Large felid 
+View(species_counts[species_counts$broad_class == "Large felid",])
+# -> all good: 10 large felids; min coverage_pct = 4%
+
+# Group selection: Large canids
+View(species_counts[species_counts$broad_class == "Large canid",])
+# -> all good: 7 large canids, min coverage_pct = 4.8%
+
+# Group selection: Hyena
+View(species_counts[species_counts$broad_class == "Hyena",])
+# -> all good: 3 hyenas; min coverage_pct = 4.9%
+
+# Group selection: Even-toed ungulates
+View(species_counts[species_counts$broad_class == "Even-toed ungulate",])
+
+# -> 125 species; review continent by continent - aim for 2 per continent
+table(species_counts[species_counts$broad_class == "Even-toed ungulate",]$primary_continent)
+
+# Europe: 
+View(species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                      species_counts$primary_continent == "Europe",])
+# -> 2 Capra species, 2 Cervus species; reduce to 1 each for taxonomic diversity
+sp_to_remove <- c("Capra ibex", "Cervus elaphus")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 6
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "Europe",][
+                                   sample(.N, 8),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# S. America: 
+View(species_counts[species_counts$broad_class == "Even-toed ungulate" & species_counts$primary_continent == "South America",])
+# -> There are 7 Mazama spp -> select 3 of these taxonomic diversity
+# -> Pick species of highest conservation concern based on IUCN RL status 
+sp_to_remove <- c("Mazama gouazoubira", "Mazama nemorivaga", "Mazama rufina", "Mazama chunyi")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 8
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "South America",][
+                                   sample(.N, 8),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# N. America: 
+View(species_counts[species_counts$broad_class == "Even-toed ungulate" & species_counts$primary_continent == "North America",])
+# -> For some reason, "Hippotragus niger" listed as NAm when African; move
+species_counts[species_counts$sp_binomial == "Hippotragus niger",]$primary_continent <- "Africa"
+# -> Now 10 spp; all look good  
+# -> 3 Odocoileus species; select 1 for taxonomic diversity
+sp_to_remove <- c("Odocoileus virginianus", "Odocoileus pandora")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 6
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "North America",][
+                                   sample(.N, 6),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Asia: 
+View(species_counts[species_counts$broad_class == "Even-toed ungulate" & species_counts$primary_continent == "Asia",])
+# -> There are 4 Muntiacus rooseveltorums? remove 
+sp_to_remove <- "Muntiacus rooseveltorum" 
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> Remove species with coverage_pct < 5% &/or deployments < 10 
+sp_to_remove <- c("Ovis ammon", "Hydropotes inermis", "Boselaphus tragocamelus", "Capra sibirica", 
+                  "Tragulus nigricans")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> There are 6 Tragelaphus spp, 2 Potamochoerus spp, 2 Kobus spp, 11 Cephalophus spp -> select 1 of each for taxonomic diversity
+# -> Pick species of highest conservation concern based on IUCN RL; if same, pick randomly
+sp_to_remove <- c("Bos gaurus", "Capricornis crispus", "Moschiola indica", "Muntiacus atherodes", "Muntiacus muntjak", "Muntiacus vaginalis", "Sus scrofa", "Sus ahoenobarbus", "Tragulus napu")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> The rest look good; randomly sample 10 Asian species
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "Asia",][sample(.N, 8),
+                                                                              sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> The rest look good; randomly remove 8 species 
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "Asia",][sample(.N, 8),
+                                                                              sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Africa:
+View(species_counts[species_counts$broad_class == "Even-toed ungulate" & species_counts$primary_continent == "Africa",])
+# -> There are 4 Cephalophus ogilbyis? remove
+sp_to_remove <- "Cephalophus ogilbyi" 
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> Remove species with coverage_pct < 5% &/or deployments < 10 
+sp_to_remove <- c("Neotragus pygmaeus", "Redunca redunca", "Phacochoerus africanus", 
+                  "Redunca arundinum", "Giraffa camelopardalis", "Sylvicapra grimmia", 
+                  "Madoqua guentheri")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> There are 6 Tragelaphus spp, 2 Potamochoerus spp, 2 Kobus spp, 11 Cephalophus spp -> select 1 of each for taxonomic diversity
+# -> Pick species of highest conservation concern based on IUCN RL; if same, pick randomly
+sp_to_remove <- c("Tragelaphus oryx", "Tragelaphus spekii", "Tragelaphus strepsiceros", "Potamochoerus larvatus", "Kobus ellipsiprymnus", "Cephalophus callipygus", "Cephalophus dorsalis", "Cephalophus jentinki", "Cephalophus leucogaster", "Cephalophus natalensis", "Cephalophus nigrifrons", "Cephalophus silvicultor", "Cephalophus spadix", "Cephalophus weynsi", "Cephalophus zebra")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> All look good; randomly sample 10 African species
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "Africa",][sample(.N, 18),
+                                                                              sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> All look good; randomly remove 8 species 
+sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
+                                 species_counts$primary_continent == "Africa",][sample(.N, 8),
+                                                                                sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Group selection: Odd-toed ungulate
+View(species_counts[species_counts$broad_class == "Odd-toed ungulate",])
+# -> all good: 10 odd-toed ungulates; min coverage_pct = 4%
+
+# Group selection: Small felids
+View(species_counts[species_counts$broad_class == "Small felid",])
+
+# -> 18 species; review continent by continent - aim for 2 per continent
+table(species_counts[species_counts$broad_class == "Small felid",]$primary_continent)
+
+# Asia: 
+View(species_counts[species_counts$broad_class == "Small felid" & species_counts$primary_continent == "Asia",])
+# -> 2 Catopuma spp, remove 1: 
+sp_to_remove <- "Catopuma temminckii"
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 2
+sp_to_remove <- species_counts[species_counts$broad_class == "Small felid" &
+                                 species_counts$primary_continent == "Asia",][sample(.N, 2),
+                                                                                sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# South America: 
+View(species_counts[species_counts$broad_class == "Small felid" & species_counts$primary_continent == "South America",])
+# -> all Leopardus; select to keep Leopardus guigna and Leopardus guttulus as most threatened 
+sp_to_remove <- c("Leopardus colocola", "Leopardus geoffroyi", "Leopardus pardalis",
+                  "Leopardus tigrinus", "Leopardus wiedii")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Group selection: Small canids
+View(species_counts[species_counts$broad_class == "Small canid",])
+
+# -> 16 species, aim for 2 per continent (10 total) 
+table(species_counts[species_counts$broad_class == "Small canid",]$primary_continent)
+
+# S. America: 
+View(species_counts[species_counts$broad_class == "Small canid" & species_counts$primary_continent == "South America",])
+# -> 5 Lycalopex species; select 1 for taxonomic diversity
+sp_to_remove <- c("Lycalopex culpaeus", "Lycalopex griseus", "Lycalopex gymnocercus", 
+                  "Lycalopex vetulus")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 2
+sp_to_remove <- species_counts[species_counts$broad_class == "Small canid" &
+                                 species_counts$primary_continent == "South America",][
+                                   sample(.N, 2),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Group selection: Elephant
+View(species_counts[species_counts$broad_class == "Elephant",])
+# -> all good: 3 elephants, min coverage_pct = 5.9%
+
+# Group selection: Marsupials 
+View(species_counts[species_counts$broad_class %in% c("Large marsupial", "Small marsupial"),])
+# -> all good: 10 large marsupials, min coverage_pct = 8.6%
+# REDO: get large down to 5, get small down to 5 --> 
+# -> all large marsupials from Oceania; all look good; randomly remove 5
+sp_to_remove <- species_counts[species_counts$broad_class == "Large marsupial",][
+                                   sample(.N, 5),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> small marsupials: 
+View(species_counts[species_counts$broad_class == "Small marsupial",])
+table(species_counts[species_counts$broad_class == "Small marsupial",]$primary_continent)
+# -> get 2 on Oceania, 2 on S. America
+
+# Oceania: 
+View(species_counts[species_counts$broad_class == "Small marsupial" &
+                      species_counts$primary_continent == "Oceania",])
+# -> 2 Notamacropus species, 3 Petrogale species, 3 Thylogale species, 3 Trichosurus species; select 1 of each for taxonomic diveristy 
+sp_to_remove <- c("Notamacropus eugenii", "Petrogale brachyotis", "Petrogale lateralis", "Thylogale stigmatica", "Thylogale thetis", "Trichosurus caninus", "Trichosurus cunninghami")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all look good; randomly remove 12
+sp_to_remove <- species_counts[species_counts$broad_class == "Small marsupial" & species_counts$primary_continent == "Oceania",][
+  sample(.N, 12),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# South America: 
+View(species_counts[species_counts$broad_class == "Small marsupial" &
+                      species_counts$primary_continent == "South America",])
+# -> all Didelphis; randomly remove 1 
+sp_to_remove <- species_counts[species_counts$broad_class == "Small marsupial" & species_counts$primary_continent == "South America",][
+  sample(.N, 1),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Rename
+species_counts[species_counts$broad_class %in% c("Small marsupial", "Large marsupial"),]$broad_class <- "Marsupial"
+
+# Group selection: Rodent
+View(species_counts[species_counts$broad_class == "Rodent",])
+
+# -> 32 species; review continent by continent - aim for 2 per continent
+table(species_counts[species_counts$broad_class == "Rodent",]$primary_continent)
+
+# Africa: 
+View(species_counts[species_counts$broad_class == "Rodent" & species_counts$primary_continent == "Africa",])
+# -> 5 Hystrix species; select 1 for taxonomic diversity
+sp_to_remove <- "Hystrix africaeaustralis"
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 1
+sp_to_remove <- species_counts[species_counts$broad_class == "Rodent" &
+                                 species_counts$primary_continent == "Africa",][
+                                   sample(.N, 1),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Asia: 
+View(species_counts[species_counts$broad_class == "Rodent" & species_counts$primary_continent == "Asia",])
+# -> 3 Hystrix species, 2 Marmota species; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Hystrix brachyura", "Hystrix crassispinis", "Marmota himalayana")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 3
+sp_to_remove <- species_counts[species_counts$broad_class == "Rodent" &
+                                 species_counts$primary_continent == "Asia",][
+                                   sample(.N, 3),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# N. America:
+View(species_counts[species_counts$broad_class == "Rodent" & species_counts$primary_continent == "North America",])
+# -> 2 Marmota species; select 1 for taxonomic diversity
+sp_to_remove <- "Marmota caligata"
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 4
+sp_to_remove <- species_counts[species_counts$broad_class == "Rodent" &
+                                 species_counts$primary_continent == "North America",][
+                                   sample(.N, 4),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# S. America: 
+View(species_counts[species_counts$broad_class == "Rodent" & species_counts$primary_continent == "South America",])
+# -> 6 Dasyprocta species, 2 Hydrochoerus hydrochaeris; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Dasyprocta fuliginosa", "Dasyprocta leporina", "Dasyprocta prymnolopha",
+                  "Dasyprocta croconota", "Hydrochoerus hydrochaeris")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 4
+sp_to_remove <- species_counts[species_counts$broad_class == "Rodent" &
+                                 species_counts$primary_continent == "South America",][
+                                   sample(.N, 4),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Group selection: Smalls
+View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore"),])
+# -> Remove species with coverage_pct < 5% &/or deployments < 10 
+sp_to_remove <- c("Lepus victoriae", "Lepus tolai", "Mungos mungo", "Sorex vagrans", "Genetta victoriae", "Choloepus didactylus", "Neurotrichus gibbsii", "Dendrohyrax dorsalis", "Sorex cinereus", "Microtus pennsylvanicus", "Microtus ochrogaster")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# -> 32 species; review continent by continent - aim for 2 per continent
+table(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore"),]$primary_continent)
+
+# Africa:
+View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Africa",])
+# -> 3 Bdeogale species, 2 Dendrohyrax species, 2 Genetta species, 3 Rhynchocyon species; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Bdeogale jacksoni", "Bdeogale crassicauda", "Dendrohyrax arboreus", "	
+Genetta maculata", "Rhynchocyon cirnei", "Rhynchocyon udzungwensis")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 11
+sp_to_remove <- species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Africa",][
+                                   sample(.N, 11),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Asia:
+View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Asia",])
+# -> 3 Lepus species, 3 Melogale species, 2 Ochotona species, 5 Tupaia species, 3 Urva species, 4 Viverra species; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Lepus brachyurus", "Lepus nigricollis", "Melogale moschata", "Melogale personata", "Ochotona gloveri", "Tupaia belangeri", "Tupaia glis", "Tupaia palawanensis", "Tupaia tana", "Urva smithii", "Urva brachyura", "Viverra tangalunga", "Viverra zibetha", "Viverricula indica")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 12
+sp_to_remove <- species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Asia",][
+  sample(.N, 12),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Europe: 
+View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Europe",])
+# -> accidently classified Genetta genetta as European (Africa); remove
+sp_to_remove <- "Genetta genetta"
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> 2 Lepus species; select 1 for taxonomic diversity
+sp_to_remove <- "Lepus granatensis"
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 3
+sp_to_remove <- species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Europe",][
+  sample(.N, 3),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# N. America
+View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "North America",])
+# -> 4 Lepus species; 2 Mephitis species, 2 Microtus species, 8 Sylvilagus species; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Lepus townsendii", "Lepus americanus", "Lepus alleni", "Mephitis macroura", "Microtus californicus", "Sylvilagus aquaticus", "Sylvilagus audubonii", "Sylvilagus bachmani", "Sylvilagus floridanus", "Sylvilagus nuttallii", "Sylvilagus obscurus", "Sylvilagus palustris")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 10
+sp_to_remove <- species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "North America",][
+  sample(.N, 10),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# South America
+View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "South America",])
+# -> 2 Conepatus species, 2 Galictis species; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Conepatus chinga", "Galictis vittata")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 9
+sp_to_remove <- species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "South America",][
+  sample(.N, 9),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Rename
+species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore"),]$broad_class <- "Small mammals"
+
+# Quick check
+length(unique(species_counts$sp_binomial))
+length(unique(all_dat$sp_binomial))
+
+duplicated(species_counts$sp_binomial)
+unique(species_counts$sp_binomial[duplicated(species_counts$sp_binomial)])
+species_counts[species_counts$sp_binomial == "Ursus arctos",]
+species_counts <- species_counts[!duplicated(species_counts$sp_binomial), ]
+
+## Save! 
 fwrite(species_counts, file = "WI data/species_counts.csv")
 fwrite(all_dat, file = "WI data/all_dat.csv")
