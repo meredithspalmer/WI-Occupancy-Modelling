@@ -11,9 +11,9 @@
 
 # Run 1x
 
-# Set worksace ----------------------------------------------------------------
+# Set workspace ----------------------------------------------------------------
 
-# Workplace
+# Workspace
 rm(list=ls()); gc()
 setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
 set.seed(123)
