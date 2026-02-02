@@ -163,3 +163,40 @@ out_files <- Map(
   layer_name = names(rasters_paths),
   MoreArgs = list(target_raster = ref_raster, out_dir = out_dir)
 )
+
+# For rasters with >1 layer -- 
+
+rasters_paths <- c(
+  gwp ="Raw spatial layers/gpw_v4_PopDensity_rev11.tif"
+)
+
+# Function: reproject + resample/aggregate 
+aggregate_to_10km_MANY <- function(input_path, layer_name, target_raster, out_dir, fun = "mean") {
+
+  resamp_method <- ifelse(fun == "mean", "average", "near") 
+  r <- rast(input_path)
+  if (crs(r) != crs(target_raster)) {
+    message("CRS mismatch for ", basename(input_path), 
+            " — reprojecting to target CRS at fine resolution")
+    r <- project(r, crs(target_raster), method = "bilinear")  
+  }
+  r_agg <- resample(r, target_raster, method = resamp_method, threads = TRUE)
+  new_name <- paste0(layer_name, "_10km")
+  out_file <- file.path(out_dir, paste0(new_name, ".tif"))
+  writeRaster(r_agg, out_file,
+              overwrite = TRUE,
+              datatype = "FLT4S",
+              gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"))
+  
+  message("Saved: ", out_file, " (layer: ", new_name, ")")
+  rm(r, r_agg); gc()
+  return(out_file)   
+}
+
+# Run on all files and collect output paths
+out_files <- Map(
+  aggregate_to_10km_MANY,
+  input_path = rasters_paths,
+  layer_name = names(rasters_paths),
+  MoreArgs = list(target_raster = ref_raster, out_dir = out_dir)
+)
