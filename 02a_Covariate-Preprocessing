@@ -108,7 +108,8 @@ rasters_paths <- c(
   precseas_2010 = "Raw patial layers/Projected CHELSA/warped_CHELSA_bio15_1981-2010_v2-1.tif", 
   precseas_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio15_2011-2040_v2-1.tif", 
   precwarm_2010 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_1981-2010_v2-1.tif", 
-  precwarm_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif"
+  precwarm_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif", 
+  gwp =           "Raw spatial layers/gpw_v4_PopDensity_rev11.tif"
 )
 
 # Note that:
@@ -116,29 +117,6 @@ rasters_paths <- c(
 # - CHELSA layers were reprojected using "nearest neighbour", and set to match extent and resolution of reference layers in QGIS
 # - for bio15 (seasonal precipitation; 1981-2010), HPC layer threw errors, so redownloaded and processed original data 
 # - for bio18 (precipitation in warmest quarter; 1981-2010), no HPC layer, so downloaded and processed 
-
-# Output directory
-out_dir <- "10x10 km spatial layers/"
-
-# Load 10x10km2 raster grid
-ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
-
-# Load data layers
-rasters_paths <- c(
-  road_dens = "1x1 km spatial layers/road_full_1km2.tif",
-  tri = "1x1 km spatial layers/tri_1km2_on_ref_grid.tif",
-  river_dist = "1x1 km spatial layers/riv_1km2_on_ref_grid.tif",
-  coeff_var = "1x1 km spatial layers/cv_1km2_on_ref_grid.tif",
-  cities_lg = "1x1 km spatial layers/ha_large_1km2_on_ref_grid.tif",
-  ann_temp_2010 = "Raw spatial layers/CHELSA_bio1_1981-2010_v2-1.tif",
-  ann_temp_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio1_2011-2040_v2-1.tif",
-  annprec_2010 = "Raw spatial layers/CHELSA_bio12_1981-2010_v2-1.tif",
-  annprec_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio12_2011-2040_v2-1.tif",
-  precseas_2010 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio15_1981-2010_v2-1.tif",
-  precseas_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio15_2011-2040_v2-1.tif",
-  precwarm_2010 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_1981-2010_v2-1.tif",
-  precwarm_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif"
-)
 
 # Output directory
 out_dir <- "10x10 km spatial layers/"
