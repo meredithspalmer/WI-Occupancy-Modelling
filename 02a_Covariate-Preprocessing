@@ -7,6 +7,7 @@
 # This file contains code to download and pre-process, including: 
 # 1) Downloading EVI data 
 # 2) Aggregating 1km2 products at 10km2 scale 
+# Note that calculating proportions of 10km2 cells happens in 02b for WDPA, CCI layers 
 
 # Run 1x
 # Note that some data are downloaded manually 
