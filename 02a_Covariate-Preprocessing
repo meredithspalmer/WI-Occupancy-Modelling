@@ -108,8 +108,7 @@ rasters_paths <- c(
   precseas_2010 = "Raw patial layers/Projected CHELSA/warped_CHELSA_bio15_1981-2010_v2-1.tif", 
   precseas_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio15_2011-2040_v2-1.tif", 
   precwarm_2010 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_1981-2010_v2-1.tif", 
-  precwarm_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif", 
-  gwp =           "Raw spatial layers/gpw_v4_PopDensity_rev11.tif"
+  precwarm_2040 = "Raw spatial layers/Projected CHELSA/warped_CHELSA_bio18_2011-2040_v2-1.tif"
 )
 
 # Note that:
