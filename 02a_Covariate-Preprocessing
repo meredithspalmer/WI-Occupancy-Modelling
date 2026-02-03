@@ -165,13 +165,11 @@ out_files <- Map(
 
 # For rasters with >1 layer -- 
 
-rasters_paths <- c(
-  gwp ="Raw spatial layers/gpw_v4_PopDensity_rev11.tif"
-)
+rasters_paths <- c(gwp ="Raw spatial layers/gpw_v4_PopDensity_rev11.tif")
 
 # Function: reproject + resample/aggregate 
 aggregate_to_10km_MANY <- function(input_path, layer_name, target_raster, out_dir, fun = "mean") {
-
+  
   resamp_method <- ifelse(fun == "mean", "average", "near") 
   r <- rast(input_path)
   if (crs(r) != crs(target_raster)) {
@@ -199,3 +197,35 @@ out_files <- Map(
   layer_name = names(rasters_paths),
   MoreArgs = list(target_raster = ref_raster, out_dir = out_dir)
 )
+
+# For rasters with >1 layer -- 
+evi_files <- list.files("Raw spatial layers/EVI 1km2", full.names = TRUE)
+evi_list_raster <- lapply(evi_files, rast)
+out_dir <- "10x10 km spatial layers/EVI"
+
+for(i in 1:length(evi_list_raster, target_raster)){
+  
+  evi_file <- evi_list_raster[i]
+  evi_10km <- resample(evi_file, target_raster, method = "mean")
+  
+  # Keep original layer names  
+  names(evi_10km) <- names(names(evi_file[[1]]))
+  
+  # Output path
+  out_file <- file.path(out_dir, out_filename)
+  
+  # Write with good compression
+  gdal_opts <- c("COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9")
+  if (!compress) gdal_opts <- NULL
+  
+  writeRaster(evi_10km,
+              filename = out_file,
+              overwrite = TRUE,
+              datatype = "FLT4S",
+              gdal = gdal_opts,
+              progress = 1)
+  
+  # Clean up
+  rm(evi_10km); gc()
+  return(out_file)
+}
