@@ -11,8 +11,11 @@
 #       one column
 
 # Run 1x
-# But note: this extracts values species present in all_dat dataset; if add more 
+
+# Note: this extracts values species present in all_dat dataset; if add more 
 # species, will need to reprocess 
+# Note: this generates 10x10km2 data; 1x1km2 data are too large to generate/store, 
+# so run these for each species range of interest if necessary 
 
 
 # Set workspace -----------------------------------------------------------------
@@ -264,125 +267,6 @@ ggplot(static_10km, aes(x = x, y = y, fill = .data[[cov_value]])) +
 
 ## Annual dynamic layers: Global world population (GPW) -----------------------
 
-## 1km2 --- 
-
-# Load TIF files 
-gwp <- rast("Raw spatial layers/gpw_v4_PopDensity_rev11.tif")
-
-# Crop, resample, mask
-r_c_species <- crop(gwp, reference_species_1km)
-r_c_aligned <- resample(r_c_species, reference_species_1km, method = "near")
-r_c_species <- mask(r_c_aligned, reference_species_1km)
-full_stack <- c(reference_species_1km, r_c_species)
-
-# Check missing values raster-wide
-global(full_stack, "isNA")
-
-# Extract valid data 
-df <- as.data.frame(full_stack, na.rm = FALSE, cells = TRUE, xy = TRUE)
-setDT(df)
-valid_df <- df[!is.na(cell_ID)]
-
-# Isolate true NAs in valid cells per layer
-cov_layers <- names(gwp)   
-true_nas <- valid_df[, lapply(.SD, function(x) sum(is.na(x))), .SDcols = cov_layers]
-
-#  Spatial imputation per observed year (global mean as fallback) 
-if (any(true_nas > 0)) {
-  message("Imputing spatial missing values per layer...")
-  global_means <- valid_df[, lapply(.SD, mean, na.rm = TRUE), .SDcols = cov_layers]
-  global_means <- as.numeric(global_means)
-  names(global_means) <- cov_layers
-  
-  for (cov in cov_layers) {
-    na_idx <- which(is.na(valid_df[[cov]]))
-    if (length(na_idx) == 0) next
-    
-    train <- valid_df[!is.na(get(cov)), .(value = get(cov), x, y)]
-    if (nrow(train) < 3) {
-      valid_df[na_idx, (cov) := global_means[cov]]
-      next
-    }
-    
-    mod <- lm(value ~ x + y, data = train)
-    preds <- predict(mod, newdata = valid_df[na_idx, .(x, y)])
-    valid_df[na_idx, (cov) := preds]
-    
-    # Fallback
-    still_na <- na_idx[is.na(valid_df[[cov]][na_idx])]
-    if (length(still_na) > 0) valid_df[still_na, (cov) := global_means[cov]]
-  }
-}
-
-# Melt to long
-dt_long <- melt(valid_df, 
-                id.vars = c("cell_ID", "x", "y"),  
-                measure.vars = cov_layers,
-                variable.name = "layer",
-                value.name = "cov_value")
-dt_long[, year := as.integer(sub("GPW_", "", layer))]  
-
-# Temporal imputation per cell_ID
-# - Use linear interpolation (approx) between observed years
-# - Constant extrapolation for years outside observed range
-# - If only one observed year, all get that value
-
-# Get ALL relevant years directly from periods (no hard-coded skips)
-all_relevant_years <- sort(unique(periods$year))
-
-# Interpolate / fill per cell_ID over exactly these years
-interpolated_dt <- dt_long[, {
-  if (.N == 0 || all(is.na(cov_value))) {
-    data.table(year = all_relevant_years, cov_value = NA_real_)
-  } else {
-    # Remove any duplicate years (safety)
-    unique_obs <- unique(.SD[!is.na(cov_value), .(year, cov_value)])
-    setorder(unique_obs, year)
-    
-    # Linear interp + constant extrapolation
-    filled <- approx(x    = unique_obs$year,
-                     y    = unique_obs$cov_value,
-                     xout = all_relevant_years,
-                     rule = 2,           # constant extrapolation outside observed range
-                     method = "linear")$y
-    
-    data.table(year = all_relevant_years, cov_value = filled)
-  }
-}, by = cell_ID]
-
-# Safety: ensure no duplicate rows per cell_ID/year
-interpolated_dt <- unique(interpolated_dt, by = c("cell_ID", "year"))
-period_map <- unique(periods[, .(year, period_counter)])   
-
-interpolated_with_period <- interpolated_dt[
-  period_map,
-  on = "year",
-  allow.cartesian = TRUE
-]
-
-df_wide <- dcast(interpolated_with_period,
-                 cell_ID ~ period_counter,
-                 value.var = "cov_value")
-setorder(df_wide, cell_ID)
-
-# Convert to matrix  
-df_mat <- as.matrix(df_wide, rownames = "cell_ID")
-
-# Save full dataframe
-fwrite(df_mat, "Covariates for modelling/GPW_covariate_10x10km2.csv")
-
-# Plot to check 
-setDT(coords_10km)
-plot_df <- cbind(coords_10km[, .(x, y)], as.data.frame(df_mat))
-
-ggplot(plot_df) +
-  geom_tile(aes(x = x, y = y, fill = `99`), width = 10000, height = 10000) +
-  scale_fill_viridis_c(option = "magma") +
-  coord_equal() +
-  theme_minimal()
-
-
-
 ## 10km2 --- 
 
 # Load TIF files 
@@ -501,182 +385,25 @@ ggplot(plot_df) +
   theme_minimal()
 
 
-### TRYING THIS: 
+## Annual dynamic layers: Enhanced vegetation index (EVI) ---------------------
 
-## Annual dynamic layers: Global world population (GPW) -----------------------
-## 1km2 ---
-
-library(terra)
-library(data.table)
-library(zoo)   # ← for na.approx + na.locf (constant fill)
-
-# Load TIF files
-gwp <- rast("Raw spatial layers/gpw_v4_PopDensity_rev11.tif")
-
-# Crop, resample, mask
-r_c_species <- crop(gwp, reference_species_1km)
-r_c_aligned <- resample(r_c_species, reference_species_1km, method = "near")
-r_c_species <- mask(r_c_aligned, reference_species_1km)
-full_stack <- c(reference_species_1km, r_c_species)
-
-# Check missing values raster-wide
-global(full_stack, "isNA")
-
-# Extract valid data
-df <- as.data.frame(full_stack, na.rm = FALSE, cells = TRUE, xy = TRUE)
-setDT(df)
-valid_df <- df[!is.na(cell_ID)]
-
-# Isolate true NAs in valid cells per layer
-cov_layers <- names(gwp)
-true_nas <- valid_df[, lapply(.SD, function(x) sum(is.na(x))), .SDcols = cov_layers]
-
-# Spatial imputation per observed year (global mean as fallback)
-if (any(true_nas > 0)) {
-  message("Imputing spatial missing values per layer...")
-  global_means <- valid_df[, lapply(.SD, mean, na.rm = TRUE), .SDcols = cov_layers]
-  global_means <- as.numeric(global_means)
-  names(global_means) <- cov_layers
-  
-  for (cov in cov_layers) {
-    na_idx <- which(is.na(valid_df[[cov]]))
-    if (length(na_idx) == 0) next
-    
-    train <- valid_df[!is.na(get(cov)), .(value = get(cov), x, y)]
-    if (nrow(train) < 3) {
-      valid_df[na_idx, (cov) := global_means[cov]]
-      next
-    }
-    
-    mod <- lm(value ~ x + y, data = train)
-    preds <- predict(mod, newdata = valid_df[na_idx, .(x, y)])
-    valid_df[na_idx, (cov) := preds]
-    
-    # Fallback
-    still_na <- na_idx[is.na(valid_df[[cov]][na_idx])]
-    if (length(still_na) > 0) valid_df[still_na, (cov) := global_means[cov]]
-  }
-}
-
-# Melt to long (only non-NA values needed for pivoting)
-dt_long <- melt(valid_df,
-                id.vars = c("cell_ID"),
-                measure.vars = cov_layers,
-                variable.name = "layer",
-                value.name = "cov_value")[!is.na(cov_value)]
-
-dt_long[, year := as.integer(sub("GPW_", "", layer))]
-dt_long[, layer := NULL]
-
-# Vectorized temporal imputation 
-
-# 1. Get sorted list of all years we need
-all_relevant_years <- sort(unique(periods$year))
-
-# 2. Pivot observed values to wide (cell_ID × year)
-observed_wide <- dcast(
-  dt_long,
-  cell_ID ~ year,
-  value.var = "cov_value",
-  fill = NA_real_
-)
-
-# 3. Create complete template (all cells × all years)
-template <- CJ(
-  cell_ID = unique(observed_wide$cell_ID),
-  year    = all_relevant_years
-)
-
-# 4. Left join → observed values where available, NA elsewhere
-filled_wide <- merge(
-  template,
-  observed_wide,
-  by = "cell_ID",
-  all.x = TRUE
-)
-
-# 5. Convert value columns to matrix (rows = cells, columns = years)
-#    Columns must be sorted by year
-year_cols <- as.character(all_relevant_years[all_relevant_years %in% names(filled_wide)[-1]])
-val_mat <- as.matrix(filled_wide[, ..year_cols])
-
-# 6. Fast row-wise interpolation + constant extrapolation
-interp_mat <- t(apply(val_mat, 1, function(row) {
-  # na.approx does linear interpolation
-  # na.locf fills forward/backward constantly (rule=2 behavior)
-  row_filled <- na.approx(row, na.rm = FALSE)
-  row_filled <- na.locf(row_filled, na.rm = FALSE)           # forward fill
-  row_filled <- na.locf(row_filled, fromLast = TRUE, na.rm = FALSE)  # backward fill
-  row_filled
-}))
-
-# If any row was all NA → keep all NA
-all_na_rows <- rowSums(!is.na(val_mat)) == 0
-if (any(all_na_rows)) {
-  interp_mat[all_na_rows, ] <- NA_real_
-}
-
-# 7. Back to data.table in long format
-interpolated_dt <- data.table(
-  cell_ID = filled_wide$cell_ID,
-  interp_mat
-)
-
-setnames(interpolated_dt, old = 2:ncol(interpolated_dt), new = year_cols)
-interpolated_dt <- melt(
-  interpolated_dt,
-  id.vars = "cell_ID",
-  variable.name = "year_char",
-  value.name = "cov_value",
-  variable.factor = FALSE
-)
-interpolated_dt[, year := as.integer(year_char)]
-interpolated_dt[, year_char := NULL]
-
-# Safety: remove any accidental duplicates
-interpolated_dt <- unique(interpolated_dt, by = c("cell_ID", "year"))
-
-# ────────────────────────────────────────────────────────────────
-# Continue with your original join + pivot
-# ────────────────────────────────────────────────────────────────
-
-period_map <- unique(periods[, .(year, period_counter)])
-
-interpolated_with_period <- interpolated_dt[
-  period_map,
-  on = "year",
-  allow.cartesian = TRUE
-]
-
-df_wide <- dcast(interpolated_with_period,
-                 cell_ID ~ period_counter,
-                 value.var = "cov_value")
-
-setorder(df_wide, cell_ID)
-
-# Convert to matrix if needed
-df_mat <- as.matrix(df_wide, rownames = "cell_ID")
-
-# Save full dataframe
-fwrite(df_wide, "Covariates for modelling/GPW_covariate_1km.csv")
-
-
-
-
-## Enhanced vegetation index (EVI) --------------------------------------------
+## 10km2 --- 
 
 # Load TIF files 
-evi_files <- list.files("EVI", full.names = TRUE)
+evi_files <- list.files("10x10 km spatial layers/EVI", full.names = TRUE)
 evi_list_raster <- lapply(evi_files, rast)
 evi_stack <- rast(evi_list_raster)
 names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
 
 # Extract mean values for each cell_ID across all rasters in the stack
-extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE) 
+evi_aligned <- crop(evi_stack, reference_species_10km)
+evi_aligned <- mask(evi_aligned, reference_species_10km)
+extracted <- terra::zonal(evi_aligned, reference_species_10km, fun = mean, na.rm = TRUE, df = TRUE)
 extracted <- as.data.table(extracted)
 head(extracted)
 
 # Convert to long
+setDT(extracted)
 dt_long <- melt(extracted,
                 id.vars = "cell_ID",
                 variable.name = "date",
@@ -693,7 +420,7 @@ dt_long[, obs_end   := as.IDate(obs_date)]
 dt_long_test <- dt_long %>% select(-doy)
 setcolorder(dt_long_test, c("obs_start", "obs_end", setdiff(names(dt_long_test), c("obs_start","obs_end"))))
 
-periods <- as.data.table(periods)
+periods <- setDT(periods)
 periods[, start_period := as.IDate(start_period)]
 periods[, end_period   := as.IDate(end_period)]
 periods_test <- periods %>% select(-season, -period)
@@ -715,13 +442,11 @@ dt_period <- dt_long_test[, .(
   cov_value = mean(cov_value, na.rm = TRUE)
 ), by = .(cell_ID, period_counter, year)]
 
-save <- dt_period
-
 # Ensure one row per cell_ID per period 
 all_ids <- dt_period[, unique(cell_ID)]
 all_periods <- unique(periods[, .(period_counter)])
 
-# Use cross join with CJ() safely
+# Cross join
 full_grid <- CJ(cell_ID = unique(dt_period$cell_ID),        
                 period_counter = unique(periods$period_counter))
 
@@ -731,24 +456,21 @@ dt_complete <- merge(full_grid, dt_period,
                      all.x = TRUE)
 dt_complete <- dt_complete[!is.na(dt_complete$cell_ID),]
 
-head(dt_complete)
-write.csv(dt_complete, "evi_save.csv", row.names=F)
-
-periods[periods$period_counter == 55,]
-dt_complete[dt_complete$period_counter == 55,]$year <- 2013
-#I don't know why this doesn't just work...
-dt_complete[is.na(dt_complete$year),] 
+# Fix weird issue 
+unique(dt_complete[is.na(dt_complete$year),]$period_counter)
+year <- periods[periods$period_counter == 55,]$year
+dt_complete[dt_complete$period_counter == 55,]$year <- year
 
 # Add coordinates
-coords_dt <- as.data.table(coords)
-dt_complete <- coords_dt[dt_complete, on = "cell_ID"]
+coords_10km <- setDT(coords_10km)
+dt_complete <- coords_10km[dt_complete, on = "cell_ID"]
 
 # Ridge regression imputation per year
 impute_ridge_by_year <- function(dt) {
   dt[, cov_value := as.numeric(cov_value)]
   
   dt_imputed <- dt[, {
-    this <- copy(.SD)   # make a modifiable copy
+    this <- copy(.SD)    
     train <- this[!is.na(cov_value) & !is.nan(cov_value)]
     
     if (nrow(train) >= 3 && length(unique(train$cov_value)) > 1) {
@@ -771,7 +493,7 @@ impute_ridge_by_year <- function(dt) {
                                 preds, this$cov_value)
     }
     
-    this  # return updated data.table for this group
+    this   
   }, by = year]
   
   return(dt_imputed[])
@@ -781,14 +503,10 @@ dt_imputed <- impute_ridge_by_year(dt_complete)
 
 # Pivot to final matrix
 setkey(dt_imputed, cell_ID, period_counter)
-EVI_mat <- dcast(
-  dt_imputed,
-  cell_ID ~ period_counter,
-  value.var = "cov_value",
-  fill = NA_real_
-)
-
-head(EVI_mat)
+EVI_mat <- dcast(dt_imputed,
+                 cell_ID ~ period_counter,
+                 value.var = "cov_value",
+                 fill = NA_real_)
 
 # Plot to check
 selected_year <- "2007"
@@ -798,215 +516,175 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
   coord_equal() + theme_minimal()
 
-# Save full dataframe --- DO THIS! 
-write.csv(EVI_mat, "../Covariates for modelling/primary_occ_covariates_EVI_full.csv", row.names = F)
-
-# Subset to sites --- DO THIS! 
-subset_mat <- EVI_mat[EVI_mat$cell_ID %in% site_cells$cell_ID, ]
-write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_EVI_sites.csv", row.names = F)
+# Save full dataframe
+fwrite(EVI_mat, "Covariates for modelling/EVI_covariate_10x10km2.csv")
 
 
-## For pipeline
+## Proportion non-natural landcover, forest (CCI ESI) -------------------------
 
-library(data.table)
-library(terra)
-library(zoo)        # for na.approx (linear interpolation)
-library(lubridate)
+# LC classes 
+forest_class <- c(50, 60, 61, 62, 70, 71, 72, 80, 81, 82, 90, 160, 170)
+unnatural_areas <- c(10, 20, 30, 40, 190)
 
-# Read reference 
-reference_land <- rast("10x10 km spatial layers/raster_100km2_with_cellID_terrestrial.tif")
+# Load TIF files 
+lc_files <- list.files("Raw spatial layers/CCI landcover 1km2", pattern = "\\.tif$", 
+                       full.names = TRUE)
 
-# Load TIF files
-evi_files <- list.files("10x10 km spatial layers/EVI", full.names = TRUE)
-evi_list_raster <- lapply(evi_files, rast)
-evi_stack <- rast(evi_list_raster)
-names(evi_stack) <- gsub(".{11}$", "", basename(evi_files))
+years <- as.integer(sub(".*CCI_([0-9]{4})_REPRO\\.tif", "\\1", basename(lc_files)))
+lc_files <- lc_files[years >= min(periods$year)]
+r_stack <- rast(lc_files)
 
-# Extract mean values for each cell_ID
-extracted <- terra::zonal(evi_stack, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
-extracted <- as.data.table(extracted)
+# Crop and mask to the extent of mmd_raster 
+r_c_species <-     crop(r_stack, reference_species_10km)           
+r_c_species <-     mask(r_c_species, reference_species_10km)  
 
-# Convert to long format with proper date
-dt_long <- melt(extracted,
-                id.vars = "cell_ID",
-                variable.name = "date_str",
-                value.name = "cov_value")
-setDT(dt_long)
-dt_long[, c("year", "doy") := tstrsplit(gsub("evi_", "", date_str), "_", fixed = TRUE)]
-dt_long[, year := as.integer(year)]
-dt_long[, doy := as.integer(doy)]
-dt_long[, obs_date := as.Date(doy - 1, origin = paste0(year, "-01-01"))]
-dt_long[, date_str := NULL]
-
-## Create full periods template
-min_year <- 2000  
-max_year <- 2024 
-range_year <- c(min_year, max_year)
-min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
-max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
-end_period <-  c(start_period[-1] - 1, NA)
-
-periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
-                      start_period = start_period, 
-                      end_period = end_period) 
-periods <- periods[-nrow(periods),]
-periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
-periods$year <- year(periods$start_period)
-periods$period_counter <- 1:nrow(periods)
-head(periods)
-
-# Match each observation date to its 91-day period
-periods_dt <- as.data.table(periods)[, .(start_period, end_period, year, season)]
-
-# Use foverlaps to assign period info to each observation
-setkey(dt_long, obs_date, obs_date)
-setkey(periods_dt, start_period, end_period)
-
-dt_with_period <- dt_long[
-  periods_dt,
-  on = .(obs_date >= start_period, obs_date <= end_period),
-  .(cell_ID, cov_value, obs_date, year = i.year, season = i.season),
-  nomatch = NULL  
-]
-
-# Keep only relevant columns
-dt_with_period <- dt_with_period[, .(cell_ID, year, season, cov_value)]
-
-# Aggregate: mean EVI per cell × period (in case multiple rasters fall in one period)
-dt_period <- dt_with_period[
-  , .(cov_value = mean(cov_value, na.rm = TRUE)),
-  by = .(cell_ID, year, season)
-]
-
-# Create full grid: every cell_ID × every period (year + season)
-full_grid <- CJ(
-  cell_ID = unique(dt_period$cell_ID),
-  year = unique(periods$year),
-  season = unique(periods$season)
-)
-
-# Merge to ensure one row per cell × period
-dt_full <- merge(full_grid, dt_period, 
-                 by = c("cell_ID", "year", "season"), 
-                 all.x = TRUE)
-
-# Linear interpolation within each cell_ID over time
-# Order periods chronologically (assuming season order: Winter → Spring → Summer → Fall)
-season_order <- c("Spring", "Summer", "Fall", "Winter")
-dt_full[, season_factor := factor(season, levels = season_order)]
-dt_full <- dt_full[order(cell_ID, year, season_factor)]
-
-# Interpolate missing cov_value within each cell_ID
-dt_imputed <- dt_full[
-  , cov_value := na.approx(cov_value, na.rm = FALSE, rule = 2),   
-  by = cell_ID
-]
-
-# Final clean-up
-dt_final <- dt_imputed[, .(cell_ID, year, season, cov_value)]
-dt_final <- dt_final[order(cell_ID, year, season_factor)]
-
-# Remove helper column
-dt_final[, season_factor := NULL]
-
-# Save if desired
-fwrite(dt_final, "10x10 km spatial layers/evi_long_interpolated.csv", row.names=F)
+# Add cell_IDs 
+cell_id_species <- crop(global_cell_id, reference_species_10km)
+cell_id_species <- mask(cell_id_species, reference_species_10km)
+full_stack <-      c(cell_id_species, r_c_species)
 
 
 
+# As data frame
+landcover_df <-       as.data.frame(full_stack, na.rm = TRUE, xy=TRUE)
 
-## Global Forest Cover (GFC) --------------------------------------------------
+# Check cells in mmd
+landcover_cells <- landcover_df %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
+missing_in_landcover <- setdiff(sites, landcover_cells)
+cat("Cells missing in landcover: ", length(missing_in_landcover), "\n")
 
-# Load TIF files 2001:2021 (NOTE: don't have the 2013 raster - download when can)
-gfc_files <- list.files("../Raw spatial layers/GFC", full.names = TRUE)
-gfc_list_raster <- lapply(gfc_files, rast)
-gfc_stack <- rast(gfc_list_raster)
+# Melt to long 
+setDT(landcover_df)  
+landcover_long <- melt(landcover_df,
+                       id.vars       = c("x", "y", "cell_ID"),
+                       measure.vars  = grep("^CCI_[0-9]{4}_REPRO$", names(landcover_df), 
+                                            value = TRUE),
+                       variable.name = "year_var",
+                       value.name    = "landcover_class")
+setDT(landcover_long)
+landcover_long[, year := as.integer(sub("^CCI_([0-9]{4})_REPRO$", "\\1", year_var))]
+landcover_long[, year_var := NULL]
+setorder(landcover_long, cell_ID, year)
 
-# Align and extract GFC values 
-gfc_stack_aligned <- project(gfc_stack, reference_land, method = "near")
-extracted <- terra::zonal(gfc_stack_aligned, reference_land, fun = mean, na.rm = TRUE, df = TRUE)
-head(extracted)
+# Create crop and forest columns 
+landcover_long[, crop   := ifelse(landcover_class %in% crop_class,  1L, 0L)]
+landcover_long[, forest := ifelse(landcover_class %in% forest_class, 1L, 0L)]
+setDT(landcover_long)
 
-# Format data frame 
-df_long <- extracted %>%
-  pivot_longer(
-    cols = starts_with("GFC_"),
-    names_to = "date",
-    values_to = "GFC") %>%
-  mutate(year = str_extract(date, "\\d{4}") %>% as.integer())
+# Define future years
+future_years <- c(2023, 2024)
 
-# Add x & y coordinates
-coords <- as.data.frame(reference, xy=T)
-df_long <- merge(df_long, coords, all.x=T) %>% 
-  dplyr::select(-date) %>% 
-  rename(cov_value = GFC)
+# Extrapolate by carrying forward last observed values per cell_ID
+landcover_future <- landcover_long[, {
+  last_row <- .SD[which.max(year)] 
+  .(year = future_years,
+    crop = last_row$crop,
+    forest = last_row$forest)
+}, by = .(x, y, cell_ID)]
 
-# Fit GAM: smooth in x, y, and year
-gam_model <- gam(cov_value ~ s(x, y) + s(year), data = df_long, na.action = na.exclude)
+# Combine observed + predicted 
+landcover_full_long <- rbindlist(list(landcover_long[, .(x, y, cell_ID, year, crop, forest)], landcover_future), use.names = TRUE)
+setorder(landcover_full_long, cell_ID, year)
 
-# Ensure all cell_ids have all years 
-df_filled <- df_long %>%
-  group_by(cell_ID) %>%
-  complete(year = setdiff(2001:2021, 2013)) %>%
+# Join period_counter to each year 
+landcover_data <- landcover_full_long[periods[, .(year, period_counter)], 
+                                      on = "year", 
+                                      allow.cartesian = TRUE]
+setorder(landcover_data, cell_ID, year, period_counter)
+head(landcover_data)
+
+rm(landcover_full_long, landcover_future, landcover_long, landcover_df); gc()
+
+
+## Proportion forest & proportion of unnatural areas (CCI ESI) ----------------
+
+
+
+# Function to calculate proportions
+calculate_proportion <- function(class_values, lc_raster, grid_raster) {
+  binary_raster <- lc_raster %in% class_values
+  clipped_grid  <- crop(grid_raster, binary_raster)
+  clipped_grid  <- resample(clipped_grid, binary_raster, method = "near")
+  
+  df <- data.frame(cell_ID = as.vector(clipped_grid),
+                   value   = as.vector(binary_raster)) %>% 
+    filter(!is.na(cell_ID))
+  
+  prop_df <- df %>%
+    group_by(cell_ID) %>%
+    summarise(proportion = mean(value, na.rm = TRUE), .groups = "drop")
+  
+  return(prop_df)
+}
+
+years <- as.numeric(str_extract(basename(lc_files), "\\d{4}"))
+lc_files <- list.files("CCI landcover 1km2")
+
+# Process forest files 
+class <- forest_class
+class_name <- "forest_class"
+
+prop_list <- lapply(seq_along(lc_files), function(i) {
+  file <- paste0("CCI landcover 1km2/", lc_files[i])
+  landcover <- rast(file)
+  if (!compareGeom(landcover, reference_land, stopOnError = FALSE)) {
+    landcover <- project(landcover, crs(reference_land), method="near")
+  }
+  prop_list <- calculate_proportion(class, landcover, reference_species_10km)
+  prop_list$year <- years[i]
+  prop_list
+})
+prop_all <- bind_rows(prop_list)
+head(prop_all)
+
+filename <- paste0("../10x10 km spatial layers/", class_name, "1993-2022.csv")
+fwrite(crop_all, filename)
+
+
+
+# === SIMPLE PREDICTION FOR 2023–2024 ===
+forest_all <- merge(prop_all, coords, by.x = "cell_ID", by.y = "cell_ID", all.x = TRUE)
+
+good_cells <- forest_all %>% group_by(cell_ID) %>% 
+  filter(n() >= 8) %>% #cells with enough years of data to predict 
+  pull(cell_ID) %>% unique()
+forest_good <- filter(forest_all, cell_ID %in% good_cells)
+
+predictions <- forest_good %>%
+  group_by(cell_ID, x, y) %>%
+  do({
+    mod <- lm(proportion ~ year, data = .)                      
+    data.frame(year = c(2023, 2024),
+               proportion = predict(mod, newdata = data.frame(year = c(2023, 2024))))
+  }) %>%
   ungroup()
 
-# Create prediction df for 1999:2000, 2013, 2022:2024 and for missing data 
-newdata <- expand.grid(
-  cell_ID = unique(df_filled$cell_ID),
-  year = c(1999:2000, 2013, 2022:2024)
-)
+poor_cells <- setdiff(forest_all$cell_ID, good_cells)
+if (length(poor_cells) > 0) {
+  last_vals <- forest_all %>%
+    filter(cell_ID %in% poor_cells) %>%
+    summarise(proportion = last(proportion), .by = cell_ID) %>%   # one row per cell
+    uncount(2, .id = "tmp") %>%                                   # duplicate
+    mutate(year = 2022 + tmp) %>%                                 # 2023 and 2024
+    select(-tmp)
+  predictions <- bind_rows(predictions, last_vals)
+}
 
-missing_vals <- df_filled[is.na(df_filled$cov_value),] %>% 
-  dplyr::select(-cov_value, -x, -y)
-df_filled <- df_filled[!is.na(df_filled$cov_value),]
+predictions$proportion <- pmax(0, pmin(1, predictions$proportion))
 
-newdata <- rbind(newdata, missing_vals)
-newdata <- merge(newdata, coords, by = "cell_ID", all.x = TRUE)
+forest_final <- bind_rows(
+  forest_all %>% dplyr::select(cell_ID, year, proportion),
+  predictions %>% dplyr::select(cell_ID, year, proportion)) %>%
+  mutate(proportion = pmax(0, pmin(1, proportion))) %>%    
+  arrange(cell_ID, year)
+head(forest_final)
 
-# Predict missing + new years
-newdata$cov_value <- predict(gam_model, newdata = newdata)
-head(newdata)
-
-# Format 
-df_long_combo <- rbind(df_filled, newdata) %>% 
-  mutate(year = as.integer(year)) %>% 
-  dplyr::select(-c(x,y))
-
-GFC_joined <- df_long_combo %>%
-  left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, cov_value) 
-
-df_wide <- GFC_joined %>%
-  pivot_wider(
-    id_cols = cell_ID,
-    names_from = period_counter,
-    values_from = cov_value
-  ) %>%
-  arrange(cell_ID) %>%
-  dplyr::select(cell_ID, order(as.numeric(names(.)[-1])) + 1) %>% 
-  as.matrix()
-
-head(df_wide)
-
-# Plot to check  
-selected_period <- 1
-plot_subset <- GFC_joined %>% filter(period_counter == selected_period) %>% 
-  left_join(coords, by = "cell_ID")
-
-ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
-  geom_tile() + scale_fill_viridis_c(option = "magma") +
-  coord_equal() + theme_minimal()
-
-# Save full dataframe 
-write.csv(df_wide, "../Covariates for modelling/primary_occ_covariates_GFC_full.csv") 
-
-# Subset to sites
-subset_mat <- df_wide[df_wide[, 1] %in% site_cells$cell_ID, ]
-write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_GFC_sites.csv")
+write.csv(forest_final, "../10x10 km spatial layers/forest_proportion_1993_2024.csv", row.names = FALSE)
 
 
-## Proportion crop/urban ------------------------------------------------------
+
+
+
 
 # Read crop file 
 crop <- read.csv("crop_proportion_all_years_full_new.csv") %>% 
@@ -1169,314 +847,4 @@ head(results_df); unique(results_df$year)
 write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full_new.csv", row.names=F)
 
 
-################################################################################
-### Prop Crop & Urban ##########################################################
-################################################################################
 
-# Calculates the proportion of each grid cell containing crop or forest landscape
-
-# Set workspace ---------------------------------------------------------------
-
-# Working directory 
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers")
-rm(list = ls()); gc()
-
-# Load libraries 
-library(terra)
-library(dplyr)
-library(stringr)
-library(mgcv)     
-library(tidyr)
-library(rnaturalearth)
-
-
-# All terrestrial areas -------------------------------------------------------
-
-# Crop reference to land 
-reference <- reference <- rast("../10x10 km spatial layers/raster_100km2_with_cellID.tif")
-land <- ne_countries(scale = "medium", returnclass = "sf")
-land_terra <- vect(land)
-if (crs(reference) != crs(land_terra)) {
-  land_terra <- project(land_terra, crs(reference))
-}
-reference_land <- mask(reference, land_terra)
-
-# Manully add missing WI sites 
-site_cells <- read.csv("../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
-existing_ids <- reference_land$cell_ID
-missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
-add_raster <- reference
-add_raster <- ifel(reference %in% missing_ids, reference, NA)
-reference_land <- cover(reference_land, add_raster)
-
-# Load coordinates
-coords <- as.data.frame(reference, xy=T) 
-
-
-# Classes & functions ---------------------------------------------------------
-
-# LC classes 
-crop_class <- c(10,11,12,20,30,40)
-#urban_class <- 190
-forest_class <- c(50, 60, 61, 62, 70, 71, 72, 80, 81, 82, 90, 160, 170)
-
-# Function to calculate proportions
-calculate_proportion <- function(class_values, lc_raster, grid_raster) {
-  binary_raster <- lc_raster %in% class_values
-  clipped_grid  <- crop(grid_raster, binary_raster)
-  clipped_grid  <- resample(clipped_grid, binary_raster, method = "near")
-  
-  df <- data.frame(cell_ID = as.vector(clipped_grid),
-                   value   = as.vector(binary_raster)) %>% 
-    filter(!is.na(cell_ID))
-  
-  prop_df <- df %>%
-    group_by(cell_ID) %>%
-    summarise(proportion = mean(value, na.rm = TRUE), .groups = "drop")
-  
-  return(prop_df)
-}
-
-
-# Process all files -----------------------------------------------------------
-
-years <- as.numeric(str_extract(basename(lc_files), "\\d{4}"))
-lc_files <- list.files("CCI landcover 1km2")
-
-# Process all files 
-class <- forest_class
-class_name <- "forest_class"
-
-prop_list <- lapply(seq_along(lc_files), function(i) {
-  file <- paste0("CCI landcover 1km2/", lc_files[i])
-  landcover <- rast(file)
-  if (!compareGeom(landcover, reference_land, stopOnError = FALSE)) {
-    landcover <- project(landcover, crs(reference_land), method="near")
-  }
-  prop_list <- calculate_proportion(class, landcover, reference_land)
-  prop_list$year <- years[i]
-  prop_list
-})
-prop_all <- bind_rows(prop_list)
-head(prop_all)
-
-filename <- paste0("../10x10 km spatial layers/", class_name, "1993-2022.csv")
-write.csv(crop_all, filename, row.names=F)
-
-
-# === SIMPLE PREDICTION FOR 2023–2024 ===
-forest_all <- merge(prop_all, coords, by.x = "cell_ID", by.y = "cell_ID", all.x = TRUE)
-
-good_cells <- forest_all %>% group_by(cell_ID) %>% 
-  filter(n() >= 8) %>% #cells with enough years of data to predict 
-  pull(cell_ID) %>% unique()
-forest_good <- filter(forest_all, cell_ID %in% good_cells)
-
-predictions <- forest_good %>%
-  group_by(cell_ID, x, y) %>%
-  do({
-    mod <- lm(proportion ~ year, data = .)                      
-    data.frame(year = c(2023, 2024),
-               proportion = predict(mod, newdata = data.frame(year = c(2023, 2024))))
-  }) %>%
-  ungroup()
-
-poor_cells <- setdiff(forest_all$cell_ID, good_cells)
-if (length(poor_cells) > 0) {
-  last_vals <- forest_all %>%
-    filter(cell_ID %in% poor_cells) %>%
-    summarise(proportion = last(proportion), .by = cell_ID) %>%   # one row per cell
-    uncount(2, .id = "tmp") %>%                                   # duplicate
-    mutate(year = 2022 + tmp) %>%                                 # 2023 and 2024
-    select(-tmp)
-  predictions <- bind_rows(predictions, last_vals)
-}
-
-predictions$proportion <- pmax(0, pmin(1, predictions$proportion))
-
-forest_final <- bind_rows(
-  forest_all %>% dplyr::select(cell_ID, year, proportion),
-  predictions %>% dplyr::select(cell_ID, year, proportion)) %>%
-  mutate(proportion = pmax(0, pmin(1, proportion))) %>%    
-  arrange(cell_ID, year)
-head(forest_final)
-
-write.csv(forest_final, "../10x10 km spatial layers/forest_proportion_1993_2024.csv", row.names = FALSE)
-
-
-############################################################################
-#######  GFC  ##############################################################
-############################################################################
-
-library(terra)
-
-## Create reference raster ----------------------------------------------------
-# Load
-reference <- rast("raster_100km2_with_cellID.tif")
-
-# Limit to cell_IDs present in dataset 
-site_cells <- read.csv("WI_loc_matching_cell_ID.csv") 
-
-# Mask reference raster 
-reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues=F) 
-
-## Load Hansen tile URLS ------------------------------------------------------
-
-# Extract filenames 
-tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
-tile_names <- basename(tile_urls)
-
-# -> if lots of missing data, use the 2023 version (https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/lossyear.txt)
-
-# Download tiles with error handling 
-tmp_dir <- tempdir()
-local_files <- file.path(tmp_dir, tile_names)
-
-download_status <- data.frame(
-  url = tile_urls,
-  destfile = local_files,
-  success = NA,
-  stringsAsFactors = FALSE
-)
-
-for (i in seq_along(tile_urls)) {
-  if (!file.exists(local_files[i])) {
-    result <- tryCatch({
-      download.file(tile_urls[i], destfile = local_files[i], mode = "wb", quiet = TRUE)
-      TRUE
-    }, error = function(e) {
-      warning(paste("Failed to download:", tile_urls[i]))
-      FALSE
-    })
-    download_status$success[i] <- result
-  } else {
-    download_status$success[i] <- TRUE
-  }
-}
-
-# Keep only successfully downloaded tiles
-successful_files <- download_status$destfile[download_status$success]
-
-# Create VRT 
-vrt_file <- file.path(tmp_dir, "lossyear.vrt")
-loss_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
-
-# Crop and mask to reference raster
-loss_raster_proj <- project(loss_raster, crs(reference_sub))
-#vrt_reproj <- project(vrt_raster, reference_sub, method = "near")
-
-loss_raster_crop <- crop(loss_raster_proj, reference_sub)
-#vrt_crop <- crop(vrt_reproj, reference_sub)
-loss_raster_mask <- mask(loss_raster_crop, reference_sub)
-
-## Compute annual forest loss -------------------------------------------------
-
-# Hansen lossyear values: 1-23 (or 1:23 for 2001-2023)
-years <- 1:23
-yearly_loss <- list()
-
-for (y in years) {
-  # 1 if loss occurred in year y, 0 otherwise
-  r_y <- classify(loss_raster_mask, cbind(-Inf, y-1, 0,
-                                          y, y, 1,
-                                          y+1, Inf, 0))
-  yearly_loss[[y]] <- r_y
-}
-names(yearly_loss) <- paste0("year_", years)
-
-# Summarize loss per year
-annual_loss_count <- sapply(yearly_loss, function(r) {
-  global(r, fun = "sum", na.rm = TRUE)
-})
-
-# Convert pixel counts to area in hectares
-# Assuming raster resolution in meters CHECK!! 
-res_m <- res(loss_raster_mask)[1]  # x and y should be same
-pixel_area_ha <- (res_m^2) / 10000
-annual_loss_area_ha <- annual_loss_count * pixel_area_ha
-
-# Results
-loss_summary <- data.frame(
-  year = 2000 + years,  # adjust according to Hansen version
-  pixels_lost = annual_loss_count,
-  area_ha = annual_loss_area_ha
-)
-print(loss_summary)
-
-# Save masked raster 
-writeRaster(loss_raster_mask, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
-cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
-
-
-## trying 
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
-library(terra)
-
-## Reference raster ---------------------------------------------------------
-reference <- rast("10x10 km spatial layers/raster_100km2_with_cellID.tif")
-site_cells <- read.csv("10x10 km spatial layers/WI_loc_matching_cell_ID.csv")
-reference_sub <- mask(reference, reference %in% site_cells$cell_ID, maskvalues = FALSE)
-
-## Hansen data --------------------------------------------------------------
-tile_urls <- readLines("https://storage.googleapis.com/earthenginepartners-hansen/GFC-2024-v1.12/lossyear.txt")
-tile_names <- basename(tile_urls)
-
-# Download tiles with error handling 
-tmp_dir <- tempdir()
-local_files <- file.path(tmp_dir, tile_names)
-
-download_status <- data.frame(
-  url = tile_urls,
-  destfile = local_files,
-  success = NA,
-  stringsAsFactors = FALSE
-)
-
-for (i in seq_along(tile_urls)) {
-  if (!file.exists(local_files[i])) {
-    result <- tryCatch({
-      download.file(tile_urls[i], destfile = local_files[i], mode = "wb", quiet = TRUE)
-      TRUE
-    }, error = function(e) {
-      warning(paste("Failed to download:", tile_urls[i]))
-      FALSE
-    })
-    download_status$success[i] <- result
-  } else {
-    download_status$success[i] <- TRUE
-  }
-}
-
-# Keep only successfully downloaded tiles
-successful_files <- download_status$destfile[download_status$success]
-
-# Create VRT 
-vrt_file <- file.path(tmp_dir, "lossyear.vrt")
-loss_raster <- vrt(successful_files, filename = vrt_file, overwrite = TRUE)
-
-# Project → crop → mask in one clean pass
-loss_raster <- project(loss_raster, reference_sub, method = "near")
-loss_raster <- crop(loss_raster, reference_sub)
-loss_raster <- mask(loss_raster, reference_sub)
-
-# Optional sanity check
-compareGeom(loss_raster, reference_sub, crs = TRUE, res = TRUE, orig = TRUE)
-
-## Summarize forest loss ----------------------------------------------------
-loss_freq <- freq(loss_raster, digits = 0, value = TRUE)
-pixel_area_ha <- (res(loss_raster)[1]^2) / 10000
-
-# Filter to valid Hansen lossyear values (1:23)
-loss_freq <- loss_freq[loss_freq$value %in% 1:23, ]
-
-loss_summary <- data.frame(
-  year = 2000 + loss_freq$value,
-  pixels_lost = loss_freq$count,
-  area_ha = loss_freq$count * pixel_area_ha
-)
-print(loss_summary)
-write.csv(loss_summary, "loss_summary.csv", row.names = FALSE)
-
-## Save masked raster -------------------------------------------------------
-writeRaster(loss_raster, "lossyear_mosaic_cropped.tif", overwrite = TRUE)
-cat("Masked mosaic saved to lossyear_mosaic_cropped.tif\n")
