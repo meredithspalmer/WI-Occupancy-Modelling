@@ -1,3 +1,136 @@
+#######################################################
+### Extract WDPA covariates at 10x10 km² resolution ###
+#######################################################
+
+library(terra)
+library(sf)
+library(exactextractr)  # Install if needed: install.packages("exactextractr")
+
+# ── 1. Load reference and species rasters ───────────────────────────────────────
+ref_1km     <- rast("1x1 km spatial layers/reference_1km2.tif")
+ref_10km    <- rast("10x10 km spatial layers/reference_10km2.tif")
+species_rast <- rast("WI data/global_species_raster.tif")
+
+# ── 2. Prepare masked reference cell_ID rasters ────────────────────────────────
+ref_1km_cell_ID  <- ref_1km[["cell_ID"]]
+ref_10km_cell_ID <- ref_10km[["cell_ID"]]
+
+# Crop & mask to species extent/presence
+reference_species_1km <- crop(ref_1km_cell_ID, ext(species_rast))
+reference_species_1km <- mask(reference_species_1km, species_rast)
+
+reference_species_10km <- crop(ref_10km_cell_ID, ext(species_rast))
+presence_10km <- project(species_rast, reference_species_10km, method = "near")  # "near" for presence
+reference_species_10km <- mask(reference_species_10km, presence_10km > 0)
+
+# Quick check: no duplicate cell IDs in 10 km
+valid_ids <- values(reference_species_10km, na.rm = TRUE)
+if (any(duplicated(valid_ids))) {
+  warning("Duplicate cell_ID values found in 10 km reference!")
+}
+
+# ── 3. Create masks (area of interest) ─────────────────────────────────────────
+mask_1km  <- reference_species_1km  # cell_IDs where species present
+mask_10km <- reference_species_10km
+
+# Optional: plot(mask_1km); plot(mask_10km)
+
+# ── 4. Load and prepare WDPA ───────────────────────────────────────────────────
+wdpa_sf <- rbind(
+  st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
+  st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
+  st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+)
+
+# Ensure CRS matches references
+target_crs <- crs(reference_species_1km)
+if (st_crs(wdpa_sf) != target_crs) {
+  wdpa_sf <- st_transform(wdpa_sf, target_crs)
+}
+
+# Repair invalid geometries
+wdpa_sf <- st_make_valid(wdpa_sf)
+
+# Convert to SpatVector and crop to study area extent (memory saver)
+wdpa_vect <- vect(wdpa_sf)
+wdpa_vect <- crop(wdpa_vect, ext(reference_species_1km))
+
+# ── 5. Prepare output dataframe ────────────────────────────────────────────────
+# Extract 10 km cells with coordinates and cell_ID
+prop_df <- as.data.frame(reference_species_10km, xy = TRUE, na.rm = TRUE)
+names(prop_df) <- c("x", "y", "cell_ID")  # Adjust if no xy needed
+
+unique_years <- 2000:2024
+for (yr in unique_years) {
+  prop_df[[paste0("prop_protected_", yr)]] <- NA_real_
+}
+
+# ── 6. Compute yearly proportions using exactextractr ──────────────────────────
+# Template grid for exact_extract (0 in study area, NA outside)
+coverage_grid <- reference_species_10km * 0
+
+# Get cell indices for matching
+cell_indices <- 1:ncell(coverage_grid)  # 1 to total cells
+active_cells <- !is.na(values(coverage_grid))  # logical mask for study cells
+study_cell_ids <- values(reference_species_10km)[active_cells]  # cell_IDs in order
+
+for (yr in unique_years) {
+  cat(sprintf("Processing year %d ...\n", yr))
+  
+  # Subset WDPA for this year
+  pa_year_sf <- wdpa_sf[wdpa_sf$STATUS_YR <= yr & !is.na(wdpa_sf$STATUS_YR), ]
+  
+  if (nrow(pa_year_sf) == 0) {
+    prop_df[[paste0("prop_protected_", yr)]] <- 0
+    cat("No PAs — all 0\n")
+    next
+  }
+  
+  cat("  Running exact_extract ... ")
+  
+  # Compute coverage fractions
+  fractions <- exact_extract(
+    coverage_grid,
+    pa_year_sf,
+    fun      = "frac",                # correct function name
+    progress = TRUE,
+    force_df = TRUE
+  )
+  
+  cat("done\n")
+  
+  # Check what column name we got (usually 'frac' or 'coverage_fraction')
+  frac_col <- names(fractions)[grepl("frac|coverage_fraction", names(fractions))]
+  if (length(frac_col) == 0) {
+    stop("No fraction column found in exact_extract output. Check package version.")
+  }
+  
+  # Extract the fraction values
+  frac_values <- fractions[[frac_col[1]]]  # take the first matching column
+  
+  # Create full-grid vector (0 everywhere, fill active cells)
+  prop_values <- rep(0, ncell(coverage_grid))
+  prop_values[] <- frac_values             # assign in raster order
+  
+  # Subset to the active/study cells that are in prop_df
+  prop_df[[paste0("prop_protected_", yr)]] <- prop_values[active_cells]
+  
+  gc()
+  cat("Done\n")
+}
+
+# ── 7. Finalize and save ───────────────────────────────────────────────────────
+# Replace any remaining NA with 0 (shouldn't happen but safe)
+for (col in grep("^prop_protected_", names(prop_df))) {
+  prop_df[[col]][is.na(prop_df[[col]])] <- 0
+}
+
+# Save to CSV
+write.csv(prop_df, "protected_proportions_10km_per_year.csv", row.names = FALSE)
+
+cat("Pipeline complete. Output: protected_proportions_10km_per_year.csv\n")
+
+
 ###################################################
 ### Extract WDPA covariates at 1 km² resolution ###
 ###################################################
