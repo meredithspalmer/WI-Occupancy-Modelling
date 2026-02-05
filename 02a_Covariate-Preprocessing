@@ -229,3 +229,99 @@ for(i in 1:length(evi_list_raster, target_raster)){
   rm(evi_10km); gc()
   return(out_file)
 }
+
+
+## Aggregate 1km2 data to 10km2 scale: PROPORTION DATA ------------------------
+
+# Clear workspace
+rm(list=ls()); gc()
+
+# Load 10x10km2 raster grid 
+ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
+
+
+## WDPA --- 
+wdpa <- rbind(st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
+              st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
+              st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp"))
+
+# Ensure CRS match
+if (st_crs(wdpa) != crs(ref_raster)) {
+  wdpa <- st_transform(wdpa, crs(ref_raster))
+}
+
+# Repair geometries 
+wdpa <- st_make_valid(wdpa)
+
+# Polygon of only non-NA cells
+mask_poly <- st_as_sf(as.polygons(!is.na(ref_raster), na.rm = TRUE, dissolve = TRUE))
+
+# Intersect WDPA with the actual non-NA footprint
+wdpa_aoi_sf <- suppressWarnings(st_intersection(wdpa, mask_poly))
+
+# Clean up
+wdpa_aoi_sf <- st_make_valid(wdpa_aoi_sf)
+wdpa_aoi_sf <- wdpa_aoi_sf[!st_is_empty(wdpa_aoi_sf), ]
+cat("Number of valid PAs overlapping non-NA cells of reference raster:", nrow(wdpa_aoi_sf), "\n")
+
+# Convert to SpatVector  
+wdpa_aoi_vect <- vect(wdpa_aoi_sf)
+
+# Quick save: 
+writeVector(wdpa_aoi_vect, "wdpa_aoi_global.gpkg", overwrite = TRUE)
+
+# Get unique years 
+unique_years <- 2000:2024
+
+# Create time-varying PA masks
+pa_layers <- list()
+for (yr in unique_years) {
+  
+  # Select PAs designated on or before this year
+  wdpa_year_vect <- wdpa_aoi_vect[wdpa_aoi_vect$STATUS_YR <= yr, ]
+  
+  # Rasterize binary (1 = protected that year, background = NA for unprotected)
+  if (nrow(wdpa_year_vect) == 0) {
+    pa_year <- ref_raster 
+    pa_year[!is.na(pa_year)] <- NA
+  } else {
+    pa_year <- rasterize(wdpa_year_vect, ref_raster, field = 1, background = NA)
+  }
+  names(pa_year) <- paste0("protected_", yr)
+  pa_layers[[as.character(yr)]] <- pa_year
+}
+pa_stack <- rast(pa_layers)
+
+# Add cell_ID layer
+cell_id_species <- crop(global_cell_id, ref_raster)
+full_stack_pa <- c(cell_id_species, pa_stack)
+
+# Data frame
+pa_df_wide <- as.data.frame(full_stack_pa, na.rm = FALSE, xy = TRUE)
+names(pa_df_wide) <- c("x", "y", "cell_ID", paste0("protected_", unique_years))
+prot_cols <- paste0("protected_", unique_years)
+pa_df_wide[, prot_cols] <- lapply(pa_df_wide[, prot_cols], function(col) ifelse(is.na(col), 0, col))
+pa_df_wide <- pa_df_wide[!is.na(pa_df_wide$cell_ID), ]
+
+# Melt to long format
+setDT(pa_df_wide)
+pa_df_long <- melt(pa_df_wide,
+                   id.vars = c("x", "y", "cell_ID"),
+                   measure.vars = prot_cols,
+                   variable.name = "year_var",
+                   value.name = "protected")
+
+# Extract year as integer
+setDT(pa_df_long)
+pa_df_long[, year := as.integer(sub("protected_", "", year_var))]
+pa_df_long[, year_var := NULL]
+
+# Aggregate to proportion per cell_ID and year
+wdpa_agg <- pa_df_long[, .(proportion = mean(protected)), by = .(cell_ID, year)]
+
+# Expand to period_counter
+wdpa_data <- periods[, .(year, period_counter)][wdpa_agg, on = "year", allow.cartesian = TRUE]
+wdpa_data <- wdpa_data[, .(cell_ID, year, proportion, period_counter)]
+setorder(wdpa_data, cell_ID, year, period_counter)
+#wdpa_data <- wdpa_agg
+head(wdpa_data)
