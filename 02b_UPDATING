@@ -519,6 +519,10 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
 # Save full dataframe
 fwrite(EVI_mat, "Covariates for modelling/EVI_covariate_10x10km2.csv")
 
+# Clean up 
+rm(plot_subset, EVI_mat, dt_imputed, dt_complete, full_grid, dt_period, dt_long_test)
+gc()
+
 
 ## Proportion non-natural landcover, forest (CCI ESI) -------------------------
 
@@ -534,202 +538,155 @@ years <- as.integer(sub(".*CCI_([0-9]{4})_REPRO\\.tif", "\\1", basename(lc_files
 lc_files <- lc_files[years >= min(periods$year)]
 r_stack <- rast(lc_files)
 
-# Crop and mask to the extent of mmd_raster 
-r_c_species <-     crop(r_stack, reference_species_10km)           
-r_c_species <-     mask(r_c_species, reference_species_10km)  
+# Extract years from layer names
+years <- as.integer(sub(".*CCI_([0-9]{4})_REPRO\\.tif", "\\1", sources(r_stack)))
 
-# Add cell_IDs 
-cell_id_species <- crop(global_cell_id, reference_species_10km)
-cell_id_species <- mask(cell_id_species, reference_species_10km)
-full_stack <-      c(cell_id_species, r_c_species)
+# Get extent of reference raster and extend by 10km buffer
+ext_ref <- ext(reference_species_10km)
+ext_crop <- extend(ext_ref, c(10000, 10000, 10000, 10000)) 
 
+# Crop the stack to the buffered extent to optimize processing
+r_stack_cropped <- crop(r_stack, ext_crop)
 
+# Prepare reclassification matrices 
+forest_rcl <- matrix(c(forest_class, rep(1, length(forest_class))), ncol = 2)
+unnatural_rcl <- matrix(c(unnatural_areas, rep(1, length(unnatural_areas))), ncol = 2)
 
-# As data frame
-landcover_df <-       as.data.frame(full_stack, na.rm = TRUE, xy=TRUE)
+# List to store results
+results <- list()
 
-# Check cells in mmd
-landcover_cells <- landcover_df %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
-missing_in_landcover <- setdiff(sites, landcover_cells)
-cat("Cells missing in landcover: ", length(missing_in_landcover), "\n")
-
-# Melt to long 
-setDT(landcover_df)  
-landcover_long <- melt(landcover_df,
-                       id.vars       = c("x", "y", "cell_ID"),
-                       measure.vars  = grep("^CCI_[0-9]{4}_REPRO$", names(landcover_df), 
-                                            value = TRUE),
-                       variable.name = "year_var",
-                       value.name    = "landcover_class")
-setDT(landcover_long)
-landcover_long[, year := as.integer(sub("^CCI_([0-9]{4})_REPRO$", "\\1", year_var))]
-landcover_long[, year_var := NULL]
-setorder(landcover_long, cell_ID, year)
-
-# Create crop and forest columns 
-landcover_long[, crop   := ifelse(landcover_class %in% crop_class,  1L, 0L)]
-landcover_long[, forest := ifelse(landcover_class %in% forest_class, 1L, 0L)]
-setDT(landcover_long)
-
-# Define future years
-future_years <- c(2023, 2024)
-
-# Extrapolate by carrying forward last observed values per cell_ID
-landcover_future <- landcover_long[, {
-  last_row <- .SD[which.max(year)] 
-  .(year = future_years,
-    crop = last_row$crop,
-    forest = last_row$forest)
-}, by = .(x, y, cell_ID)]
-
-# Combine observed + predicted 
-landcover_full_long <- rbindlist(list(landcover_long[, .(x, y, cell_ID, year, crop, forest)], landcover_future), use.names = TRUE)
-setorder(landcover_full_long, cell_ID, year)
-
-# Join period_counter to each year 
-landcover_data <- landcover_full_long[periods[, .(year, period_counter)], 
-                                      on = "year", 
-                                      allow.cartesian = TRUE]
-setorder(landcover_data, cell_ID, year, period_counter)
-head(landcover_data)
-
-rm(landcover_full_long, landcover_future, landcover_long, landcover_df); gc()
-
-
-## Proportion forest & proportion of unnatural areas (CCI ESI) ----------------
-
-
-
-# Function to calculate proportions
-calculate_proportion <- function(class_values, lc_raster, grid_raster) {
-  binary_raster <- lc_raster %in% class_values
-  clipped_grid  <- crop(grid_raster, binary_raster)
-  clipped_grid  <- resample(clipped_grid, binary_raster, method = "near")
+# Loop over each year/layer
+for (i in seq_len(nlyr(r_stack_cropped))) {
+  lyr <- r_stack_cropped[[i]]
   
-  df <- data.frame(cell_ID = as.vector(clipped_grid),
-                   value   = as.vector(binary_raster)) %>% 
-    filter(!is.na(cell_ID))
+  # Reclassify for forest (1 if in forest_class, 0 otherwise)
+  forest_lyr <- classify(lyr, forest_rcl, others = 0)
   
-  prop_df <- df %>%
-    group_by(cell_ID) %>%
-    summarise(proportion = mean(value, na.rm = TRUE), .groups = "drop")
+  # Reclassify for unnatural areas (1 if in unnatural_areas, 0 otherwise)
+  unnatural_lyr <- classify(lyr, unnatural_rcl, others = 0)
   
-  return(prop_df)
+  # Resample to 10km resolution using average (proportion)
+  forest_prop <- resample(forest_lyr, reference_species_10km, method = "average")
+  unnatural_prop <- resample(unnatural_lyr, reference_species_10km, method = "average")
+  
+  # Set clean names on the SpatRaster objects
+  names(forest_prop) <- "prop_forest"
+  names(unnatural_prop) <- "prop_unnatural"
+  
+  # Create data frame for this year
+  df <- data.frame(
+    cell_ID = values(reference_species_10km),
+    year = years[i],
+    prop_forest = values(forest_prop),
+    prop_unnatural = values(unnatural_prop)
+  )
+  
+  # Remove rows where cell_ID is NA (if any)
+  df <- df[!is.na(df$cell_ID), ]
+  
+  results[[i]] <- df
 }
 
-years <- as.numeric(str_extract(basename(lc_files), "\\d{4}"))
-lc_files <- list.files("CCI landcover 1km2")
+# Combine all years into one data frame
+final_df <- do.call(rbind, results)
 
-# Process forest files 
-class <- forest_class
-class_name <- "forest_class"
+# Extract coordinates for each cell_ID
+ref_vals <- values(reference_species_10km)
+valid_cells <- which(!is.na(ref_vals))
+coords <- xyFromCell(reference_species_10km, valid_cells)
+cell_coords <- data.frame(cell_ID = ref_vals[valid_cells],
+                          x = coords[, "x"],
+                          y = coords[, "y"])
+final_df <- left_join(final_df, cell_coords, by = "cell_ID")
 
-prop_list <- lapply(seq_along(lc_files), function(i) {
-  file <- paste0("CCI landcover 1km2/", lc_files[i])
-  landcover <- rast(file)
-  if (!compareGeom(landcover, reference_land, stopOnError = FALSE)) {
-    landcover <- project(landcover, crs(reference_land), method="near")
-  }
-  prop_list <- calculate_proportion(class, landcover, reference_species_10km)
-  prop_list$year <- years[i]
-  prop_list
-})
-prop_all <- bind_rows(prop_list)
-head(prop_all)
+# Predict for 2023, 2024 
+future_years <- c(2023, 2024)
 
-filename <- paste0("../10x10 km spatial layers/", class_name, "1993-2022.csv")
-fwrite(crop_all, filename)
-
-
-
-# === SIMPLE PREDICTION FOR 2023–2024 ===
-forest_all <- merge(prop_all, coords, by.x = "cell_ID", by.y = "cell_ID", all.x = TRUE)
-
-good_cells <- forest_all %>% group_by(cell_ID) %>% 
-  filter(n() >= 8) %>% #cells with enough years of data to predict 
-  pull(cell_ID) %>% unique()
-forest_good <- filter(forest_all, cell_ID %in% good_cells)
-
-predictions <- forest_good %>%
-  group_by(cell_ID, x, y) %>%
+predictions <- final_df %>%
+  group_by(cell_ID) %>%
   do({
-    mod <- lm(proportion ~ year, data = .)                      
-    data.frame(year = c(2023, 2024),
-               proportion = predict(mod, newdata = data.frame(year = c(2023, 2024))))
+    df <- .
+    
+    # For prop_forest: linear model
+    if (n_distinct(df$prop_forest) > 1) {  # Only fit if there's variation
+      mod_f <- lm(prop_forest ~ year, data = df)
+      pred_f <- predict(mod_f, newdata = data.frame(year = future_years))
+    } else {
+      pred_f <- rep(df$prop_forest[1], length(future_years))  # Constant if no variation
+    }
+    pred_f <- pmax(0, pmin(1, pred_f))  # Constrain to [0,1]
+    
+    # For prop_unnatural: same approach
+    if (n_distinct(df$prop_unnatural) > 1) {
+      mod_u <- lm(prop_unnatural ~ year, data = df)
+      pred_u <- predict(mod_u, newdata = data.frame(year = future_years))
+    } else {
+      pred_u <- rep(df$prop_unnatural[1], length(future_years))
+    }
+    pred_u <- pmax(0, pmin(1, pred_u))  # Constrain to [0,1]
+    
+    # Return data.frame with predictions
+    data.frame(
+      year = future_years,
+      prop_forest = pred_f,
+      prop_unnatural = pred_u
+    )
   }) %>%
   ungroup()
 
-poor_cells <- setdiff(forest_all$cell_ID, good_cells)
-if (length(poor_cells) > 0) {
-  last_vals <- forest_all %>%
-    filter(cell_ID %in% poor_cells) %>%
-    summarise(proportion = last(proportion), .by = cell_ID) %>%   # one row per cell
-    uncount(2, .id = "tmp") %>%                                   # duplicate
-    mutate(year = 2022 + tmp) %>%                                 # 2023 and 2024
-    select(-tmp)
-  predictions <- bind_rows(predictions, last_vals)
-}
+# Combine observed data with predictions
+full_df <- bind_rows(final_df, predictions)
+full_df <- setDT(full_df)
 
-predictions$proportion <- pmax(0, pmin(1, predictions$proportion))
+# Set periods 
+setDT(periods)
+periods_light <- periods[, .(period_counter, year)]
 
-forest_final <- bind_rows(
-  forest_all %>% dplyr::select(cell_ID, year, proportion),
-  predictions %>% dplyr::select(cell_ID, year, proportion)) %>%
-  mutate(proportion = pmax(0, pmin(1, proportion))) %>%    
-  arrange(cell_ID, year)
-head(forest_final)
+# Cross-join 
+full_expanded <- CJ(cell_ID = unique(full_df$cell_ID),
+                    period_counter = periods_light$period_counter)
 
-write.csv(forest_final, "../10x10 km spatial layers/forest_proportion_1993_2024.csv", row.names = FALSE)
+# Include year 
+full_expanded <- merge(full_expanded,
+                       periods_light,
+                       by = "period_counter",
+                       all.x = TRUE)
 
+# Join the observed/predicted proportions by cell_ID + year
+full_with_periods <- merge(full_expanded,
+                           full_df[, .(cell_ID, year, prop_forest, prop_unnatural)],
+                           by = c("cell_ID", "year"),
+                           all.x = TRUE)
+setorder(full_with_periods, cell_ID, period_counter)
 
+# Join 
+full_with_periods_df <- full_df %>%
+  select(cell_ID, year, prop_forest, prop_unnatural, x, y) %>%
+  right_join(periods %>% select(period_counter, year),
+             by = "year",
+             relationship = "many-to-many") %>%
+  arrange(cell_ID, period_counter)
 
+# Convert to matrix
+df_wide_forest <- dcast(full_with_periods_df,
+                 cell_ID ~ period_counter,
+                 value.var = "prop_forest")
+setorder(df_wide_forest, cell_ID)
+df_mat_forest <- as.matrix(df_wide_forest, rownames = "cell_ID")
 
+df_wide_unnatural <- dcast(full_with_periods_df,
+                        cell_ID ~ period_counter,
+                        value.var = "prop_unnatural")
+setorder(df_wide_unnatural, cell_ID)
+df_mat_unnatural <- as.matrix(df_wide_unnatural, rownames = "cell_ID")
 
+# Save 
+fwrite(df_mat_forest, "Covariates for modelling/forest_covariate_10x10km2.csv")
+fwrite(df_mat_unnatural, "Covariates for modelling/unnatural_covariate_10x10km2.csv")
 
-# Read crop file 
-crop <- read.csv("crop_proportion_all_years_full_new.csv") %>% 
-  filter(year %in% periods$year) %>% 
-  rename(cov_value = crop_prop) %>% 
-  distinct()
-
-CROP_joined <- crop %>%
-  left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, cov_value) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
-              values_fill = NA) %>%
-  arrange(cell_ID) %>% 
-  as.matrix()
-
-# Plot to check  
-selected_year <- 1999
-
-plot_subset <- crop %>% filter(year == selected_year) 
-ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
-  geom_tile() + scale_fill_viridis_c(option = "magma") +
-  coord_equal() + theme_minimal()
-
-# Save full dataframe 
-write.csv(CROP_joined, "../Covariates for modelling/primary_occ_covariates_crop_full.csv", row.names=F)
-
-# Subset to sites 
-subset_mat <- CROP_joined[CROP_joined[, "cell_ID"] %in% site_cells$cell_ID,]
-write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_crop_sites.csv", row.names=F)
-
-## Read urban file 
-urban <- read.csv("urban_proportion_all_years.csv") %>% 
-  filter(year %in% periods$year) %>% 
-  rename(cov_value = proportion) %>% 
-  distinct()
-
-URBAN_joined <- urban %>%
-  left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, cov_value) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
-              values_fill = NA) %>%
-  arrange(cell_ID) %>% 
-  as.matrix()
-
-write.csv(URBAN_joined, "primary_occ_covariates_urban.csv", row.names=F)
+# Clean up 
+rm(final_df, predictions, full_df, full_expanded, full_with_periods, full_with_periods_df, df_wide_forest, df_wide_unnatural, df_mat_forest, df_mat_unnatural)
+gc()
 
 
 ## Proportion of cell in protected area (WDPA) --------------------------------
@@ -845,6 +802,3 @@ results_df <- dplyr::bind_rows(results_list)
 head(results_df); unique(results_df$year)
 
 write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full_new.csv", row.names=F)
-
-
-
