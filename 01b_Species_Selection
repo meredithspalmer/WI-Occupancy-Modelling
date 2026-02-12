@@ -104,7 +104,7 @@ head(species_counts); tail(species_counts)
 
 # Number of deployments
 species_counts[all_dat[, .(unique_deployments = uniqueN(proj_depl)), by = sp_binomial],
-  unique_deployments := i.unique_deployments, on = "sp_binomial"]
+               unique_deployments := i.unique_deployments, on = "sp_binomial"]
 
 # Avg. Counts per Deployment 
 species_counts[, avg_records_per_deployment := round(record_count / unique_deployments, 1)]
@@ -120,9 +120,9 @@ cls_df <- data.table(sp_binomial = names(cls),
                      tax_class  = sapply(cls, function(x) {
                        if (is.data.frame(x) && "class" %in% x$rank) {
                          x$name[x$rank == "class"]
-                         } else {
-                           NA_character_
-                           }}))
+                       } else {
+                         NA_character_
+                       }}))
 species_counts <- merge(species_counts, cls_df, by = "sp_binomial", all.x = TRUE)
 table(species_counts$tax_class)
 
@@ -485,9 +485,7 @@ for (sp in unique_species) {
     total_range_110km <- as.integer(global(in_range_110, "sum", na.rm = TRUE))
   }
   
-  # ────────────────────────────────────────────────────────────────
-  # Robust sampled cells calculation (matches visualize_species_coverage)
-  # ────────────────────────────────────────────────────────────────
+  ## Robust sampled cells calculation 
   
   # Rasterize deployments → count per cell
   dep_count <- rasterize(deploy_vect, grid_110, fun = "length", background = 0)
@@ -627,9 +625,9 @@ visualize_species_coverage <- function(sp) {
 
 # Run it for target species 
 (ssi_plot <- visualize_species_coverage("Canis rufus"))
-  
+
 # Save plot 
-sp <- "Panthera_onca"
+sp <- "Canis_rufus"
 filename <- paste0("Model outputs/", sp, "/", sp, "-ssi_plot.jpg")
 ggsave(filename, plot = ssi_plot, width = 8, height = 6, dpi = 600)
 
@@ -654,7 +652,7 @@ species_counts <- fread("WI data/species_counts.csv") %>%
 all_dat <- fread("WI data/all_dat.csv")
 
 # Load manually updated file -- fixed common names, added broad categorizations
-species_updates <- fread("WI data/species_counts_updated.csv") %>% 
+species_updates <- fread("WI data/species_counts_manuallyUpdated.csv") %>% 
   dplyr::select(c("sp_binomial", "common_name", "broad_class", "max_kg"))
 
 # Add new columns 
@@ -694,23 +692,23 @@ species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 
 
-# Group selection: Bear
+## Group selection: Bear
 View(species_counts[species_counts$broad_class == "Bear",])
 # -> all good: 10 bears; min coverage_pct = 4.5% 
 
-# Group selection: Large felid 
+## Group selection: Large felid 
 View(species_counts[species_counts$broad_class == "Large felid",])
 # -> all good: 10 large felids; min coverage_pct = 4%
 
-# Group selection: Large canids
+## Group selection: Large canids
 View(species_counts[species_counts$broad_class == "Large canid",])
 # -> all good: 7 large canids, min coverage_pct = 4.8%
 
-# Group selection: Hyena
+## Group selection: Hyena
 View(species_counts[species_counts$broad_class == "Hyena",])
 # -> all good: 3 hyenas; min coverage_pct = 4.9%
 
-# Group selection: Even-toed ungulates
+## Group selection: Even-toed ungulates
 View(species_counts[species_counts$broad_class == "Even-toed ungulate",])
 
 # -> 125 species; review continent by continent - aim for 2 per continent
@@ -809,7 +807,7 @@ all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 # -> All look good; randomly sample 10 African species
 sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate" &
                                  species_counts$primary_continent == "Africa",][sample(.N, 18),
-                                                                              sp_binomial]
+                                                                                sp_binomial]
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 # -> All look good; randomly remove 8 species 
@@ -819,11 +817,11 @@ sp_to_remove <- species_counts[species_counts$broad_class == "Even-toed ungulate
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 
-# Group selection: Odd-toed ungulate
+## Group selection: Odd-toed ungulate
 View(species_counts[species_counts$broad_class == "Odd-toed ungulate",])
 # -> all good: 10 odd-toed ungulates; min coverage_pct = 4%
 
-# Group selection: Small felids
+## Group selection: Small felids
 View(species_counts[species_counts$broad_class == "Small felid",])
 
 # -> 18 species; review continent by continent - aim for 2 per continent
@@ -838,7 +836,7 @@ all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 # -> all others look good, randomly remove 2
 sp_to_remove <- species_counts[species_counts$broad_class == "Small felid" &
                                  species_counts$primary_continent == "Asia",][sample(.N, 2),
-                                                                                sp_binomial]
+                                                                              sp_binomial]
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 
@@ -870,17 +868,17 @@ sp_to_remove <- species_counts[species_counts$broad_class == "Small canid" &
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 
-# Group selection: Elephant
+## Group selection: Elephant
 View(species_counts[species_counts$broad_class == "Elephant",])
 # -> all good: 3 elephants, min coverage_pct = 5.9%
 
-# Group selection: Marsupials 
+## Group selection: Marsupials 
 View(species_counts[species_counts$broad_class %in% c("Large marsupial", "Small marsupial"),])
 # -> all good: 10 large marsupials, min coverage_pct = 8.6%
 # REDO: get large down to 5, get small down to 5 --> 
 # -> all large marsupials from Oceania; all look good; randomly remove 5
 sp_to_remove <- species_counts[species_counts$broad_class == "Large marsupial",][
-                                   sample(.N, 5),sp_binomial]
+  sample(.N, 5),sp_binomial]
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 # -> small marsupials: 
@@ -972,7 +970,7 @@ sp_to_remove <- species_counts[species_counts$broad_class == "Rodent" &
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 
-# Group selection: Smalls
+## Group selection: Smalls
 View(species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore"),])
 # -> Remove species with coverage_pct < 5% &/or deployments < 10 
 sp_to_remove <- c("Lepus victoriae", "Lepus tolai", "Mungos mungo", "Sorex vagrans", "Genetta victoriae", "Choloepus didactylus", "Neurotrichus gibbsii", "Dendrohyrax dorsalis", "Sorex cinereus", "Microtus pennsylvanicus", "Microtus ochrogaster")
@@ -991,7 +989,7 @@ species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 # -> all others look good, randomly remove 11
 sp_to_remove <- species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore") & species_counts$primary_continent == "Africa",][
-                                   sample(.N, 11),sp_binomial]
+  sample(.N, 11),sp_binomial]
 species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
 all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 
@@ -1050,7 +1048,36 @@ all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
 # Rename
 species_counts[species_counts$broad_class %in% c("Small carnivore", "Small mammal", "Small omnivore"),]$broad_class <- "Small mammals"
 
-# Quick check
+## Group selection: Insectivores 
+View(species_counts[species_counts$broad_class == "Insectivore",])
+# -> Remove species with coverage_pct < 5% &/or deployments < 10 
+sp_to_remove <- c("Dasypus sabanicola", "Manis crassicaudata", "Orycteropus afer")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# -> 18 species; review continent by continent - aim for 3-4 per continent
+table(species_counts[species_counts$broad_class == "Insectivore",]$primary_continent)
+
+# S. America:
+View(species_counts[species_counts$broad_class == "Insectivore" & species_counts$primary_continent == "South America",])
+# -> 3 Cabassous species, 3 Dasypus species, 2 Tamandua species; select 1 of each for taxonomic diversity
+sp_to_remove <- c("Cabassous unicinctus", "Cabassous tatouay", "Dasypus septemcinctus", "Dasypus kappleri", "Tamandua mexicana")
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+# -> all others look good, randomly remove 2
+sp_to_remove <- species_counts[species_counts$broad_class == "Insectivore" & species_counts$primary_continent == "South America",][sample(.N, 2),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+# Africa:
+View(species_counts[species_counts$broad_class == "Insectivore" & species_counts$primary_continent == "Africa",])
+# -> all look good, randomly remove 1
+sp_to_remove <- species_counts[species_counts$broad_class == "Insectivore" & species_counts$primary_continent == "Africa",][sample(.N, 1),sp_binomial]
+species_counts <- species_counts[!species_counts$sp_binomial %in% sp_to_remove,]
+all_dat <- all_dat[!all_dat$sp_binomial %in% sp_to_remove,]
+
+
+## Quick check
 length(unique(species_counts$sp_binomial))
 length(unique(all_dat$sp_binomial))
 
