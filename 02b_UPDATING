@@ -44,19 +44,12 @@ library(zoo)
 
 ## Load & format reference rasters --------------------------------------------
 
-# Load reference rasters
-ref_1km      <- rast("1x1 km spatial layers/reference_1km2.tif")
+# Load reference raster
 ref_10km     <- rast("10x10 km spatial layers/reference_10km2.tif")
 species_rast <- rast("WI data/global_species_raster.tif")
 
 # Crop reference rasters to species_raster
-ref_1km_cell_ID  <- ref_1km[["cell_ID"]]
 ref_10km_cell_ID <- ref_10km[["cell_ID"]]
-
-reference_species_1km <- crop(ref_1km_cell_ID, ext(species_rast))
-reference_species_1km <- mask(reference_species_1km, species_rast)  
-reference_species_1km; plot(reference_species_1km)
-
 reference_species_10km <- crop(ref_10km_cell_ID, species_rast)
 presence <- project(species_rast, reference_species_10km, method = "max")
 reference_species_10km <- mask(reference_species_10km, presence)
@@ -64,116 +57,10 @@ valid_ids <- values(reference_species_10km, na.rm = TRUE)
 sum(duplicated(valid_ids))
 
 # Create coordinate dataframe 
-coords_1km  <- as.data.frame(reference_species_1km, xy=T)
 coords_10km <- as.data.frame(reference_species_10km, xy=T) 
 
 
-## Create period template -----------------------------------------------------
-
-min_year <- 2000  
-max_year <- 2024 
-range_year <- c(min_year, max_year)
-min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
-max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
-end_period <-  c(start_period[-1] - 1, NA)
-
-periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
-                      start_period = start_period, 
-                      end_period = end_period) 
-periods <- periods[-nrow(periods),]
-periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
-periods$year <- year(periods$start_period)
-periods$period_counter <- 1:nrow(periods)
-head(periods)
-
-
 ## Covariates: static (dim: ncell) ------------------------------------------
-
-## 1km2 RESOLUTION ---
-
-# Load static covariates
-static_layers <- list(road_dens = rast("1x1 km spatial layers/road_full_1km2.tif"),
-                      tri       = rast("1x1 km spatial layers/tri_1km2_on_ref_grid.tif"),
-                      river_dist= rast("1x1 km spatial layers/riv_1km2_on_ref_grid.tif"),
-                      coeff_var = rast("1x1 km spatial layers/cv_1km2_on_ref_grid.tif"),
-                      cities_lg = rast("1x1 km spatial layers/ha_large_1km2_on_ref_grid.tif"))
-r_c <- rast(static_layers)
-
-# Crop and mask to the extent of mmd_raster 
-r_c_species <-     crop(r_c, reference_species_1km)           
-r_c_species <-     mask(r_c_species, reference_species_1km)  
-full_stack <-      c(reference_species_1km, r_c_species) 
-
-# Check for missing values
-global(full_stack, fun = "isNA")
-
-# Extract valid data 
-df <- as.data.frame(full_stack, na.rm = FALSE, cells = TRUE, xy = TRUE)
-setDT(df)
-valid_df <- df[!is.na(cell_ID)]
-
-# Covariates to impute
-covs_to_impute <- names(valid_df)[5:ncol(valid_df)]
-
-# Global means (fallback)
-global_means <- valid_df[, lapply(.SD, mean, na.rm = TRUE), .SDcols = covs_to_impute]
-global_means <- as.numeric(global_means)
-names(global_means) <- covs_to_impute
-
-# Melt to long for efficient grouping
-dt_long <- melt(valid_df, 
-                id.vars = c("cell", "x", "y", "cell_ID"),
-                measure.vars = covs_to_impute,
-                variable.name = "covariate",
-                value.name = "value")
-
-# Add row-based blocks (for local trends)
-res_y <- yres(full_stack)
-dt_long[, row_idx := (ymax(full_stack) - y) / res_y + 1]   
-block_size <- 500
-dt_long[, block := ceiling(row_idx / block_size)]
-
-# Impute block-wise  
-dt_long[, value := {
-  na_idx <- which(is.na(value))
-  if (length(na_idx) == 0) {
-    value
-  } else {
-    train <- .SD[!is.na(value), .(value, x, y)]
-    if (nrow(train) < 3) {
-      value[na_idx] <- global_means[.BY$covariate]
-    } else {
-      mod <- lm(value ~ x + y, data = train)
-      preds <- predict(mod, newdata = .SD[na_idx, .(x, y)])
-      value[na_idx] <- preds
-      
-      # Fallback
-      still_na <- na_idx[is.na(value[na_idx])]
-      if (length(still_na) > 0) value[still_na] <- global_means[.BY$covariate]
-    }
-    value
-  }
-}, by = .(block, covariate)]   
-
-# Cast to wide
-imputed_df <- dcast(dt_long, cell + cell_ID + x + y ~ covariate, value.var = "value")
-
-# Save 
-setorder(imputed_df, cell_ID)
-imputed_df$cell <- NULL
-fwrite(imputed_df[, .SD], "Covariates for modelling/site_level_covariates_1x1km2.csv")
-
-# Plot to check 
-cov_value <- "cities_lg"
-ggplot(static_1km, aes(x = x, y = y, fill = .data[[cov_value]])) +
-  geom_tile() +   
-  scale_fill_viridis_c(option = "magma") +
-  coord_equal() +
-  theme_minimal()
-
-
-## 10km2 RESOLUTION --- 
 
 # Load static covariates
 static_layers <- list(road_dens = rast("10x10 km spatial layers/road_dens_10km.tif"),
@@ -260,30 +147,23 @@ ggplot(static_10km, aes(x = x, y = y, fill = .data[[cov_value]])) +
   theme_minimal()
 
 
-## Annual dynamic layers: Seasonal precipitation ------------------------------
-
-# WAITING ON DOWNLOADED WORLDCLIM DATA -- 
-
-
 ## Annual dynamic layers: Global world population (GPW) -----------------------
-
-## 10km2 --- 
 
 # Load TIF files 
 gwp <- rast("10x10 km spatial layers/gwp_10km.tif")
 
 # Crop, resample, mask
-r_c_species <- crop(gwp, reference_species)
-r_c_aligned <- resample(r_c_species, reference_species, method = "near")
-r_c_species <- mask(r_c_aligned, reference_species)
-full_stack <- c(reference_species, r_c_species)
+r_c_species <- crop(gwp, reference_species_10km)
+r_c_aligned <- resample(r_c_species, reference_species_10km, method = "near")
+r_c_species <- mask(r_c_aligned, reference_species_10km)
+full_stack <- c(reference_species_10km, r_c_species)
 
 # Check missing values raster-wide
 global(full_stack, "isNA")
 
 # Extract valid data 
 df <- as.data.frame(full_stack, na.rm = FALSE, cells = TRUE, xy = TRUE)
-setDT(df)
+df <- setDT(df)
 valid_df <- df[!is.na(cell_ID)]
 
 # Isolate true NAs in valid cells per layer
@@ -332,7 +212,7 @@ dt_long[, year := as.integer(sub("GPW_", "", layer))]
 # - If only one observed year, all get that value
 
 # Get ALL relevant years directly from periods (no hard-coded skips)
-all_relevant_years <- sort(unique(periods$year))
+all_relevant_years <- 1999:2024
 
 # Interpolate / fill per cell_ID over exactly these years
 interpolated_dt <- dt_long[, {
@@ -358,22 +238,10 @@ interpolated_dt <- dt_long[, {
 interpolated_dt <- unique(interpolated_dt, by = c("cell_ID", "year"))
 
 # Save full dataframe
-fwrite(df_mat, "Covariates for modelling/GPW_covariate_10x10km2.csv")
-
-# Plot to check 
-setDT(coords_10km)
-plot_df <- cbind(coords_10km[, .(x, y)], as.data.frame(df_mat))
-
-ggplot(plot_df) +
-  geom_tile(aes(x = x, y = y, fill = `99`), width = 10000, height = 10000) +
-  scale_fill_viridis_c(option = "magma") +
-  coord_equal() +
-  theme_minimal()
+fwrite(interpolated_dt, "Covariates for modelling/GPW_covariate_10x10km2.csv")
 
 
 ## Annual dynamic layers: Enhanced vegetation index (EVI) ---------------------
-
-## 10km2 --- 
 
 # Load TIF files 
 evi_files <- list.files("10x10 km spatial layers/EVI", full.names = TRUE)
@@ -394,11 +262,29 @@ dt_long <- melt(extracted,
                 id.vars = "cell_ID",
                 variable.name = "date",
                 value.name = "cov_value")
+dt_long <- setDT(dt_long)
 dt_long[, c("year", "doy") := tstrsplit(gsub("evi_", "", date), "_", fixed = TRUE)]
 dt_long[, year := as.integer(year)]
 dt_long[, doy  := as.integer(doy)]
 dt_long[, obs_date := as.Date(doy - 1, origin = paste0(year, "-01-01"))]
 dt_long[, date := NULL]
+
+# Create periods table
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
 
 # Match with periods 
 dt_long[, obs_start := as.IDate(obs_date)]
@@ -415,12 +301,12 @@ setkey(periods_test, start_period, end_period)
 setkey(dt_long_test, obs_start, obs_end)
 
 dt_long_test <- foverlaps(
-  dt_long_test,     # y table
-  periods_test,     # x table
+  dt_long_test,      
+  periods_test,      
   by.x = c("obs_start", "obs_end"),
   by.y = c("start_period", "end_period"),
-  type = "within",  # only matches where obs_date is inside the period
-  nomatch = NA     # keep unmatched rows as NA
+  type = "within",   
+  nomatch = NA      
 )
 dt_long_test <- dt_long_test %>% select(period_counter, year, cell_ID, cov_value)
 
@@ -487,12 +373,14 @@ impute_ridge_by_year <- function(dt) {
 
 dt_imputed <- impute_ridge_by_year(dt_complete)
 
-# Pivot to final matrix
-setkey(dt_imputed, cell_ID, period_counter)
-EVI_mat <- dcast(dt_imputed,
-                 cell_ID ~ period_counter,
-                 value.var = "cov_value",
-                 fill = NA_real_)
+# add back in season and year for matching... 
+dt_imputed[periods, 
+           `:=`(season = i.season, 
+                year    = i.year),
+           on = "period_counter"]
+
+# Save full dataframe
+fwrite(dt_imputed, "Covariates for modelling/EVI_covariate_10x10km2.csv")
 
 # Plot to check
 selected_year <- "2007"
@@ -502,12 +390,11 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
   coord_equal() + theme_minimal()
 
-# Save full dataframe
-fwrite(EVI_mat, "Covariates for modelling/EVI_covariate_10x10km2.csv")
 
-# Clean up 
-rm(plot_subset, EVI_mat, dt_imputed, dt_complete, full_grid, dt_period, dt_long_test)
-gc()
+## Annual dynamic layers: Seasonal precipitation ------------------------------
+
+# WAITING ON DOWNLOADED WORLDCLIM DATA -- 
+
 
 
 ## Proportion non-natural landcover, forest (CCI ESI) -------------------------
@@ -655,14 +542,14 @@ full_with_periods_df <- full_df %>%
 
 # Convert to matrix
 df_wide_forest <- dcast(full_with_periods_df,
-                 cell_ID ~ period_counter,
-                 value.var = "prop_forest")
+                        cell_ID ~ period_counter,
+                        value.var = "prop_forest")
 setorder(df_wide_forest, cell_ID)
 df_mat_forest <- as.matrix(df_wide_forest, rownames = "cell_ID")
 
 df_wide_unnatural <- dcast(full_with_periods_df,
-                        cell_ID ~ period_counter,
-                        value.var = "prop_unnatural")
+                           cell_ID ~ period_counter,
+                           value.var = "prop_unnatural")
 setorder(df_wide_unnatural, cell_ID)
 df_mat_unnatural <- as.matrix(df_wide_unnatural, rownames = "cell_ID")
 
