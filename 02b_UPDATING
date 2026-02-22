@@ -273,10 +273,10 @@ ggplot(static_10km, aes(x = x, y = y, fill = .data[[cov_value]])) +
 gwp <- rast("10x10 km spatial layers/gwp_10km.tif")
 
 # Crop, resample, mask
-r_c_species <- crop(gwp, reference_species_10km)
-r_c_aligned <- resample(r_c_species, reference_species_10km, method = "near")
-r_c_species <- mask(r_c_aligned, reference_species_10km)
-full_stack <- c(reference_species_10km, r_c_species)
+r_c_species <- crop(gwp, reference_species)
+r_c_aligned <- resample(r_c_species, reference_species, method = "near")
+r_c_species <- mask(r_c_aligned, reference_species)
+full_stack <- c(reference_species, r_c_species)
 
 # Check missing values raster-wide
 global(full_stack, "isNA")
@@ -323,6 +323,7 @@ dt_long <- melt(valid_df,
                 measure.vars = cov_layers,
                 variable.name = "layer",
                 value.name = "cov_value")
+dt_long <- setDT(dt_long)
 dt_long[, year := as.integer(sub("GPW_", "", layer))]  
 
 # Temporal imputation per cell_ID
@@ -355,21 +356,6 @@ interpolated_dt <- dt_long[, {
 
 # Safety: ensure no duplicate rows per cell_ID/year
 interpolated_dt <- unique(interpolated_dt, by = c("cell_ID", "year"))
-period_map <- unique(periods[, .(year, period_counter)])   
-
-interpolated_with_period <- interpolated_dt[
-  period_map,
-  on = "year",
-  allow.cartesian = TRUE
-]
-
-df_wide <- dcast(interpolated_with_period,
-                 cell_ID ~ period_counter,
-                 value.var = "cov_value")
-setorder(df_wide, cell_ID)
-
-# Convert to matrix  
-df_mat <- as.matrix(df_wide, rownames = "cell_ID")
 
 # Save full dataframe
 fwrite(df_mat, "Covariates for modelling/GPW_covariate_10x10km2.csv")
