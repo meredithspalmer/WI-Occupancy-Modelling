@@ -1,0 +1,2501 @@
+########################
+###### Data prep #######
+########################
+
+# Project: WI Occupancy Range Wide Trends
+# This file contains code to format the covariate data to run species-level occupancy models.
+
+# Set working directory 
+rm(list=ls()); gc()
+setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+set.seed(123)
+
+# Install
+#install.packages("gstat")
+
+# Load libraries
+library(broom)
+library(coda)
+library(cowplot)
+library(data.table)
+library(dplyr)
+library(forcats)
+library(ggmap)
+library(ggplot2)
+library(gridExtra)
+#library(gstat)
+library(lubridate)
+library(mgcv)
+library(patchwork)
+library(purrr)
+library(raster)
+library(rasterVis)
+library(reshape2)
+library(rlist)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(spOccupancy)
+library(stringr)
+library(tibble)
+library(tictoc)
+library(tidyr)
+library(tidyterra)
+library(tidyverse)
+library(terra)
+library(tmap)
+library(tmaptools)
+library(tsibble)
+library(viridis)
+
+
+## Plotting & saving ----------------------------------------------------------
+
+to_plot <- "YES"
+to_save <- "YES"
+
+
+#### RUN 1x #### --------------------------------------------------------------
+
+# Load WI data 
+all_dat <- fread("WI data/all_dat.csv")
+
+# Load GBIF data
+gbif <- fread("WI_GBIF/GBIF_clean.csv") 
+
+# Load reference raster 
+reference <- rast("10x10 km spatial layers/reference_10km2.tif")
+global_cell_id <- reference[["cell_ID"]]
+
+# User-defined scaling functions
+scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
+scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
+
+# User-defined covariate formatting function 
+cov_subset <- function(cov_dataframe_name, period_data){
+  covariate <- read.csv(cov_dataframe_name) %>% 
+    dplyr::select(-any_of("X")) %>% 
+    filter(cell_ID %in% sites) %>% 
+    arrange(cell_ID)
+  keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
+  df_subset <- covariate[, keep_cols] %>% 
+    as.matrix()
+  return(df_subset)
+}
+
+
+## Select target species ------------------------------------------------------
+
+target_species <- "Tapirus pinchaque"
+species_file <- gsub(" ", "_", target_species)
+print(target_species)
+print(species_file)
+
+
+## Load species data ----------------------------------------------------------
+
+# Load processed WI data 
+filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+load(filename)
+
+# Load range map 
+mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map <- rast(mmd_map_path)
+mmd_poly <- as.polygons(mmd_map, na.rm = TRUE) %>% st_as_sf()
+
+# Mask reference to species range 
+global_cell_id <- reference[["cell_ID"]]
+mmd_aligned <- resample(mmd_map, reference, method = "near")
+reference_species <- crop(global_cell_id, ext(mmd_aligned))
+reference_species <- mask(reference_species, mmd_aligned)  
+reference_species; plot(reference_species)
+
+# Cells in range
+species_frame <- as.data.frame(reference_species)
+sites <- unique(species_frame$cell_ID)
+length(sites)
+
+
+## Covariates: static (dim: ncell) ------------------------------------------
+
+# Load static covariates (pre-processed) 
+static_10km <- fread("Covariates for modelling/site_level_covariates_10x10km2.csv") 
+static_df <- static_10km %>% filter(cell_ID %in% sites) %>% arrange(cell_ID) 
+
+# Check and clean 
+length(unique(static_df$cell_ID)) == length(sites)
+rm(static_10km); gc()
+
+
+## Covariates: primary occasion (dim: ncell x nperiods) ---------------------
+
+## Global world population density (GWP) ---
+gwp_data <- fread("Covariates for modelling/GPW_covariate_10x10km2.csv")
+THIS IS NOT GOOD - want a product that has cell_IDs, and periods in a more mappable way 
+
+# Load TIF files
+gwp <- rast("Raw spatial layers/gpw_v4_PopDensity_rev11.tif")
+
+# Crop and mask to the extent of reference_species
+r_c_species <- crop(gwp, reference_species)
+r_c_species <- mask(r_c_species, reference_species)
+
+# Add cell_IDs (crop only — do not mask cell_ID layer)
+cell_id_species <- crop(global_cell_id, reference_species)   
+full_stack <- c(cell_id_species, r_c_species)
+
+# As data frame
+gwp_df <- as.data.frame(full_stack, na.rm = TRUE, xy = TRUE)
+
+# Melt to long
+gwp_long <- melt(gwp_df,
+                 id.vars = c("x", "y", "cell_ID"),
+                 measure.vars = c("GPW_2000", "GPW_2005", "GPW_2010", "GPW_2015", "GPW_2020"),
+                 variable.name = "year_var",
+                 value.name = "gwp")
+
+setDT(gwp_long)
+gwp_long[, year := as.integer(sub("GPW_", "", year_var))]
+gwp_long[, year_var := NULL]
+
+# Years used in your modeling periods
+period_years <- unique(periods$year)
+
+# Observed years that overlap modeling periods 
+observed_in_periods <- intersect(c(2000, 2005, 2010, 2015, 2020), period_years)
+
+# Years to predict 
+target_years <- setdiff(period_years, observed_in_periods)
+
+# Interpolate only for target_years
+gwp_interp <- gwp_long[, {
+  interp_gwp <- approx(year, gwp, xout = target_years, rule = 2)$y
+  .(year = target_years, gwp = interp_gwp)
+}, by = .(x, y, cell_ID)]
+gwp_interp[, gwp := round(gwp, 5)]
+
+# Combine observed + interpolated 
+gwp_observed <- gwp_long[year %in% observed_in_periods]
+gwp_final <- rbindlist(list(gwp_observed, gwp_interp), use.names = TRUE)
+setorder(gwp_final, cell_ID, year)
+
+# Join to periods
+gwp_data <- periods[, .(year, period_counter)][gwp_final, on = "year", allow.cartesian = TRUE]
+setorder(gwp_data, cell_ID, period_counter)
+
+# Check cells in mmd
+gwp_cells <- gwp_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
+missing_in_gwp <- setdiff(sites, gwp_cells)
+cat("Cells missing in gwp: ", length(missing_in_gwp), "\n")
+
+head(gwp_data)
+rm(gwp_final, gwp_interp, gwp_long, gwp_df, gwp, gwp_observed); gc()
+
+
+
+
+
+## Seasonal precipitation ---
+
+# Load the TIF files 
+r_list <- list(precseas_2010 = rast("1x1 km spatial layers/precseas_1981-2010_1km2.tif"),
+               precseas_2040 = rast("1x1 km spatial layers/precseas_2011-2040_1km2.tif"))
+r_stack <- rast(r_list)
+
+# Crop and mask to the extent of mmd_raster 
+r_c_species <-     crop(r_stack, reference_species)           
+r_c_species <-     mask(r_c_species, reference_species)  
+
+# Add cell_IDs 
+cell_id_species <- crop(global_cell_id, reference_species)
+cell_id_species <- mask(cell_id_species, reference_species)
+full_stack <-      c(cell_id_species, r_c_species)
+
+# As data frame
+precip_df <-       as.data.frame(full_stack, na.rm = TRUE, xy=TRUE)
+
+# Melt to long
+precip_long <- melt(
+  precip_df,
+  id.vars = c("x", "y", "cell_ID"),
+  measure.vars = c("precseas_2010", "precseas_2040"),
+  variable.name = "year_var",
+  value.name = "precseas"
+)
+
+setDT(precip_long)  
+precip_long[, year := as.integer(sub("precseas_", "", year_var))]
+precip_long[, year_var := NULL]
+
+# Target years from periods for interpolation
+target_years <- unique(periods$year)
+
+# Spread to wide for easy calculation (only two years, so very fast)
+precip_wide <- dcast(precip_long, x + y + cell_ID ~ year, value.var = "precseas")
+setnames(precip_wide, c("2010", "2040"), c("val_2010", "val_2040"))
+
+# Linear interpolation function per cell
+interpolate_precseas <- function(v2010, v2040, from = 2010, to = 2040) {
+  prop <- (target_years - from) / (to - from)
+  v2010 + prop * (v2040 - v2010)
+}
+
+# Create interpolated values for all target years
+setDT(precip_wide)
+precip_interp <- precip_wide[, 
+                             .(year = target_years,
+                               precseas = interpolate_precseas(val_2010, val_2040)),
+                             by = .(x, y, cell_ID)
+]
+precip_original <- precip_long[, .(x, y, cell_ID, year, precseas)]
+precip_full_long <- rbindlist(list(precip_original, precip_interp), use.names = TRUE)
+setorder(precip_full_long, cell_ID, year)
+precip_full_long <- precip_full_long[!precip_full_long$year == 2040,]
+
+# Join period_counter to each year 
+seasprec_data <- precip_full_long[periods[, .(year, period_counter)], 
+                                  on = "year", 
+                                  allow.cartesian = TRUE]
+setorder(seasprec_data, cell_ID, year, period_counter)
+head(seasprec_data)
+
+# Check cells in mmd
+precip_cells <- seasprec_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
+missing_in_precip <- setdiff(sites, precip_cells)
+cat("Cells missing in precip: ", length(missing_in_precip), "\n")
+
+# Clean 
+rm(precip_full_long, precip_original, precip_interp, precip_wide, precip_long,
+   precip_cells, precip_df); gc()
+
+
+## Protected area status ---
+
+# Load polygons 
+wdpa <- rbind(st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
+              st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
+              st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp"))
+
+# Crop to species distribution 
+if (st_crs(mmd_poly) != st_crs(wdpa)) {
+  wdpa <- st_transform(wdpa, st_crs(mmd_poly))
+}
+wdpa <- st_make_valid(wdpa)
+mmd_poly <- st_make_valid(mmd_poly)
+wdpa_aoi_sf <- suppressWarnings(st_intersection(wdpa, mmd_poly))
+wdpa_aoi_sf <- st_make_valid(wdpa_aoi_sf)
+wdpa_aoi_sf <- wdpa_aoi_sf[!st_is_empty(wdpa_aoi_sf), ]
+cat("Number of valid PAs overlapping species polygon:", nrow(wdpa_aoi_sf), "\n")
+wdpa_aoi_vect <- vect(wdpa_aoi_sf)
+
+# Get unique years 
+setDT(periods)  
+unique_years <- sort(unique(periods$year))
+
+# Create time-varying PA masks  
+pa_layers <- list()
+for (yr in unique_years) {
+  # Select PAs designated on or before this year
+  wdpa_year_vect <- wdpa_aoi_vect[wdpa_aoi_vect$STATUS_YR <= yr, ]
+  
+  # Rasterize binary (1 = protected that year, background = NA for unprotected)
+  if (nrow(wdpa_year_vect) == 0) {
+    pa_year <- reference_species  # template
+    pa_year[!is.na(pa_year)] <- NA
+  } else {
+    pa_year <- rasterize(wdpa_year_vect, reference_species, field = 1, background = NA)
+  }
+  names(pa_year) <- paste0("protected_", yr)
+  pa_layers[[as.character(yr)]] <- pa_year
+}
+pa_stack <- rast(pa_layers)
+
+# Add cell_ID layer
+cell_id_species <- crop(global_cell_id, reference_species)
+full_stack_pa <- c(cell_id_species, pa_stack)
+
+# Data frame 
+pa_df_wide <- as.data.frame(full_stack_pa, na.rm = FALSE, xy = TRUE)
+names(pa_df_wide) <- c("x", "y", "cell_ID", paste0("protected_", unique_years))
+prot_cols <- paste0("protected_", unique_years)
+pa_df_wide[, prot_cols] <- lapply(pa_df_wide[, prot_cols], function(col) ifelse(is.na(col), 0, col))
+pa_df_wide <- pa_df_wide[!is.na(pa_df_wide$cell_ID), ]
+
+# Melt to long format
+setDT(pa_df_wide)
+pa_df_long <- melt(pa_df_wide,
+                   id.vars = c("x", "y", "cell_ID"),
+                   measure.vars = prot_cols,
+                   variable.name = "year_var",
+                   value.name = "protected")
+
+# Extract year as integer
+setDT(pa_df_long)
+pa_df_long[, year := as.integer(sub("protected_", "", year_var))]
+pa_df_long[, year_var := NULL]
+
+# Expand to period_counter 
+# NOTE: this is too much data for R - keep by year for now, add period later when needed 
+wdpa_data <- periods[, .(year, period_counter)][pa_df_long, on = "year", allow.cartesian = TRUE]
+wdpa_data <- wdpa_data[, .(x, y, cell_ID, year, protected, period_counter)]
+setorder(wdpa_data, cell_ID, year, period_counter)
+#wdpa_data <- pa_df_long
+head(wdpa_data)
+
+# Check cells in mmd
+wdpa_cells <- wdpa_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
+missing_in_wdpa <- setdiff(sites, wdpa_cells)
+cat("Cells missing in wdpa: ", length(missing_in_wdpa), "\n")
+
+# Clean workspace
+rm(wdpa_cells, pa_df_long, pa_df_wide, full_stack_pa, pa_stack, wdpa_aoi_vect, 
+   wdpa_aoi_sf, wdpa, pa_layers)
+gc()
+
+
+
+
+## Human impacts: Encroachment
+
+# Non-natural landcover classes
+unnatural_landcover <- c(10, 11, 12, 20, 30, 190)  
+
+# Load TIF files 
+lc_files <- list.files("Raw spatial layers/CCI landcover 1km2", pattern = "\\.tif$", 
+                       full.names = TRUE)
+
+years <- as.integer(sub(".*CCI_([0-9]{4})_REPRO\\.tif", "\\1", basename(lc_files)))
+lc_files <- lc_files[years >= min(periods$year)]
+r_stack <- rast(lc_files)
+
+# Crop and mask to the extent of mmd_raster 
+r_c_species <-     crop(r_stack, reference_species)           
+r_c_species <-     mask(r_c_species, reference_species)  
+
+# Add cell_IDs 
+cell_id_species <- crop(global_cell_id, reference_species)
+cell_id_species <- mask(cell_id_species, reference_species)
+full_stack <-      c(cell_id_species, r_c_species)
+
+# As data frame
+landcover_df <-       as.data.frame(full_stack, na.rm = TRUE, xy=TRUE)
+
+# Check cells in mmd
+landcover_cells <- landcover_df %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
+missing_in_landcover <- setdiff(sites, landcover_cells)
+cat("Cells missing in landcover: ", length(missing_in_landcover), "\n")
+
+# Melt to long 
+setDT(landcover_df)  
+landcover_long <- melt(landcover_df,
+                       id.vars       = c("x", "y", "cell_ID"),
+                       measure.vars  = grep("^CCI_[0-9]{4}_REPRO$", names(landcover_df), 
+                                            value = TRUE),
+                       variable.name = "year_var",
+                       value.name    = "landcover_class")
+setDT(landcover_long)
+landcover_long[, year := as.integer(sub("^CCI_([0-9]{4})_REPRO$", "\\1", year_var))]
+landcover_long[, year_var := NULL]
+setorder(landcover_long, cell_ID, year)
+
+# Create crop and forest columns 
+landcover_long[, crop   := ifelse(landcover_class %in% crop_class,  1L, 0L)]
+landcover_long[, forest := ifelse(landcover_class %in% forest_class, 1L, 0L)]
+setDT(landcover_long)
+
+# Define future years
+future_years <- c(2023, 2024)
+
+# Extrapolate by carrying forward last observed values per cell_ID
+landcover_future <- landcover_long[, {
+  last_row <- .SD[which.max(year)] 
+  .(year = future_years,
+    crop = last_row$crop,
+    forest = last_row$forest)
+}, by = .(x, y, cell_ID)]
+
+# Combine observed + predicted 
+landcover_full_long <- rbindlist(list(landcover_long[, .(x, y, cell_ID, year, crop, forest)], landcover_future), use.names = TRUE)
+setorder(landcover_full_long, cell_ID, year)
+
+# Join period_counter to each year 
+landcover_data <- landcover_full_long[periods[, .(year, period_counter)], 
+                                      on = "year", 
+                                      allow.cartesian = TRUE]
+setorder(landcover_data, cell_ID, year, period_counter)
+head(landcover_data)
+
+rm(landcover_full_long, landcover_future, landcover_long, landcover_df); gc()
+
+
+## QUICK SAVE 
+filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+save(target_species, y_array, effort_array, periods, sites, reference_species, 
+     global_cell_id, y_data, effort_array, 
+     landcover_data, seasprec_data, gwp_data, wdpa_data, static_data,
+     file = filename)
+
+
+## EVI --- 
+
+# Load TIF files
+evi_files <- list.files("Raw spatial layers/EVI 1km2", full.names = TRUE)
+
+# Load full stack
+evi_list_raster <- lapply(evi_files, rast)
+evi_stack <- rast(evi_list_raster)
+
+# Crop and mask EVI
+r_c_species <- crop(evi_stack, reference_species)
+r_c_species <- mask(r_c_species, reference_species)
+
+# Add cell_ID (crop only!)
+cell_id_species <- crop(global_cell_id, reference_species)
+full_stack <- c(cell_id_species, r_c_species)
+
+# Extract to data frame (keep all cells)
+evi_df <- as.data.frame(full_stack, na.rm = FALSE, xy = TRUE)
+
+# Melt  
+evi_cols <- names(evi_df)[grepl("^EVI_", names(evi_df))]
+evi_long <- melt(evi_df,
+                 id.vars = c("x", "y", "cell_ID"),
+                 measure.vars = evi_cols,
+                 variable.name = "var",
+                 value.name = "evi")
+
+# Create date
+setDT(evi_long)
+start <- Sys.time()
+evi_long[, year := as.integer(substr(var, 5L, 8L))]
+evi_long[, date := as.IDate(sprintf("%d-%s", year, substr(var, 10L, 12L)), format = "%Y-%j")]
+setorder(evi_long, cell_ID, date)
+end <- Sys.time()
+print(end-start)
+
+# Create full grid  
+all_ids <- evi_long[, unique(cell_ID)]  
+all_periods <- unique(periods$period_counter)
+full_grid <- CJ(cell_ID = all_ids, period_counter = all_periods, unique = TRUE)
+full_grid <- periods[full_grid, on = "period_counter"]
+
+# Match EVI to periods 
+evi_long[, `:=`(start_date = date, end_date = date)]
+setkey(evi_long, cell_ID, start_date, end_date)
+setkey(full_grid, cell_ID, start_period, end_period)
+evi_with_period <- foverlaps(evi_long, full_grid, type = "any", nomatch = NULL)
+evi_with_period[, `:=`(start_date = NULL, end_date = NULL)]
+
+# Average EVI per period 
+evi_period_avg <- evi_with_period[,
+                                  .(evi = mean(evi, na.rm = TRUE)),
+                                  by = .(cell_ID, period_counter, year, season, start_period, end_period, x, y)
+]
+
+# Merge to full grid 
+evi_data <- copy(full_grid)  
+evi_data[evi_period_avg, on = .(cell_ID, period_counter), evi := i.evi]
+evi_data[is.nan(evi), evi := NA]
+setorder(evi_data, cell_ID, period_counter)
+
+# Temporal imputation (your existing code, unchanged)
+if (sum(is.na(evi_data$evi)) > 0) {
+  evi_data[, time_index := as.numeric(start_period)]
+  
+  imputed_dt <- evi_data[order(time_index), {
+    obs_time <- time_index[!is.na(evi)]
+    obs_evi  <- evi[!is.na(evi)]
+    
+    evi_filled <- if (length(obs_time) == 0) {
+      rep(NA_real_, .N)
+    } else if (length(obs_time) == 1) {
+      rep(obs_evi, .N)
+    } else {
+      approx(obs_time, obs_evi, xout = time_index, rule = 2)$y
+    }
+    
+    .(cell_ID, time_index, evi_imputed = evi_filled)
+  }, by = cell_ID]
+  
+  evi_data[imputed_dt, on = .(cell_ID, time_index), evi := i.evi_imputed]
+  evi_data[, time_index := NULL]
+}
+
+# Spatial imputation  
+still_missing <- evi_data[is.na(evi), unique(cell_ID)]
+setDT(evi_df)
+xy_lookup <- unique(evi_df[, .(cell_ID, x, y)])   
+evi_data <- xy_lookup[evi_data, on = "cell_ID"]
+
+# ── Fast spatial imputation: only for cells still fully missing ──
+still_missing <- evi_data[is.na(evi), unique(cell_ID)]
+
+if (length(still_missing) > 0) {
+  library(gstat)
+  
+  non_missing <- evi_data[!is.na(evi)]
+  
+  if (nrow(non_missing) == 0) {
+    # Fallback: global median (more robust than mean for skewed EVI)
+    global_median <- median(evi_data$evi, na.rm = TRUE)
+    evi_data[is.na(evi), evi := global_median]
+    cat("No observed EVI data — used global median for", length(still_missing), "missing cells.\n")
+  } else {
+    # Use latest period for training (stable)
+    train_coords <- non_missing[period_counter == max(period_counter), .(x, y, evi)]
+    train_df <- as.data.frame(train_coords)
+    
+    miss_coords <- unique(evi_data[cell_ID %in% still_missing, .(cell_ID, x, y)])
+    miss_df <- as.data.frame(miss_coords[, .(x, y)])
+    
+    # IDW model
+    gmodel <- gstat(formula = evi ~ 1, locations = ~ x + y, data = train_df, nmax = 50)
+    
+    # Predict
+    pred <- predict(gmodel, newdata = miss_df)
+    
+    # Vectorized assignment
+    lookup <- data.table(cell_ID = miss_coords$cell_ID, evi_pred = pred$var1.pred)
+    evi_data[lookup, on = "cell_ID", evi := i.evi_pred]
+    
+    cat("Spatially imputed", length(still_missing), "cells using IDW.\n")
+  }
+}
+
+# Final check
+cat("Final missing EVI values:", sum(is.na(evi_data$evi)), "\n")
+head(evi_data)
+
+# Check cells in mmd
+evi_cells <- evi_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
+missing_in_evi <- setdiff(sites, evi_cells)
+cat("Cells missing in evi: ", length(missing_in_evi), "\n")
+
+head(evi_data)
+
+# Clean workspace
+rm(evi_period_avg, evi_with_period, full_grid, evi_long, all_ids, all_periods, evi_cols, evi_df)
+gc()
+
+
+## QUICK SAVE 
+filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+save(target_species, y_array, effort_array, periods, sites, reference_species, 
+     global_cell_id, y_data, effort_array, 
+     landcover_data, seasprec_data, gwp_data, wdpa_data, evi_data, static_data,
+     file = filename)
+
+
+## Check that all cells are present ----------------------------------------
+(missing_cells <- unique(c(missing_in_static, missing_in_precip, missing_in_wdpa,
+                           missing_in_gwp, missing_in_landcover, missing_in_evi)))
+
+# If missing sites, rebuild arrays 
+n_periods <- max(periods$period_counter)
+n_weeks <- 13
+periods_vec <- sort(unique(y_agg$period_counter))
+
+y_agg <- y_data[, .(effort = sum(effort_days, na.rm = TRUE),   
+                    y = as.integer(any(detected == 1, na.rm = TRUE))),
+                by = .(cell_ID, period_counter, week)]
+y_agg <- periods[, .(period_counter, season, year)][y_agg, on = "period_counter"]
+
+
+if(length(missing_cells) > 0){
+  
+  # Recreate y_array 
+  y_data <- y_data[!(y_data$cell_ID %in% missing_cells),]
+  y_agg <- y_data[, .(effort = sum(effort_days),    
+                      y      = as.integer(any(detected == 1))),
+                  by = .(cell_ID, period_counter, week)
+  ]
+  y_agg <- periods[, .(period_counter, season, year)][y_agg, on = "period_counter"]
+  
+  sites       <- sort(unique(y_agg$cell_ID))
+  n_sites    <- length(sites)
+  y_array      <- array(0L, dim = c(n_sites, n_periods, n_weeks))
+  effort_array <- array(0L, dim = c(n_sites, n_periods, n_weeks))
+  
+  idx <- y_agg[, .(
+    i = match(cell_ID, sites),
+    j = match(period_counter, periods_vec),
+    k = week,
+    y = y,
+    effort = effort
+  )]
+  
+  y_array[cbind(idx$i, idx$j, idx$k)]      <- idx$y
+  effort_array[cbind(idx$i, idx$j, idx$k)] <- idx$effort
+}
+
+dim(y_array)
+dim(effort_array)  
+any(is.na(y_array))       
+length(sites)
+
+
+## Filter covariates to get correct sites & format to matrix 
+
+hist(log(static$cities_lg))
+static <- static_data %>% filter(cell_ID %in% sites) %>% 
+  mutate(sqrt_road_dens = sqrt(road_dens)) %>% 
+  mutate(sqrt_river_dist = sqrt(river_dist)) %>% 
+  mutate(log_coeff_var = log(coeff_var)) 
+dim(static)
+
+hist(seasprec_data$precseas)
+seasprec <- seasprec_data %>% 
+  filter(cell_ID %in% sites) %>% 
+  arrange(cell_ID) %>% 
+  mutate(log_precseas = log(precseas)) %>% 
+  rename(cov_value = log_precseas) %>% #log_precseas
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  distinct() %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(seasprec)
+
+wdpa <- wdpa_data %>% 
+  filter(cell_ID %in% sites) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = protected) %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  distinct() %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(wdpa)
+
+hist(log(gwp_data$gwp))
+gwp <- gwp_data %>% 
+  filter(cell_ID %in% sites) %>% 
+  arrange(cell_ID) %>% 
+  mutate(log_gwp = log(gwp)) %>% 
+  rename(cov_value = log_gwp) %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  distinct() %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(gwp)
+
+crop <- landcover_data %>% 
+  dplyr::select(-forest) %>% 
+  filter(cell_ID %in% sites) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = crop) %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  distinct() %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(crop)
+
+forest <- landcover_data %>% 
+  dplyr::select(-crop) %>% 
+  filter(cell_ID %in% sites) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = forest) %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  distinct() %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(forest) 
+
+hist(sqrt(evi_data$evi))
+evi <- evi_data %>% 
+  filter(cell_ID %in% sites) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = evi) %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  distinct() %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(evi) 
+
+
+## Generate remaining observation and detection covariates ---  
+
+## Number of deployments ---
+temp <- y_data[, .(n_depl = uniqueN(proj_depl)), 
+               by = .(cell_ID, period_counter)]
+temp_wide <- dcast(temp, 
+                   cell_ID ~ period_counter, 
+                   value.var = "n_depl", 
+                   fill = 0)
+ndepl <- as.matrix(temp_wide[order(temp_wide$cell_ID), 2:ncol(temp_wide)])
+dim(ndepl)
+
+## Project IDs ---
+
+# Set unique ID 
+setDT(y_data)
+deploy_map <- unique(y_data[, .(proj_depl)])
+deploy_map[, deploy_id := .I]  
+
+# For each cell-period, take the first deploy_id
+y_data <- deploy_map[y_data, on = "proj_depl"]
+proj_dt <- y_data[, .(deploy_id = first(deploy_id)), by = .(cell_ID, period_counter)]
+proj_dt[is.na(deploy_id), deploy_id := 0L] #fill NA with 0 (no data) 
+
+# Pivot to matrix 
+proj_wide <- dcast(proj_dt, cell_ID ~ period_counter, value.var = "deploy_id", fill = 0L)
+setorder(proj_wide, cell_ID)
+proj <- as.matrix(proj_wide[, -1])
+colnames(proj) <- paste0("p", seq_len(ncol(proj)))
+dim(proj)
+
+# Trend --- 
+n_periods <- max(periods$period_counter)
+n_sites <- length(unique(y_data$cell_ID))
+trend <- matrix(1:n_periods,
+                nrow = n_sites,      
+                ncol = n_periods,    
+                byrow = TRUE)        
+colnames(trend) <- paste0("p", 1:ncol(trend))
+dim(trend)     
+
+
+## Covariates: observation-level (dim: ncell x nperiod x nweek) ---------------
+
+# Min Jul 
+n_weeks <- 13
+minjul_period <- periods[
+  , .(period_counter, minjul = yday(start_period))   
+]
+minjul_wide <- matrix(minjul_period$minjul,
+                      nrow = n_sites,
+                      ncol = n_periods,
+                      byrow = TRUE)   
+minjul_wide <- scale3(minjul_wide)
+minjul <- array(minjul_wide, dim = c(n_sites, n_periods, n_weeks))
+dim(minjul)      
+
+# Min Jul Sq
+minjul_sq <- minjul^2
+dim(minjul_sq)
+
+
+## Coordinates ----------------------------------------------------------------
+
+coords <- fread("WI data/WI_loc_matching_cell_ID_1km2.csv")[
+  , .(cell_ID, longitude, latitude)
+][!duplicated(cell_ID)
+][match(sites, cell_ID), .(longitude, latitude)]
+coords <- as.matrix(coords)
+dim(coords)
+
+
+## Save data ----------------------------------------------------------------
+
+filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+save(target_species, y_array, coords, effort_array, periods, sites, reference_species, 
+     global_cell_id, y_data, effort_array, y_agg, 
+     minjul, minjul_sq, ndepl, proj, trend,
+     crop, gwp, seasprec, wdpa, evi, forest, static,
+     landcover_data, seasprec_data, gwp_data, wdpa_data, evi_data, static_data,
+     file = filename)
+
+
+###############
+## Modelling ##
+###############
+
+# Following vignette found at: 
+# https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
+
+
+## Create new directory to store outputs --------------------------------------
+
+# Clear workspace
+rm(list=ls()); gc()
+
+# Select target species
+target_species <- "Tremarctos ornatus"
+species_file <- gsub(" ", "_", target_species)
+print(target_species)
+print(species_file)
+
+# Load data 
+new_dir_path <- paste("Model outputs/", species_file, sep="")
+if (!dir.exists(new_dir_path)) {
+  dir.create(new_dir_path)
+} else {
+  print("Directory already exists")
+}
+
+filename <- paste0("Data for modelling/", target_species, ".RData")
+load(filename)
+
+# To save plots?
+to_plot <- "YES"
+
+## Look at raw occupancy data -------------------------------------------------
+
+# Mean detection probability per period (across sites and weeks)
+raw.occ.prob <- apply(y_array, 2, mean, na.rm = TRUE)   # dimension 2 = periods
+n_periods <- max(periods$period_counter)
+
+# Convert to data.frame for plotting
+raw.occ.prob.df <- data.frame(
+  period_counter = 1:n_periods,
+  y = raw.occ.prob
+)
+
+# Add approximate period dates (midpoint of each period for x-axis)
+period_dates <- periods[
+  , .(period_counter,
+      period_date = start_period + 45)  # +45 days ≈ midpoint of 91-day period
+]
+raw.occ.prob.df <- raw.occ.prob.df %>%
+  left_join(period_dates, by = "period_counter")
+
+# Fill in any missing periods (shouldn't be any, but safe)
+all_periods <- data.table(period_counter = 1:n_periods)
+raw.occ.prob.df <- all_periods[raw.occ.prob.df, on = "period_counter"]
+raw.occ.prob.df[is.na(y), y := 0]
+
+# Create year labels (show year at start of Spring)
+raw.occ.prob.df[, label_year := ifelse(month(period_date) == 3, year(period_date), "")]
+
+# Plot
+(raw_occ_plot <- ggplot(raw.occ.prob.df, aes(x = period_date, y = y)) +
+    geom_point(size = 2) +
+    theme_bw() +
+    xlab("Year") +
+    ylab("Raw Occurrence Proportion") +
+    scale_x_date(date_breaks = "1 year", 
+                 date_labels = "%Y",
+                 expand = expansion(mult = c(0.02, 0.02))) +
+    labs(title = "Raw Occupancy",
+         subtitle = bquote(italic(.(target_species)))) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          axis.title = element_text(face = "bold")))
+
+# Save
+if(to_plot == "YES"){
+  file_name <- paste0("Model outputs/", species_file, "/", species_file, "_rawOccProp.jpg")
+  ggsave(filename = file_name, plot = raw_occ_plot, width = 12, height = 5, dpi = 300)
+}
+
+
+## Plot univariate models -----------------------------------------------------
+
+folder <- paste0("Model outputs/", species_file, "/Subsetting")
+if (!dir.exists(folder)) dir.create(folder, recursive = TRUE)
+
+# List of covariates to test individually (excluding trend)
+covariate_names <- c("crop", "gwp", "seasprec", "wdpa", "evi", "forest", 
+                     "road_dens", "tri", "river_dist", "coeff_var", "human_access")
+
+# Full occupancy formula  
+occ.covs.full <- list(
+  trend          = trend,
+  crop           = crop,
+  gwp            = gwp,
+  seasprec       = seasprec,
+  wdpa           = wdpa,
+  evi            = evi,
+  forest         = forest,
+  tri            = static$tri,
+  human_access   = static$sqrt_human_access,
+  road_dens      = static$log_road_dens,      
+  river_dist     = static$sqrt_river_dist,     
+  coeff_var      = static$log_coeff_var       
+)
+
+# Detection formula 
+det.formula <- ~ effort + minjul + minjul_sq + ndepl + (1|proj)
+
+# Storage
+results_list <- list()
+plot_list    <- list()
+waic_df      <- data.frame(model = character(), WAIC = numeric(), stringsAsFactors = FALSE)
+
+# Pre-calculate things that don't change
+y_dat       <- y_array
+z.init      <- apply(y_dat, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+dist.data   <- dist(coords)
+mean_dist   <- mean(dist.data)
+max_dist    <- max(dist.data)
+min_dist    <- min(dist.data)
+
+# Priors and tuning (same for all models)
+priors.list <- list(
+  alpha.normal = list(mean = 0, var = 2.72),
+  beta.normal  = list(mean = 0, var = 2.72),
+  sigma.sq.ig  = list(a = 2, b = 0.5),
+  phi.unif     = list(a = 3 / max_dist, b = 3 / min_dist)
+)
+tuning.list <- list(phi = 1, rho = 1)
+
+# MCMC settings
+test <- "YES"
+
+if(test == "NO"){
+  n.batch     <- 400
+  batch.length <- 25
+  n.burn      <- 2000
+  n.thin      <- 10
+  n.report    <- 40
+  n.chains    <- 3
+} else {
+  n.batch     <- 5 #10
+  batch.length <- 5 #25
+  n.burn      <- 10 #50
+  n.thin      <- 1
+  n.report    <- 5 #10
+  n.chains    <- 1
+}
+
+# Model set: first trend-only, then trend + each covariate
+model_names <- c("trend_only", paste0("trend_", covariate_names))
+
+# Loop 
+for (model_name in model_names) {
+  
+  cat("============================================================\n")
+  cat("Running model:", model_name, "\n")
+  
+  # Determine which covariates go into occ.covs for THIS model only
+  if (model_name == "trend_only") {
+    occ.covs.list <- list(trend = trend)
+    occ.formula   <- ~ scale(trend)
+    svc.cols      <- 1:2  # intercept + trend
+  } else {
+    cov_name <- sub("trend_", "", model_name)
+    occ.covs.list <- list(trend = occ.covs.full$trend)
+    occ.covs.list[[cov_name]] <- occ.covs.full[[cov_name]]
+    occ.formula <- as.formula(paste("~ scale(trend) + scale(", cov_name, ")"))
+    svc.cols <- 1:3  # intercept + trend + covariate
+  }
+  
+  # Full data list for this model only
+  dat_ls <- list(
+    y = y_array,
+    occ.covs = occ.covs.list,
+    det.covs = list(effort = effort_array,
+                    minjul = minjul,
+                    minjul_sq = minjul_sq,
+                    ndepl = ndepl,
+                    proj = proj),
+    coords = coords
+  )
+  
+  # Initial values  
+  inits.list <- list(beta = 0,
+                     alpha = 0,
+                     z = apply(dat_ls$y, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0)),
+                     phi = 3 / mean_dist,
+                     sigma.sq = 0.5,
+                     w = matrix(0, nrow = nrow(y_array), ncol = length(svc.cols)),
+                     sigma.sq.t = 0.5)
+  
+  # Run the model 
+  out <- svcTPGOcc(
+    occ.formula = occ.formula,
+    det.formula = det.formula,
+    data = dat_ls,
+    inits = inits.list,
+    n.batch = n.batch,
+    batch.length = batch.length,
+    priors = priors.list,
+    svc.cols = svc.cols,
+    cov.model = "exponential",
+    NNGP = TRUE,
+    n.neighbors = 5,
+    tuning = tuning.list,
+    n.report = n.report,
+    n.burn = n.burn,
+    n.thin = n.thin,
+    n.chains = n.chains,
+    verbose = TRUE,
+    ar1 = TRUE
+  )
+  
+  # Save summary  
+  sink(paste0(folder, "/", model_name, "_summary.txt"))
+  print(summary(out))
+  sink()
+  
+  # WAIC  
+  waic_val <- as.numeric(waicOcc(out)[3])
+  waic_df <- rbind(waic_df, data.frame(model = model_name, WAIC = waic_val))
+  
+  # Plot occurrence coefficients  
+  beta_samps <- out$beta.samples
+  beta_quant <- data.frame(
+    covariate = colnames(beta_samps),
+    mean      = colMeans(beta_samps),
+    t(apply(beta_samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
+  )
+  names(beta_quant)[3:6] <- c("q025", "q25", "q75", "q975")
+  beta_quant <- beta_quant[beta_quant$covariate != "(Intercept)", , drop = FALSE]
+  if (model_name == "trend_only") {
+    beta_quant$cov_name <- "Trend (time)"
+    beta_quant$cov_type <- "Trend"
+  } else {
+    this_cov <- sub("trend_", "", model_name)
+    nice_name <- switch(this_cov,
+                        crop = "Cropland cover",
+                        forest = "Forest cover",
+                        gwp = "Human population density (log)",
+                        seasprec = "Precipitation (log)",
+                        wdpa = "Protected area status",
+                        evi = "Vegetation index (EVI)",
+                        road_den = "Road density (log)",
+                        tri = "Topographic ruggedness",
+                        river_dist = "Distance to rivers (sqrt)",
+                        coeff_var = "Habitat heterogeneity (log)",
+                        human_access = "Distance to large cities (sqrt)",
+                        this_cov)  # fallback
+    beta_quant$cov_name <- ifelse(grepl("trend", beta_quant$covariate, ignore.case = TRUE),
+                                  "Trend (year)", nice_name)
+    beta_quant$cov_type <- ifelse(grepl("trend", beta_quant$covariate, ignore.case = TRUE),
+                                  "Trend", "Covariate")
+  }
+  beta_quant$cov_name <- factor(beta_quant$cov_name,
+                                levels = c(setdiff(beta_quant$cov_name, "Trend (time)"), 
+                                           "Trend (time)"))
+  cov_colors <- c("Covariate" = "#E69F00", "Trend"     = "#56B4E9")  
+  
+  p <- ggplot(beta_quant, aes(x = cov_name, y = mean, color = cov_type)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_errorbar(aes(ymin = q025, ymax = q975), 
+                  width = 0, size = 0.9, alpha = 0.8) +
+    geom_errorbar(aes(ymin = q25, ymax = q75), 
+                  width = 0, size = 2.2) +
+    geom_point(size = 4, shape = 21, fill = "white", stroke = 1.5) +
+    scale_color_manual(values = cov_colors, guide = "none") +  
+    coord_flip() +
+    theme_bw(base_size = 13) +
+    labs(title = paste0("Model: ", gsub("_", " + ", model_name)),
+         x = "", y = "Posterior estimate") +
+    theme(plot.title = element_text(size = 14, face = "bold"),
+          axis.text.y = element_text(size = 12, color = "black"))
+  
+  # Save individual plot
+  ggsave(filename = paste0(folder, "/occ_", model_name, ".jpg"),
+         plot = p, width = 8, height = ifelse(model_name == "trend_only", 3.2, 4.2), dpi = 300)
+  
+  # Store
+  plot_list[[model_name]] <- p
+  results_list[[model_name]] <- out
+  
+  cat("Finished:", model_name, "| WAIC =", round(waic_val, 2), "\n\n")
+}
+
+
+## Combine plots ----
+
+# Split lists 
+plot_list_anthro <- plot_list[c("trend_crop", "trend_gwp", "trend_wdpa", 
+                                "trend_forest", "trend_human_access")] #trend_road_dens
+
+plot_list_enviro <- plot_list[c("trend_only", "trend_seasprec", "trend_evi", 
+                                "trend_tri", "trend_river_dist", "trend_coeff_var")]
+
+# Build plots 
+(combined_anthro <- plot_grid(plotlist = plot_list_anthro, ncol = 3, label_size = 14,
+                              align = "hv"))
+
+(combined_enviro <- plot_grid(plotlist = plot_list_enviro, ncol = 3, label_size = 14,
+                              align = "hv"))
+
+# Save 
+if(to_plot == "YES"){
+  ggsave(filename = paste0(folder, "/Univariate_models_anthropogenic.jpg"),
+         plot = combined_anthro, width = 16, height = 6, dpi = 300, bg = "white")
+  
+  ggsave(filename = paste0(folder, "/Univariate_models_environmental.jpg"),
+         plot = combined_enviro, width = 16, height = 6, dpi = 300, bg = "white")
+}
+  
+# Save WAIC table
+write.csv(waic_df %>% arrange(WAIC), paste0(folder, "/WAIC_comparison.csv"), row.names = FALSE)
+
+# Optional: View WAIC ranking
+print(waic_df %>% arrange(WAIC))
+
+
+## Compare covariates across models ---
+
+# Extract all beta summaries into one data frame
+all_beta_quant <- data.frame()
+
+for (model_name in model_names) {
+  if (!model_name %in% names(plot_list)) next
+  
+  beta_samps <- results_list[[model_name]]$beta.samples
+  beta_quant <- data.frame(
+    covariate = colnames(beta_samps),
+    mean = colMeans(beta_samps),
+    t(apply(beta_samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
+  )
+  names(beta_quant)[3:6] <- c("q025", "q25", "q75", "q975")
+  
+  beta_quant <- beta_quant[beta_quant$covariate != "(Intercept)", , drop = FALSE]
+  beta_quant$model <- model_name
+  beta_quant <- beta_quant %>%
+    mutate(
+      cov_clean = ifelse(grepl("trend", covariate, ignore.case = TRUE),
+                         "Trend (year)", 
+                         sub("trend_", "", model_name)),
+      cov_type = ifelse(grepl("trend", covariate, ignore.case = TRUE),
+                        "Trend", "Covariate"),
+      cov_nice = case_when(
+        cov_clean == "crop" ~ "Cropland cover",
+        cov_clean == "gwp" ~ "Human population density (log)",
+        cov_clean == "seasprec" ~ "Precipitation seasonality (log)",
+        cov_clean == "wdpa" ~ "Protected area status",
+        cov_clean == "evi" ~ "Vegetation index (EVI)",
+        cov_clean == "forest" ~ "Forest cover",
+        #cov_clean == "road_dens" ~ "Road density (log)",
+        cov_clean == "tri" ~ "Topographic ruggedness",
+        cov_clean == "river_dist" ~ "Distance to rivers (sqrt)",
+        cov_clean == "coeff_var" ~ "Habitat heterogeneity (log)",
+        cov_clean == "human_access" ~ "Human access (sqrt)",
+        TRUE ~ cov_clean
+      )
+    )
+  
+  all_beta_quant <- rbind(all_beta_quant, beta_quant)
+}
+
+# Ensure factor order: put Trend last, others in your preferred order
+cov_order <- c("Cropland cover", "Human population density (log)", "Precipitation seasonality (log)",
+               "Protected area status", "Vegetation index (EVI)", "Forest cover",
+               #"Distance to roads (log)", 
+               "Topographic ruggedness", "Distance to rivers (sqrt)",
+               "Habitat heterogeneity (log)", "Human access (sqrt)", "Trend (year)")
+
+all_beta_quant <- all_beta_quant %>% mutate(cov_nice = factor(cov_nice, levels = cov_order))
+
+# Colors
+cov_colors <- c("Covariate" = "#E69F00", "Trend" = "#56B4E9")
+
+
+## Plot trend effects across all models ----
+
+trend_only_df <- all_beta_quant %>% filter(cov_type == "Trend")
+
+(p_trend_all <- ggplot(trend_only_df, aes(x = reorder(model, mean), y = mean)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_errorbar(aes(ymin = q025, ymax = q975), width = 0, size = 0.9, alpha = 0.8, color = "#56B4E9") +
+    geom_errorbar(aes(ymin = q25, ymax = q75), width = 0, size = 2.2, color = "#56B4E9") +
+    geom_point(size = 4, shape = 21, fill = "white", stroke = 1.5, color = "#56B4E9") +
+    coord_flip() +
+    theme_bw(base_size = 13) +
+    labs(title = "Trend effect across all univariate models",
+         x = "Model",
+         y = "Posterior estimate (Trend)") +
+    theme(plot.title = element_text(size = 14, face = "bold")))
+
+if(to_plot == "YES"){
+  ggsave(filename = paste0(folder, "/All_models_trend_effect.jpg"),
+         plot = p_trend_all, width = 9, height = 6, dpi = 300, bg = "white")
+}
+
+
+## Plot all non-trend effects (one per model) ----
+
+cov_only_df <- all_beta_quant %>% filter(cov_type == "Covariate")
+
+(p_cov_all <- ggplot(cov_only_df, aes(x = cov_nice, y = mean, color = cov_type)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_errorbar(aes(ymin = q025, ymax = q975), width = 0, size = 0.9, alpha = 0.8) +
+    geom_errorbar(aes(ymin = q25, ymax = q75), width = 0, size = 2.2) +
+    geom_point(size = 4, shape = 21, fill = "white", stroke = 1.5) +
+    scale_color_manual(values = cov_colors, guide = "none") +
+    coord_flip() +
+    theme_bw(base_size = 13) +
+    labs(title = "Covariate effects from univariate models (with trend)",
+         x = "",
+         y = "Posterior estimate") +
+    theme(plot.title = element_text(size = 14, face = "bold"),
+          axis.text.y = element_text(size = 12)))
+
+if(to_plot == "YES"){
+  ggsave(filename = paste0(folder, "/All_univariate_covariate_effects.jpg"),
+         plot = p_cov_all, width = 10, height = 7, dpi = 300, bg = "white")
+}
+
+
+## Run full models ------------------------------------------------------------
+
+# Remove covariates that crashed in uni-variate (e.g., road_dens)
+
+# Model formula
+occ.formula = ~ 
+  scale(crop) + 
+  scale(forest) + 
+  scale(gwp) + 
+  scale(seasprec) + 
+  scale(wdpa) + 
+  scale(evi) + 
+  #scale(road_dens) + 
+  scale(tri) + 
+  scale(river_dist) + 
+  scale(coeff_var) + 
+  scale(human_access) + 
+  scale(trend)
+det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
+
+# Covariates whose effects are estimated as SVCs, including intercept
+svc.cols = c(1:12) #c(1:13)
+
+# Data for model 
+dat_ls <- list(y = y_array,
+               occ.covs = list(crop = crop, 
+                               gwp = gwp,
+                               seasprec = seasprec,
+                               wdpa = wdpa,
+                               evi = evi, 
+                               forest = forest,
+                               #road_dens = static$log_road_dens,
+                               tri = static$tri,
+                               river_dist = static$sqrt_river_dist,
+                               coeff_var = static$log_coeff_var,
+                               human_access = static$sqrt_human_access,
+                               trend = trend),
+               det.covs = list(effort = effort_array,  # already scaled! 
+                               minjul = minjul,        # already scaled! 
+                               minjul_sq = minjul_sq,  # already scaled! 
+                               ndepl = ndepl, 
+                               proj = proj),
+               coords = coords)
+
+
+# Prep inits ---
+
+z.init <- apply(dat_ls$y, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+dist.data <- dist(coords)               # pairwise distance between all sites 
+inits.list <- list(beta = 0,            # occurrence coefficients
+                   alpha = 0,           # detection coefficients
+                   z = z.init,          # latent occurrence values
+                   phi = 3 / mean(dist.data),  
+                   sigma.sq = 0.5,      
+                   w = matrix(0, length(svc.cols), nrow(y_array)),  
+                   #rho = 0,  
+                   sigma.sq.t = 0.5)    # occurrence random effect variances 
+
+priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
+                    beta.normal = list(mean = 0, var = 2.72),
+                    sigma.sq.ig = list(a = 2, b = 0.5),
+                    phi.unif = list(a = 3 / max(dist.data), 
+                                    b = 3 / min(dist.data)))
+
+# Tuning ----
+
+test <- "YES"
+tuning.list <- list(phi = 1, rho = 1)
+
+if(test == "NO"){
+  n.batch     <- 400
+  n.burn      <- 2000
+  n.thin      <- 10
+  n.report    <- 40
+  n.chains    <- 3
+} else {
+  n.batch     <- 10
+  n.burn      <- 50
+  n.thin      <- 1
+  n.report    <- 10
+  n.chains    <- 3
+}
+
+batch.length <- 25
+n.iter <- n.batch * batch.length 
+
+
+## Run model ---
+
+start_time <- Sys.time()
+out <- svcTPGOcc(occ.formula = occ.formula, 
+                 det.formula = det.formula,
+                 data = dat_ls, 
+                 inits = inits.list,
+                 n.batch = n.batch,
+                 batch.length = batch.length, 
+                 priors = priors.list,  
+                 svc.cols = svc.cols,
+                 cov.model = "exponential",   
+                 NNGP = TRUE, 
+                 n.neighbors = 5,  
+                 tuning = tuning.list, 
+                 n.report = n.report, 
+                 n.burn = n.burn,
+                 n.thin = n.thin,
+                 n.chains = n.chains,
+                 verbose = TRUE,
+                 ar1 = TRUE) 
+end_time <- Sys.time()
+end_time - start_time 
+
+
+## Save output ---
+(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", species_file, "/", species_file, "_svcTPGOcc.RData", sep = ""))
+save(y_array, target_species, out, coords, dat_ls, periods, file = filename)
+
+
+## Examine model outputs ----
+
+# Reload if necessary: model outputs 
+#filename <- paste0("Model outputs/", species_file, "/", species_file, "_svcTPGOcc.RData")
+#load(filename)
+out_full <- out
+
+# Save model outputs 
+summary(out)
+summary_text <- capture.output(summary(out))
+filename <- paste0("Model outputs/", species_file, "/", species_file, "_outSummary.txt")
+writeLines(summary_text, filename)
+
+
+## Parameter plots: Occurrence ---
+
+occ.samps <- out$beta.samples 
+occ_quantiles <- as.data.frame(matrix(NA, ncol(occ.samps), 6)) 
+colnames(occ_quantiles) <- c("covariate", "mean", "q2.5", "q25", "q75", "q97.5")
+occ_quantiles$covariate <- colnames(occ.samps)
+
+#UPDATE AS NECESSARY
+occ_quantiles$covariate <- c("Intercept", "Crop", "Forest", "GWP", "Precip", "Protected", 
+                             "EVI", "TRI", "River Dist", "Habitat Hetero", "Human Access", 
+                             "Trend") 
+
+#UPDATE AS NECESSARY
+desired_order <- c("TRI", "River Dist", "Habitat Hetero", "Precip", "EVI", # environmental
+                   "Protected", "GWP", "Human Access", "Crop", "Forest",   # anthropogenic
+                   "Trend", "Intercept")
+
+occ_quantiles$covariate <- factor(occ_quantiles$covariate, levels = desired_order)
+occ_quantiles$mean <- colMeans(occ.samps)
+occ_quantiles[,3:6] <- t(apply(occ.samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
+occ_quantiles_full <- occ_quantiles
+
+(occParams <- ggplot(occ_quantiles, aes(x = covariate, y = mean)) +
+    geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0, linewidth = 0.6) +
+    geom_errorbar(aes(ymin = q25, ymax = q75, color = covariate), width = 0,
+                  linewidth = 1.5, show.legend = FALSE) +
+    geom_point() +
+    theme_bw() +
+    geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+    xlab('Covariates (scaled)') +
+    ylab('Posterior Distribution') +
+    labs(title = "Occurrence coefficients", 
+         subtitle = bquote(italic(.(target_species)))) + 
+    coord_flip())
+
+if(to_plot == "YES"){
+  file_name <- paste0("Model outputs/", species_file, "/", species_file, "_occurrenceParams.jpg")
+  ggsave(filename = file_name, plot = occParams, width = 6, height = 5, units = "in")
+}
+
+
+## Parameter plots: Detection ---
+
+det.samps <- out$alpha.samples
+det_quantiles <- as.data.frame(t(apply(det.samps, 2, quantile, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))))
+det_quantiles$mean <- colMeans(det.samps)
+det_quantiles$covariate <- rownames(det_quantiles)
+det_quantiles <- det_quantiles %>%
+  mutate(covariate = recode(covariate,
+                            "(Intercept)" = "Intercept",
+                            "effort" = "Effort",
+                            "minjul" = "Julian Day",
+                            "minjul_sq" = "Julian Day Sq",
+                            "ndepl" = "N. Depl")) %>%
+  mutate(covariate = factor(covariate, 
+                            levels = c("Effort", "N. Depl", "Julian Day", 
+                                       "Julian Day Sq", "Intercept")))
+
+(detParams <- ggplot(det_quantiles, aes(x = covariate, y = `50%`)) +   
+    geom_errorbar(aes(ymin = `2.5%`, ymax = `97.5%`), width = 0, linewidth = 0.6) +
+    geom_errorbar(aes(ymin = `25%`, ymax = `75%`, color = covariate), width = 0,
+                  linewidth = 1.5, show.legend = FALSE) +
+    geom_point() +
+    geom_hline(yintercept = 0, lty = 2, linewidth = 0.3) +
+    coord_flip() +
+    theme_bw() +
+    labs(title = "Detection coefficients",
+         subtitle = bquote(italic(.(target_species))),
+         x = "Covariates (scaled)",
+         y = "Posterior estimate"))
+
+if(to_plot == "YES"){
+  file_name <- paste0("Model outputs/", species_file, "/", species_file, "_detectionParams.jpg")
+  ggsave(filename = file_name, plot = detParams, width = 6, height = 3, units = "in")
+}
+
+
+## Comparative plot: Univariate vs Full model covariate effects ---------------
+
+# Add full models 
+model_name_full <- "Full" 
+results_list[[model_name_full]] <- out_full
+
+# Univervariate effects 
+uni_cov_df <- all_beta_quant %>%
+  filter(cov_type == "Covariate") %>%
+  mutate(model_type = "Univariate (+ trend)") %>%
+  select(cov_nice, mean, q025, q25, q75, q975, model_type)
+
+# Full model effects
+full_samps <- results_list[["Full"]]$beta.samples
+
+full_quant <- data.frame(
+  covariate = colnames(full_samps),
+  mean = colMeans(full_samps),
+  t(apply(full_samps, 2, quantile, probs = c(0.025, 0.25, 0.75, 0.975)))
+)
+names(full_quant)[3:6] <- c("q025", "q25", "q75", "q975")
+
+full_quant <- full_quant %>%
+  filter(covariate != "(Intercept)",
+         covariate != "scale(trend)") %>%
+  mutate(
+    # Robustly extract name inside scale(...)
+    cov_raw = sub("^scale\\((.*)\\)$", "\\1", covariate),
+    cov_nice = case_when(
+      cov_raw == "crop"          ~ "Cropland cover",
+      cov_raw == "gwp"           ~ "Human population density (log)",
+      cov_raw == "seasprec"      ~ "Precipitation seasonality (log)",
+      cov_raw == "wdpa"          ~ "Protected area status",
+      cov_raw == "evi"           ~ "Vegetation index (EVI)",
+      cov_raw == "forest"        ~ "Forest cover",
+      #cov_raw == "road_dist"     ~ "Distance to roads (log)",
+      cov_raw == "tri"           ~ "Topographic ruggedness",
+      cov_raw == "river_dist"    ~ "Distance to rivers (sqrt)",
+      cov_raw == "coeff_var"     ~ "Habitat heterogeneity (log)",
+      cov_raw == "human_access"  ~ "Human access (sqrt)",
+      TRUE                       ~ cov_raw  # fallback (should never trigger)
+    ),
+    model_type = "Full model (all covs + trend)"
+  ) %>%
+  select(cov_nice, mean, q025, q25, q75, q975, model_type)
+
+# Combine
+comparison_df <- bind_rows(uni_cov_df, full_quant) %>%
+  mutate(model_type = factor(model_type,
+                             levels = c("Univariate (+ trend)", "Full model (all covs + trend)")),
+         cov_nice = factor(cov_nice, levels = rev(cov_order[cov_order != "Trend (year)"])))
+
+# Plot: Univariate vs Full model comparison
+(p_compare <- ggplot(comparison_df, aes(x = mean, y = cov_nice, color = model_type)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_errorbar(aes(xmin = q025, xmax = q975),
+                  position = position_dodge(width = 0.5),
+                  width = 0, size = 0.9, alpha = 0.7) +
+    geom_errorbar(aes(xmin = q25, xmax = q75),
+                  position = position_dodge(width = 0.5),
+                  width = 0, size = 2.5, alpha = 0.9) +
+    geom_point(position = position_dodge(width = 0.5),
+               size = 4, shape = 21, fill = "white", stroke = 1.5) +
+    scale_color_manual(values = c("Univariate (+ trend)" = "#E69F00",
+                                  "Full model (all covs + trend)" = "#0072B2"),
+                       name = "Model") +
+    theme_bw(base_size = 13) +
+    labs(title = "Covariate effects: Univariate vs Full multivariate model",
+         x = "Posterior estimate (occurrence coefficient)",
+         y = "") +
+    theme(plot.title = element_text(size = 14, face = "bold"),
+          axis.text.y = element_text(size = 12),
+          legend.position = "top",
+          legend.title = element_text(face = "bold")))
+
+if(to_plot == "TRUE"){
+  ggsave(filename = paste0(folder, "/Comparison_univariate_vs_full_model.jpg"),
+         plot = p_compare, width = 11, height = 7.5, dpi = 300, bg = "white")
+}
+
+
+## Plot: Occupancy probabilities across periods ----
+
+# Average occupancy prob in each period across all sites
+unique.periods <- dim(out$y)[2]  
+
+psi.mean.samples <- apply(out$psi.samples, c(1, 3), mean)
+psi.medians <- apply(psi.mean.samples, 2, median)
+psi.quants <- apply(psi.mean.samples, 2, quantile, c(0.025, 0.975))
+
+plot.df <- data.frame(period_counter = 1:unique.periods, 
+                      med = psi.medians,
+                      low = psi.quants[1,],
+                      high = psi.quants[2,])
+
+period_dates <- periods %>%
+  mutate(month = case_when(season == "Winter" ~ 1,
+                           season == "Spring" ~ 4,
+                           season == "Summer" ~ 7,
+                           season == "Fall"   ~ 10),
+         period_date = ymd(paste(year, month, "01")),
+         label_year = ifelse(month == 4, as.character(year), ""))
+
+plot.df <- plot.df %>%
+  left_join(period_dates, by = "period_counter") %>%
+  select(period_date, med, low, high, label_year)
+
+# Plot
+(occPeriods <- ggplot(plot.df, aes(x = period_date)) +
+    geom_ribbon(aes(ymin = low, ymax = high), fill = "darkorchid4", alpha = 0.3) +
+    geom_line(aes(y = med)) +
+    geom_point(aes(y = med)) +
+    theme_bw(base_size = 14) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = "Date", y = "Average Occupancy Probability",
+         title = "Occupancy through time",
+         subtitle = bquote(italic(.(target_species)))) +
+    scale_x_date(date_breaks = "2 years", date_labels = "%Y"))
+
+if(to_plot == "TRUE"){
+  file_name <- paste0("Model outputs/", species_file, "/", species_file, "_occAcrossPeriods.jpg")
+  ggsave(filename = file_name, plot = occPeriods, width = 7, height = 4, units = "in")
+}
+
+
+## Predictions ----------------------------------------------------------------
+
+plot(reference_species)
+range_cellIDs <-values(range_cellIDs, na.rm = TRUE)
+range_cellIDs <- as.vector(range_cellIDs)
+
+# Check that all cells are present 
+missing_cells <- function(cov_name, cov_data, range_cellIDs){
+  present_cells <- unique(cov_data$cell_ID)  
+  in_data <- intersect(range_cellIDs, present_cells)
+  missing_cells <- setdiff(range_cellIDs, present_cells)
+  cat("Cells missing in", cov_name, ": ", length(missing_cells), "\n")
+  return(missing_cells)
+}
+
+missing_in_precip <- missing_cells("precip", seasprec_data, range_cellIDs)
+missing_in_wdpa <- missing_cells("wdpa", wdpa_data, range_cellIDs)
+missing_in_gwp <- missing_cells("gwp", gwp_data, range_cellIDs)
+missing_in_evi <- missing_cells("evi", evi_data, range_cellIDs)
+missing_in_landcover <- missing_cells("crop/forest", landcover_data, range_cellIDs)
+
+(missing_cells <- unique(c(missing_in_precip, missing_in_wdpa, missing_in_gwp, missing_in_evi, missing_in_landcover)))
+
+range_cellIDs <- range_cellIDs[!range_cellIDs %in% missing_cells] 
+
+# Coordinates
+coords.0 <- static_data %>% 
+  filter(cell_ID %in% range_cellIDs) %>% 
+  dplyr::select(x, y) %>% 
+  distinct() %>% as.matrix()
+
+# Format static covs 
+static_covs <- static_data %>% filter(cell_ID %in% range_cellIDs)
+
+tri.0 <- static_covs$tri
+human_access.0 <- static_covs$sqrt_human_access
+road_dens.0 <- static_covs$log_road_dens
+river_dist.0 <- static_covs$sqrt_river_dist
+coeff_var.0 <- static_covs$log_coeff_var
+
+# Format dynamic covariates
+crop.0 <- crop_data %>% 
+  filter(year %in% periods$year) %>% 
+  filter(cell_ID %in% range_cellIDs) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = crop_prop) %>% 
+  distinct() %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  arrange(cell_ID, period_counter) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(crop.0)
+
+evi.0 <- evi_data %>%
+  semi_join(periods %>% dplyr::select(year, season), by = c("year", "season")) %>%
+  filter(cell_ID %in% range_cellIDs) %>%
+  distinct(cell_ID, year, season, cov_value) %>%
+  left_join(periods %>% dplyr::select(year, season, period_counter), by = c("year", "season")) %>%
+  dplyr::select(cell_ID, period_counter, cov_value) %>%
+  arrange(cell_ID, period_counter) %>%
+  pivot_wider(id_cols = cell_ID,
+              names_from = period_counter,
+              values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+if(sum(is.na(evi.0)) > 0){
+  period_means <- colMeans(evi.0, na.rm = TRUE)
+  for (j in 1:ncol(evi.0)) {
+    na_rows <- is.na(evi.0[, j])
+    evi.0[na_rows, j] <- period_means[j]
+  }
+}
+dim(evi.0)
+sum(is.na(evi.0))
+
+precseas.0 <- precseas_data %>% 
+  filter(year %in% periods$year) %>% 
+  filter(cell_ID %in% range_cellIDs) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = cov) %>% 
+  distinct() %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  arrange(cell_ID, period_counter) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(precseas.0)
+
+wdpa.0 <- wdpa_data %>% 
+  filter(year %in% periods$year) %>% 
+  filter(cell_ID %in% range_cellIDs) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = prop_in_PA) %>% 
+  distinct() %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  arrange(cell_ID, period_counter) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(wdpa.0)
+
+forest.0 <- forest_data %>% 
+  filter(year %in% periods$year) %>% 
+  filter(cell_ID %in% range_cellIDs) %>% 
+  arrange(cell_ID) %>% 
+  rename(cov_value = proportion) %>% 
+  distinct() %>%
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  arrange(cell_ID, period_counter) %>% 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(forest.0)
+
+gpw.0 <- gpw_data %>% 
+  filter(year %in% periods$year) %>% 
+  filter(cell_ID %in% range_cellIDs) %>% 
+  arrange(cell_ID) %>% 
+  distinct() %>% 
+  left_join(periods, relationship = "many-to-many") %>% 
+  dplyr::select(cell_ID, period_counter, cov_value) %>% 
+  arrange(cell_ID, period_counter) %>% 
+  mutate(across(-c(cell_ID, period_counter), log)) %>% #log transform 
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
+              values_fill = NA) %>%
+  arrange(cell_ID) %>% 
+  dplyr::select(-cell_ID) %>% 
+  as.matrix()
+dim(gpw.0)
+
+trend.0 <- matrix(1:n_periods,
+                  nrow = nrow(static_covs),      
+                  ncol = n_periods, ##THIS MAY NEED A FIX    
+                  byrow = TRUE)        
+colnames(trend.0) <- paste0("p", 1:ncol(trend.0))
+dim(trend.0)   
+
+
+## Create prediction design matrix (1 = intercept) ----------------------------
+
+# Parameters
+primary.periods <- seq(min(periods$period_counter), max(periods$period_counter), by = 1)
+
+(n.sites   <- nrow(static_covs))          # number of sites 
+(n.periods <- length(primary.periods))    # number ofyears 
+(n.beta    <- ncol(out$beta.samples))     # number of occupancy parameters 
+
+# Create and fill an array with the proper dimensions
+X.0 <- array(NA, dim = c(n.sites, n.periods, n.beta))
+X.0[, , 1] <-  1
+X.0[, , 2] <-  (crop.0 - mean(dat_ls$occ.covs$crop))/sd(dat_ls$occ.covs$crop)
+#X.0[, , 3] <-  (gpw.0 - mean(dat_ls$occ.covs$gpw))/sd(dat_ls$occ.covs$gpw)
+X.0[, , 3] <-  (precseas.0 - mean(dat_ls$occ.covs$precseas))/sd(dat_ls$occ.covs$precseas)
+X.0[, , 4] <-  (wdpa.0 - mean(dat_ls$occ.covs$wdpa))/sd(dat_ls$occ.covs$wdpa)
+X.0[, , 5] <-  (evi.0 - mean(dat_ls$occ.covs$evi))/sd(dat_ls$occ.covs$evi)
+X.0[, , 6] <-  (forest.0 - mean(dat_ls$occ.covs$forest))/sd(dat_ls$occ.covs$forest)
+X.0[, , 7] <-  (road_dist.0 - mean(dat_ls$occ.covs$road_dist))/sd(dat_ls$occ.covs$road_dist)   
+X.0[, , 8] <-  (tri.0 - mean(dat_ls$occ.covs$tri))/sd(dat_ls$occ.covs$tri)            
+X.0[, , 9] <- (river_dist.0 - mean(dat_ls$occ.covs$river_dist))/sd(dat_ls$occ.covs$river_dist)
+X.0[, , 10] <- (coeff_var.0 - mean(dat_ls$occ.covs$coeff_var))/sd(dat_ls$occ.covs$coeff_var)      
+X.0[, , 11] <- (cities_lg.0 - mean(dat_ls$occ.covs$cities_lg))/sd(dat_ls$occ.covs$cities_lg)      
+X.0[, , 12] <- (trend.0 - mean(dat_ls$occ.covs$trend))/sd(dat_ls$occ.covs$trend)
+
+# Give names to X.0 just to make things clear
+#dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'GPW', 'Precip', 'WDPA', 'EVI', 'Forest', 'Road Dist', 'TRI', 'River Dist', 'Coef Var', 'Cities Dist', 'Periods') 
+dimnames(X.0)[[3]] <- c('(Intercept)', 'Crop', 'Precip', 'WDPA', 'EVI', 'Forest', 'Road Dist', 'TRI', 'River Dist', 'Coef Var', 'Cities Dist', 'Periods') 
+
+
+## Predict occupancy for all years --------------------------------------------
+
+## For extremely large datasets, chunk the predictions ---- 
+chunked_predict_from_betas <- function(model, X.0, coords.0, t.cols,
+                                       chunk_size = 2000,
+                                       n_post_draws = NULL,     
+                                       n_q_draws = NULL,        
+                                       probs = c(0.025, 0.5, 0.975),
+                                       keep_quantiles = TRUE,
+                                       seed = 123,
+                                       verbose = TRUE,
+                                       save_chunks_dir = NULL) {
+  
+  set.seed(seed)
+  
+  n_sites   <- nrow(coords.0)
+  n_periods <- length(t.cols)
+  n_beta    <- dim(X.0)[3]
+  n_chunks  <- ceiling(n_sites / chunk_size)
+  
+  # Get beta samples and orient as matrix: rows = draws, cols = parameters
+  if (is.null(model$beta.samples)) stop("model$beta.samples not found in model object.")
+  bsm <- model$beta.samples
+  
+  # Try to get matrix rows = draws, cols = n_beta
+  if (is.matrix(bsm)) {
+    if (ncol(bsm) == n_beta) {
+      beta_mat <- bsm
+    } else if (nrow(bsm) == n_beta) {
+      beta_mat <- t(bsm)
+      warning("Transposing model$beta.samples to get rows = draws.")
+    } else {
+      # best guess: rows are draws if rows > cols
+      if (nrow(bsm) >= ncol(bsm)) {
+        beta_mat <- bsm
+        warning("Couldn't perfectly match beta.samples dims to X.0. Assuming rows = draws.")
+      } else {
+        beta_mat <- t(bsm)
+        warning("Couldn't perfectly match beta.samples dims to X.0. Assuming columns were draws; transposing.")
+      }
+    }
+  } else if (is.array(bsm) && length(dim(bsm)) == 2) {
+    beta_mat <- as.matrix(bsm)
+  } else {
+    stop("Unsupported format for model$beta.samples.")
+  }
+  
+  n_total_draws <- nrow(beta_mat)
+  if (is.null(n_post_draws)) n_post_draws <- min(1000, n_total_draws)
+  n_post_draws <- min(n_post_draws, n_total_draws)
+  if (is.null(n_q_draws)) n_q_draws <- min(n_post_draws, 200)
+  n_q_draws <- min(n_q_draws, n_post_draws)
+  
+  # Pick draw indices (random subsample of posterior draws)
+  draw_idx_all <- sort(sample.int(n_total_draws, size = n_post_draws, replace = FALSE))
+  # Which positions in that stream will be used for quantiles
+  q_draw_positions <- sort(sample.int(n_post_draws, size = n_q_draws, replace = FALSE))
+  
+  # Prepare storage
+  mean_mat <- matrix(NA_real_, nrow = n_sites, ncol = n_periods)
+  sd_mat   <- matrix(NA_real_, nrow = n_sites, ncol = n_periods)
+  quantiles_array <- if (keep_quantiles) array(NA_real_, dim = c(n_sites, n_periods, length(probs))) else NULL
+  
+  # Per-chunk loop
+  for (i in seq_len(n_chunks)) {
+    idx_start <- (i - 1) * chunk_size + 1
+    idx_end   <- min(i * chunk_size, n_sites)
+    idx       <- idx_start:idx_end
+    nchunk    <- length(idx)
+    
+    if (verbose) message(sprintf("Chunk %d/%d: sites %d:%d (%d sites)", i, n_chunks, idx_start, idx_end, nchunk))
+    
+    # Subset X.0 and build design matrix: rows = site*period, cols = n_beta
+    Xsub <- X.0[idx, , , drop = FALSE]   # dim: [nchunk, n_periods, n_beta]
+    Ncells <- nchunk * n_periods
+    
+    # Estimate memory for storing quantile draws for this chunk if requested
+    if (keep_quantiles) {
+      est_bytes <- as.numeric(Ncells) * as.numeric(n_q_draws) * 8
+      # if too big (> ~1 GB), reduce n_q_draws for this chunk
+      max_bytes <- 1e9
+      if (est_bytes > max_bytes) {
+        new_n_q <- max(1, floor(max_bytes / (Ncells * 8)))
+        if (new_n_q < n_q_draws) {
+          warning(sprintf("Chunk %d would need ~%.1f MB to store quantile draws; reducing n_q_draws from %d -> %d for this chunk.",
+                          i, est_bytes/1e6, n_q_draws, new_n_q))
+          q_draw_positions <- sort(sample.int(n_post_draws, size = new_n_q, replace = FALSE))
+        }
+      }
+    }
+    
+    # Create X matrix (rows: site-period pairs, column: covariates)
+    # Ordering: as.vector(Xsub[,,k]) -> site varies fastest within each period, then next period
+    Xmat <- matrix(NA_real_, nrow = Ncells, ncol = n_beta)
+    for (k in seq_len(n_beta)) {
+      Xmat[, k] <- as.vector(Xsub[,, k])
+    }
+    
+    # Streaming accumulators (Welford)
+    mean_vec <- numeric(Ncells)
+    M2_vec   <- numeric(Ncells)
+    
+    # Storage for quantile draws for this chunk (only if requested)
+    if (keep_quantiles && length(q_draw_positions) > 0) {
+      psi_q_mat <- matrix(NA_real_, nrow = Ncells, ncol = length(q_draw_positions))
+      q_counter <- 1L
+    } else {
+      psi_q_mat <- NULL
+      q_counter <- NULL
+    }
+    
+    # Sstream through selected draws
+    iter <- 0L
+    for (jj in seq_along(draw_idx_all)) {
+      sidx <- draw_idx_all[jj]
+      beta_s <- beta_mat[sidx, ]
+      eta <- as.numeric(Xmat %*% beta_s)      # length Ncells
+      psi  <- 1 / (1 + exp(-eta))             # plogis
+      
+      iter <- iter + 1L
+      if (iter == 1L) {
+        mean_vec <- psi
+        M2_vec   <- numeric(Ncells)
+      } else {
+        delta <- psi - mean_vec
+        mean_vec <- mean_vec + delta / iter
+        M2_vec   <- M2_vec + delta * (psi - mean_vec)
+      }
+      
+      # If this draw position was chosen for quantiles, store
+      if (!is.null(psi_q_mat) && (jj %in% q_draw_positions)) {
+        psi_q_mat[, q_counter] <- psi
+        q_counter <- q_counter + 1L
+      }
+      
+      # Occasional garbage collection
+      if ((jj %% 200) == 0L) gc(verbose = FALSE)
+    } # draws loop
+    
+    # Finalize chunk summaries
+    mean_chunk <- matrix(mean_vec, nrow = nchunk, ncol = n_periods)
+    mean_mat[idx, ] <- mean_chunk
+    
+    if (iter > 1L) {
+      sd_vec <- sqrt(M2_vec / (iter - 1L))
+      sd_chunk <- matrix(sd_vec, nrow = nchunk, ncol = n_periods)
+      sd_mat[idx, ] <- sd_chunk
+    } else {
+      sd_mat[idx, ] <- NA_real_
+    }
+    
+    # Quantiles (if requested)
+    if (!is.null(psi_q_mat)) {
+      # apply quantile over rows -> returns matrix (length(probs) x Ncells); transpose to Ncells x length(probs)
+      q_mat <- t(apply(psi_q_mat, 1, quantile, probs = probs, na.rm = TRUE))
+      # q_mat dims: Ncells x length(probs); reshape into nchunk x n_periods x length(probs)
+      q_chunk_array <- array(q_mat, dim = c(nchunk, n_periods, length(probs)))
+      quantiles_array[idx, , ] <- q_chunk_array
+      rm(psi_q_mat, q_mat, q_chunk_array)
+    }
+    
+    # Optionally save chunk to disk to free memory
+    if (!is.null(save_chunks_dir)) {
+      dir.create(save_chunks_dir, showWarnings = FALSE, recursive = TRUE)
+      saveRDS(list(mean = mean_chunk,
+                   sd = matrix(sd_vec, nrow = nchunk, ncol = n_periods),
+                   quantiles = if (!is.null(quantiles_array)) quantiles_array[idx, , , drop = FALSE] else NULL),
+              file = file.path(save_chunks_dir, sprintf("pred_chunk_%03d.rds", i)))
+      # free chunk-level items
+      if (verbose) message("Saved chunk ", i, " to disk.")
+      if (!is.null(quantiles_array)) quantiles_array[idx, , ] <- NA_real_
+      mean_mat[idx, ] <- NA_real_
+      sd_mat[idx, ] <- NA_real_
+    }
+    
+    # Free memory and continue
+    rm(Xsub, Xmat, mean_vec, M2_vec, mean_chunk); gc(verbose = FALSE)
+  } # chunk loop
+  
+  # Return
+  out <- list(mean = mean_mat,
+              sd = sd_mat,
+              quantiles = quantiles_array,
+              probs = probs,
+              n_post_draws = n_post_draws,
+              n_q_draws = length(q_draw_positions))
+  return(out)
+}
+
+res <- chunked_predict_from_betas(out, X.0, coords.0, t.cols = 1:n.periods,
+                                  chunk_size = 2000,
+                                  n_post_draws = 1000,   
+                                  n_q_draws = 200,       
+                                  keep_quantiles = TRUE,
+                                  verbose = TRUE)
+
+# Posterior mean occupancy (sites x periods)
+occ_mean <- res$mean
+
+# Posterior sd
+occ_sd <- res$sd
+
+# Posterior quantiles (if computed)
+occ_lower <- res$quantiles[, , 1]   
+occ_median <- res$quantiles[, , 2]
+occ_upper <- res$quantiles[, , 3]
+
+# Convert to long dataframe
+df_occ <- occ_mean %>%
+  as.data.frame() %>%
+  mutate(site = 1:nrow(.),
+         x = coords.0[,1],
+         y = coords.0[,2]) %>%
+  pivot_longer(cols = starts_with("V"), 
+               names_to = "period",
+               values_to = "mean_occ") %>%
+  mutate(period = primary.periods[as.integer(str_remove(period, "V"))])
+
+# Add CIs
+df_lower <- as.data.frame(occ_lower) %>%
+  mutate(site = 1:nrow(.)) %>%
+  pivot_longer(cols = starts_with("V"),
+               names_to = "period",
+               values_to = "lower") %>%
+  mutate(period = primary.periods[as.integer(str_remove(period, "V"))])
+
+df_upper <- as.data.frame(occ_upper) %>%
+  mutate(site = 1:nrow(.)) %>%
+  pivot_longer(cols = starts_with("V"),
+               names_to = "period",
+               values_to = "upper") %>%
+  mutate(period = primary.periods[as.integer(str_remove(period, "V"))])
+
+df_occ <- df_occ %>%
+  left_join(df_lower, by = c("site", "period")) %>%
+  left_join(df_upper, by = c("site", "period"))
+
+file_name <- paste0("Model outputs/", species_file, "/", species_file, "_outPredict.csv")
+write.csv(df_occ, file_name, row.names=F)
+
+
+## Create tif files for each year ---------------------------------------------
+
+# Get unique periods and match with years
+periods_with_year <- periods[season == "Spring", .(year, period_counter)]
+
+# Extract data for all relevant periods
+df_all_periods <- df_occ %>%
+  semi_join(periods_with_year, by = c("period" = "period_counter")) %>%
+  arrange(period)
+
+# Create template raster
+r_template <- rast(ref) 
+
+# List to hold layers
+raster_list <- vector("list", length = nrow(periods_with_year))
+
+message("Building multi-layer raster with ", nrow(periods_with_year), " years...")
+
+for (i in seq_len(nrow(periods_with_year))) {
+  curr_period <- periods_with_year$period_counter[i]
+  curr_year   <- periods_with_year$year[i]
+  message("  Adding layer ", i, ": period ", curr_period, " (year ", curr_year, ")")
+  
+  df_period <- df_all_periods %>% filter(period == curr_period)
+  
+  if (nrow(df_period) == 0) {
+    warning("No data for period ", curr_period, " – layer will be all NA")
+    r_layer <- rast(r_template)
+    r_layer[] <- NA
+  } else {
+    coords_mat <- as.matrix(df_period[, c("x", "y")])
+    site_cells <- cellFromXY(r_template, coords_mat)
+    r_layer <- rast(r_template)
+    r_layer[site_cells] <- df_period$mean_occ
+  }
+  
+  names(r_layer) <- paste0("mean_occ_", curr_year)
+  raster_list[[i]] <- r_layer
+}
+
+# Stack into multi-layer raster
+occ_stack <- do.call(c, raster_list)
+time(occ_stack) <- periods_with_year$year  
+units(occ_stack) <- "Posterior mean occupancy probability"
+
+# Check that it worked
+class(occ_stack)    # should say "SpatRaster"
+nlyr(occ_stack)     # should equal number of periods/years
+time(occ_stack)     # should show your years
+names(occ_stack)    # should show your layer names like "mean_occ_2012" etc.
+
+# Save
+multilayer_file <- file.path("Model outputs", species_file, paste0(species_file, "_meanOccupancy_allYears.tif"))
+
+writeRaster(occ_stack, 
+            filename = multilayer_file,
+            overwrite = TRUE,
+            datatype = "FLT4S",
+            NAflag = -9999,
+            gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"))
+
+
+## Plotting predicted occupancy -----------------------------------------------
+
+# Time series 
+df_occ %>%
+  group_by(period) %>%
+  summarise(mean = mean(mean_occ, na.rm=TRUE),
+            lower = mean(lower, na.rm=TRUE),
+            upper = mean(upper, na.rm=TRUE)) %>%
+  ggplot(aes(x = period, y = mean)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "grey80") +
+  geom_line(size = 1.2, color = "darkblue") +
+  labs(y = "Occupancy probability", x = "Period",
+       title = "Average occupancy over time") +
+  theme_minimal()
+
+# Spatial map for one period  
+period_sel <- ceiling(mean(periods$period_counter))
+df_occ_sf <- st_as_sf(df_occ, coords = c("x", "y"), crs = crs(ref), remove = FALSE)
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(df_occ_sf))
+world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
+plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
+
+period_dates <- periods %>%
+  select(-period) %>%                    
+  rename(period = period_counter) %>%
+  filter(period == period_sel)
+period_date <- paste(period_dates$season, period_dates$year)
+
+(occPeriod <- ggplot() +
+    geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+    geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.9) +
+    scale_fill_viridis_c(option = "C", na.value = NA) +
+    coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
+             ylim = c(min(plot_df$y), max(plot_df$y)), 
+             expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         fill = "Occupancy", 
+         title = paste0("Predicted occupancy (", period_date, ")"), 
+         subtitle = bquote(italic(.(target_species)))) +
+    theme_minimal() + 
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
+
+file_name <- paste0("Model outputs/", species_file, "/", species_file, "_occPeriod.jpg")
+ggsave(filename = file_name, plot = occPeriod, width = 6, height = 5, units = "in", bg = "white")
+
+
+# Compare to GBIF map same period ---------------------------------------------
+
+# Filter to same year...
+year_of_interest <- period_dates$year 
+gbif_year <- gbif_species %>% filter(year == year_of_interest)
+
+# Reproject 
+gbif_sf <- st_as_sf(gbif_year, coords = c("longitude", "latitude"), crs = 4326)  
+gbif_sf <- st_transform(gbif_sf, st_crs(df_occ_sf))  
+
+# Select time period 
+plot_df <- df_occ %>% filter(period == period_sel & !is.na(mean_occ))
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(df_occ_sf))
+world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
+
+(gbif_plot <- ggplot() +
+    geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+    geom_tile(data = plot_df, aes(x = x, y = y, fill = mean_occ), alpha = 0.8) +
+    scale_fill_viridis_c(option = "C", na.value = NA, name = "Predicted Occupancy") +
+    geom_sf(data = gbif_sf, color = "black", fill = "black", size = 1.5, alpha = 0.4, shape = 21) +
+    coord_sf(xlim = c(min(plot_df$x), max(plot_df$x)),
+             ylim = c(min(plot_df$y), max(plot_df$y)),
+             expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         title = paste0("Predicted occupancy vs. GBIF sightings (P", period_sel, 
+                        " / ",  year_of_interest, ")"),
+         subtitle = bquote(italic(.(target_species)))) +
+    theme_minimal() +
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
+
+file_name <- paste0("Model outputs/", species_file, "/", species_file, "_gbifComp.jpg")
+ggsave(filename = file_name, plot = gbif_plot, width = 6, height = 5, units = "in", bg = "white")
+
+
+# Difference map (change between two periods) ---------------------------------
+
+min_period <- min(periods$period_counter)
+max_period <- max(periods$period_counter)
+
+df_occ_sf <- st_as_sf(df_occ, coords = c("x", "y"), crs = crs(ref), remove = FALSE)
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, st_crs(df_occ_sf))
+world_crop <- st_crop(world_proj, st_bbox(df_occ_sf))
+
+df_diff <- df_occ %>%
+  filter(period %in% c(min_period, max_period)) %>%
+  select(site, x, y, period, mean_occ) %>%
+  pivot_wider(names_from = period, values_from = mean_occ, names_prefix = "period_") %>%
+  mutate(diff = .data[[paste0("period_", max_period)]] - 
+           .data[[paste0("period_", min_period)]])
+
+start_date <- paste(periods[periods$period_counter == min_period,]$season, periods[periods$period_counter == min_period,]$year)
+end_date <- paste(periods[periods$period_counter == max_period,]$season, periods[periods$period_counter == max_period,]$year)
+
+(changeOcc <- ggplot() +
+    geom_sf(data = world_crop, fill = "gray95", color = "grey30", size = 0.3) +
+    geom_tile(data = df_diff, aes(x = x, y = y, fill = diff), alpha = 0.9) +
+    scale_fill_gradient2(low = "red", mid = "white", high = "blue", midpoint = 0) +
+    coord_sf(xlim = c(min(df_diff$x), max(df_diff$x)),
+             ylim = c(min(df_diff$y), max(df_diff$y)),
+             expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         fill = paste0("Δ occupancy\n(", start_date, ":", end_date, ")"),
+         title = "Predicted change in occupancy", 
+         subtitle = bquote(italic(.(target_species)))) + 
+    theme_minimal() +
+    theme(plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
+
+# Save as JPEG
+file_name <- paste0("Model outputs/", species_file, "/", species_file, "_occChange.jpg")
+ggsave(filename = file_name, plot = changeOcc, width = 6, height = 5, units = "in", bg = "white")
+
+
+# Change in occupancy relative to change in covariate -------------------------
+
+# Function to extract occupancy response curves
+occ_response <- function(out, dat_ls, covariates, n_points = 100) {
+  beta_draws <- as.matrix(out$beta.samples)
+  beta_names <- colnames(beta_draws)
+  
+  cov_means <- sapply(dat_ls$occ.covs, mean, na.rm = TRUE)
+  cov_sds   <- sapply(dat_ls$occ.covs, sd, na.rm = TRUE)
+  
+  results <- list()
+  
+  for (cov_name in covariates) {
+    beta_col <- paste0("scale(", cov_name, ")")
+    if (!(beta_col %in% beta_names)) {
+      stop(paste("No column in beta.samples matches", beta_col,
+                 "\nAvailable:", paste(beta_names, collapse = ", ")))
+    }
+    
+    cov_seq <- seq(min(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
+                   max(dat_ls$occ.covs[[cov_name]], na.rm = TRUE),
+                   length.out = n_points)
+    cov_seq_scaled <- (cov_seq - cov_means[cov_name]) / cov_sds[cov_name]
+    
+    # design matrix
+    X_pred <- matrix(0, nrow = n_points, ncol = ncol(beta_draws))
+    colnames(X_pred) <- beta_names
+    
+    # intercept
+    if ("(Intercept)" %in% beta_names) {
+      X_pred[, "(Intercept)"] <- 1
+    }
+    
+    # focal covariate
+    X_pred[, beta_col] <- cov_seq_scaled
+    
+    # predict
+    eta <- X_pred %*% t(beta_draws)
+    psi <- plogis(eta)
+    
+    results[[cov_name]] <- data.frame(
+      covariate = cov_seq,
+      mean = rowMeans(psi),
+      low = apply(psi, 1, quantile, 0.025),
+      high = apply(psi, 1, quantile, 0.975),
+      variable = cov_name
+    )
+  }
+  
+  dplyr::bind_rows(results)
+}
+
+# Static covariates --- 
+cov_labels <- c(road_dist   = "Dist to Roads (log)",
+                tri         = "Terrain Ruggedness",
+                river_dist  = "Dist to Rivers (log)",
+                coeff_var   = "Coefficient of Variation (log)",
+                cities_lg   = "Dist to Cities")
+
+covs_to_plot <- names(cov_labels)
+plot_df <- occ_response(out, dat_ls, covariates = covs_to_plot)
+plot_df$variable <- factor(plot_df$variable,
+                           levels = covs_to_plot,
+                           labels = cov_labels[covs_to_plot])
+
+(occDeltaStatic <- ggplot(plot_df, aes(x = covariate, y = mean)) +
+    geom_ribbon(aes(ymin = low, ymax = high), fill = "grey80") +
+    geom_line(size = 1, color = "darkblue") +
+    facet_wrap(~ variable, scales = "free", ncol = 2) +
+    labs(x = "Covariate value", y = "Occupancy probability",
+         title = "Change in occupancy across spatial gradients",
+         subtitle = bquote(italic(.(as.name(target_species))))) +
+    theme_minimal())
+
+# Save as JPEG
+file_name <- paste0("Model outputs/", species_file, "/", species_file, "_occDeltaStatic.jpg")
+ggsave(filename = file_name, plot = occDeltaStatic, width = 6, height = 5, units = "in", bg = "white")
+
+# SVC covariates --- 
+cov_labels <- c(crop       = "Proportion Crop",
+                gpw        = "Human Population",
+                forest     = "Proportion Forest",
+                precseas   = "Seasonal Precip",
+                wdpa       = "Protected Area Status",
+                evi        = "Vegetation", 
+                trend      = "Trend (time)")
+
+covs_to_plot <- names(cov_labels)
+plot_df <- occ_response(out, dat_ls, covariates = covs_to_plot)
+plot_df$variable <- factor(plot_df$variable,
+                           levels = covs_to_plot,
+                           labels = cov_labels[covs_to_plot])
+
+(occDeltaSVC <- ggplot(plot_df, aes(x = covariate, y = mean)) +
+    geom_ribbon(aes(ymin = low, ymax = high), fill = "grey80") +
+    geom_line(size = 1, color = "darkblue") +
+    facet_wrap(~ variable, scales = "free", ncol = 2) +
+    labs(x = "Covariate value", y = "Occupancy probability",
+         title = "Change in occupancy across SVC gradients",
+         subtitle = bquote(italic(.(as.name(target_species))))) +
+    theme_minimal())
+
+# Save as JPEG
+file_name <- paste0("Model outputs/", species_file, "/", species_file, "_occDeltaSVC.jpg")
+ggsave(filename = file_name, plot = occDeltaSVC, width = 6, height = 5, units = "in", bg = "white")
+
+
+
+####################
+## SDM COMPARISON ##
+####################
+
+## Load rasters ---------------------------------------------------------------
+
+# Static 1km SDM (EPSG:4326)
+tif_files <- list.files(path = "1x1 km spatial layers/SDMs", pattern = "\\.tif$", full.names = TRUE, ignore.case = TRUE)
+matching_files <- tif_files[str_detect(basename(tif_files), regex(species_file, ignore_case = TRUE))]
+sdm_1km <- rast(matching_files)
+
+# Multi-year 10km occupancy model (EPSG:6933, 13 layers)
+multilayer_file <- paste0("Model outputs/", species_file, "/", species_file,"_meanOccupancy_allYears.tif")
+occ_multiyear <- rast(multilayer_file)
+occ_multiyear_years <- time(occ_multiyear) 
+names(occ_multiyear) <- paste0("occ_", occ_multiyear_years)
+
+
+## Reproject & resample SDM to match occupancy grid ---------------------------
+
+sdm_10km <- project(sdm_1km, occ_multiyear, method = "bilinear")
+stopifnot(compareGeom(occ_multiyear, sdm_10km))  
+
+# Name the SDM layer
+names(sdm_10km) <- "suitability"
+
+#Crop to common extent 
+common_ext <- intersect(ext(occ_multiyear), ext(sdm_10km))
+occ_multiyear <- crop(occ_multiyear, common_ext)
+sdm_10km      <- crop(sdm_10km, common_ext)
+
+
+## Repeat static SDM layer for each year and stack ----------------------------
+
+suitability_repeated <- rep(sdm_10km, nlyr(occ_multiyear))
+comparison_stack <- c(occ_multiyear, suitability_repeated)
+names(comparison_stack)[(nlyr(occ_multiyear)+1):nlyr(comparison_stack)] <- paste0("suit_", occ_multiyear_years)
+
+
+## Extract paired values and convert to long data frame -----------------------
+
+# Add cell numbers and xy coordinates for unique identification
+df_extracted <- as.data.frame(comparison_stack, cells = TRUE, xy = TRUE, na.rm = TRUE)
+
+# Pivot
+df_long <- df_extracted %>%
+  pivot_longer(cols = -c(cell, x, y), 
+               names_to = "variable",
+               values_to = "value") %>%
+  separate(variable, into = c("model", "year"), sep = "_", convert = TRUE) %>%
+  pivot_wider(names_from = model,
+              values_from = value) %>%
+  drop_na(occ, suit)
+head(df_long)
+
+
+## Compute agreement statistics per year --------------------------------------
+
+(stats_by_year <- df_long %>%
+   group_by(year) %>%
+   summarise(n_cells   = n(),
+             pearson_r = cor(occ, suit, method = "pearson"),
+             spearman_rho = cor(occ, suit, method = "spearman"),
+             r_squared = summary(lm(occ ~ suit))$r.squared,
+             rmse      = sqrt(mean((occ - suit)^2)),
+             .groups = "drop") %>%
+   mutate(across(c(pearson_r, spearman_rho, r_squared, rmse), ~ round(., 4))))
+
+filename <- paste0("Model outputs/", species_file, "/", species_file, "_OM_SDM_stats.csv")
+write.csv(stats_by_year, filename, row.names=F)
+
+
+## Figures --------------------------------------------------------------------
+
+# Temporal trends in agreement metrics
+(p_trends <- stats_by_year %>%
+   pivot_longer(cols = c(pearson_r, spearman_rho, r_squared, rmse),
+                names_to = "metric",
+                values_to = "value") %>%
+   mutate(metric = recode(metric,
+                          pearson_r = "Pearson r",
+                          spearman_rho = "Spearman ρ",
+                          r_squared = "R² (linear regression)",
+                          rmse = "RMSE")) %>%
+   ggplot(aes(x = year, y = value)) +
+   geom_line(color = "darkblue", size = 1.1) +
+   geom_point(color = "darkblue", size = 2) +
+   facet_wrap(~ metric, scales = "free_y", ncol = 2) +
+   scale_x_continuous(breaks = 2012:2024,   # every year
+                      labels = 2012:2024,   # label every year
+                      expand = expansion(mult = c(0.02, 0.02))) +  # slight padding
+   labs(title = "Temporal Agreement: Occupancy Model vs Static SDM",
+        subtitle = paste("Species:", target_species),
+        x = "Year", y = "Metric Value") +
+   theme_minimal(base_size = 14) +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),  
+         panel.grid.minor.x = element_blank()))
+
+filename <- paste0("Model outputs/", species_file, "/", species_file, "_OM_SDM_temporal_agreement.jpg")
+ggsave(filename, p_trends, width = 10, height = 7, dpi = 300, bg = "white")
+
+
+# Scatter plots for selected years (first, middle, last)
+selected_years <- occ_multiyear_years[c(1, ceiling((length(occ_multiyear_years) + 1)/2), 
+                                        length(occ_multiyear_years))]
+
+(p_scatter <- df_long %>%
+    filter(year %in% selected_years) %>%
+    ggplot(aes(x = suit, y = occ)) +
+    geom_point(alpha = 0.5, color = "darkblue", size = 1) +
+    geom_smooth(method = "lm", color = "red", se = TRUE, size = 1) +
+    facet_wrap(~ year, ncol = 3, scales = "free") +
+    labs(
+      title = "Occupancy Probability vs SDM Suitability",
+      subtitle = paste("Selected years:", paste(selected_years, collapse = ", ")),
+      x = "SDM Suitability (aggregated to 10 km)",
+      y = "Occupancy Probability (posterior mean)"
+    ) +
+    theme_minimal(base_size = 14))
+
+filename <- paste0("Model outputs/", species_file, "/", species_file, "_OM_SDM_scatter_selected_years.jpg")
+ggsave(filename, p_scatter, width = 12, height = 5, dpi = 300, bg = "white")
+
+
+# Side-by-side maps for selected years
+time_vals <- time(occ_multiyear)
+if (is.null(time_vals) || length(time_vals) == 0) {
+  all_years <- as.integer(sub(".*_(\\d{4})$", "\\1", names(occ_multiyear)))
+} else {
+  if (inherits(time_vals, c("Date", "POSIXt"))) {
+    all_years <- as.integer(format(time_vals, "%Y"))
+  } else if (is.numeric(time_vals)) {
+    all_years <- as.integer(round(time_vals))
+  } else {
+    stop("Unsupported time format in raster.")
+  }
+}
+
+years_idx <- which(all_years %in% selected_years)
+
+# Select occupancy layers and combine with SDM
+occ_selected <- occ_multiyear[[years_idx]]
+map_stack <- c(occ_selected, sdm_10km)
+
+map_titles <- c(paste("Occupancy", selected_years), "SDM Suitability (static)")
+names(map_stack) <- map_titles
+
+# Crop to mmd_map extent with 1% buffer  
+ext_bbox <- st_bbox(mmd_map)
+x_buffer <- (ext_bbox["xmax"] - ext_bbox["xmin"]) * 0.01
+y_buffer <- (ext_bbox["ymax"] - ext_bbox["ymin"]) * 0.01
+
+xmin <- ext_bbox["xmin"] - x_buffer
+xmax <- ext_bbox["xmax"] + x_buffer
+ymin <- ext_bbox["ymin"] - y_buffer
+ymax <- ext_bbox["ymax"] + y_buffer
+
+ext_bbox_buffered <- c(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax)
+names(ext_bbox_buffered) <- c("xmin", "ymin", "xmax", "ymax")
+focal_extent_buffered <- ext(ext_bbox_buffered)
+
+# Crop the raster stack
+map_stack_crop <- crop(map_stack, focal_extent_buffered)
+
+# Prepare background world map
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_proj <- st_transform(world, crs(map_stack_crop))
+world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
+
+# Data for plotting 
+df_maps <- as.data.frame(map_stack_crop, xy = TRUE, na.rm = TRUE) %>%
+  pivot_longer(cols = -c(x, y),
+               names_to = "layer",
+               values_to = "value")
+
+# Center coordinates for perfect geom_tile alignment
+df_maps_centered <- df_maps %>%
+  mutate(x = x + res(map_stack_crop)[1] / 2,
+         y = y + res(map_stack_crop)[2] / 2)
+
+# Shared color scale range
+val_range <- range(df_maps$value, na.rm = TRUE)
+
+# Plot
+om_labels <- paste("OM", selected_years)
+sdm_label <- "SDM"
+panel_labels <- c(om_labels, sdm_label)
+names(panel_labels) <- map_titles  
+
+(p <- ggplot() +
+    geom_sf(data = world_cropped_buffered, fill = "gray95", color = "gray70", size = 0.3) +
+    geom_tile(data = df_maps_centered, aes(x = x, y = y, fill = value), alpha = 0.9) +
+    scale_fill_viridis_c(option = "C", limits = val_range, na.value = NA, name = "Probability") +
+    facet_wrap(~ layer, ncol = 2, labeller = labeller(layer = panel_labels)) +   
+    coord_sf(expand = FALSE,
+             xlim = focal_extent_buffered[c(1, 3)],
+             ylim = focal_extent_buffered[c(2, 4)]) +
+    labs(title = "Occupancy Model vs Static SDM Suitability",
+         subtitle = bquote(italic(.(target_species))),
+         caption = paste("Years:", paste(selected_years, collapse = ", "))) +
+    theme_void(base_size = 14) +
+    theme(plot.title = element_text(hjust = 0, face = "bold", margin = margin(b = 8)), 
+          plot.subtitle = element_text(hjust = 0, margin = margin(b = 20)),  
+          strip.text = element_text(size = 14),    
+          legend.position = "right",
+          plot.margin = margin(20, 20, 20, 20),
+          plot.background = element_rect(fill = "white", color = NA),
+          panel.background = element_rect(fill = "white", color = NA)))
+
+filename <- paste0("Model outputs/", species_file, "/", species_file, "_comparison_maps_selected_years.png")
+ggsave(filename, p, width = 14, height = 9, dpi = 300, bg = "white")
