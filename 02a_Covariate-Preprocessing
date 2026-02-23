@@ -231,6 +231,68 @@ for(i in 1:length(evi_list_raster, target_raster)){
 }
 
 
+## Aggregate 1km2 data to 10km2 scale: Monthly climate data -------------------
+
+input_dir <- "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2000-2009"
+out_dir   <- "10x10 km spatial layers/precipitation"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# List all monthly tif files
+prec_files <- list.files(input_dir, pattern = "\\.tif$", full.names = TRUE)
+
+# Extract year-month from filename
+ym <- substr(basename(prec_files), nchar(basename(prec_files))-10, nchar(basename(prec_files))-4)
+years <- unique(substr(ym, 1, 4))    
+
+#  Function: aggregate per year (12 months → 12-layer 10 km raster)
+
+aggregate_year_prec <- function(yr, files_all, ref, outdir) {
+  
+  # Select files for this year
+  pat <- paste0(yr, "-")
+  files_yr <- files_all[grepl(pat, basename(files_all))]
+  
+  if (length(files_yr) != 12) {
+    message("Warning: year ", yr, " has ", length(files_yr), " files (expected 12)")
+    if (length(files_yr) == 0) return(NULL)
+  }
+  
+  # Read all 12 months
+  r_list <- lapply(files_yr, rast)
+  
+  # Stack, project, and resample
+  s <- rast(r_list)
+  s_10km <- project(s, ref, method = "average", threads = TRUE)
+  months <- sprintf("%02d", 1:12)
+  names(s_10km) <- paste0("prec_", months)
+  
+  # Output path
+  out_file <- file.path(outdir, paste0("prec_10km_", yr, ".tif"))
+  
+  # Write  
+  writeRaster(s_10km, out_file,
+              overwrite = TRUE,
+              datatype = "FLT4S",
+              gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"))
+  message("Saved: ", out_file, "  (", nlyr(s_10km), " layers)")
+  
+  rm(s, s_10km); gc()
+  return(out_file)
+}
+
+#  Run for all years
+out_files <- lapply(years, aggregate_year_prec,
+                    files_all = prec_files,
+                    ref       = ref_raster,
+                    outdir    = out_dir)
+
+# Show what we created
+message("Created files:")
+print(unlist(out_files))
+
+RERUN FOR OTHER FOLDERS 
+
+
 ## Aggregate 1km2 data to 10km2 scale: PROPORTION DATA ------------------------
 
 # Clear workspace
