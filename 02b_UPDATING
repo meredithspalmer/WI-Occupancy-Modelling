@@ -540,12 +540,10 @@ full_with_periods_df <- full_df %>%
 head(full_with_periods_df)
 
 # Save 
-fwrite(df_mat_forest, "Covariates for modelling/forest_covariate_10x10km2.csv")
-fwrite(df_mat_unnatural, "Covariates for modelling/unnatural_covariate_10x10km2.csv")
+fwrite(full_with_periods_df, "Covariates for modelling/CCI_covariate_10x10km2.csv")
 
 # Clean up 
-rm(final_df, predictions, full_df, full_expanded, full_with_periods, full_with_periods_df, df_wide_forest, df_wide_unnatural, df_mat_forest, df_mat_unnatural)
-gc()
+rm(final_df, predictions, full_df, full_expanded, full_with_periods, full_with_periods_df); gc()
 
 
 
