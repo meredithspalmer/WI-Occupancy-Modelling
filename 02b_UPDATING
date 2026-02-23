@@ -42,7 +42,7 @@ library(ggplot2)
 library(zoo)
 
 
-## Load & format reference rasters --------------------------------------------
+## Load & format reference data -----------------------------------------------
 
 # Load reference raster
 ref_10km     <- rast("10x10 km spatial layers/reference_10km2.tif")
@@ -58,6 +58,23 @@ sum(duplicated(valid_ids))
 
 # Create coordinate dataframe 
 coords_10km <- as.data.frame(reference_species_10km, xy=T) 
+
+# Create periods table
+min_year <- 2000  
+max_year <- 2024 
+range_year <- c(min_year, max_year)
+min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
+max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
+start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
+end_period <-  c(start_period[-1] - 1, NA)
+
+periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
+                      start_period = start_period, 
+                      end_period = end_period) 
+periods <- periods[-nrow(periods),]
+periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
+periods$year <- year(periods$start_period)
+periods$period_counter <- 1:nrow(periods)
 
 
 ## Covariates: static (dim: ncell) ------------------------------------------
@@ -269,23 +286,6 @@ dt_long[, doy  := as.integer(doy)]
 dt_long[, obs_date := as.Date(doy - 1, origin = paste0(year, "-01-01"))]
 dt_long[, date := NULL]
 
-# Create periods table
-min_year <- 2000  
-max_year <- 2024 
-range_year <- c(min_year, max_year)
-min_date <- as.Date(paste(range_year[1] - 1, "-12-01", sep = ""))
-max_date <- as.Date(paste(range_year[2] + 1, "-03-01", sep = "")) 
-start_period <-  seq.Date(min_date, max_date, by =  "91 day") #"3 month"
-end_period <-  c(start_period[-1] - 1, NA)
-
-periods <- data.frame(period = paste("Period", seq(1, length(start_period), by = 1), sep = "_"),
-                      start_period = start_period, 
-                      end_period = end_period) 
-periods <- periods[-nrow(periods),]
-periods$season <- rep(c("Winter", "Spring", "Summer", "Fall"), length.out = nrow(periods))
-periods$year <- year(periods$start_period)
-periods$period_counter <- 1:nrow(periods)
-
 # Match with periods 
 dt_long[, obs_start := as.IDate(obs_date)]
 dt_long[, obs_end   := as.IDate(obs_date)]   
@@ -390,11 +390,8 @@ ggplot(plot_subset, aes(x = x, y = y, fill = cov_value)) +
   geom_tile() + scale_fill_viridis_c(option = "magma") +
   coord_equal() + theme_minimal()
 
-
-## Annual dynamic layers: Seasonal precipitation ------------------------------
-
-# WAITING ON DOWNLOADED WORLDCLIM DATA -- 
-
+# Clean up 
+rm(plot_subset, dt_imputed, dt_complete, full_grid, dt_period, dt_long_test); gc()
 
 
 ## Proportion non-natural landcover, forest (CCI ESI) -------------------------
@@ -540,18 +537,7 @@ full_with_periods_df <- full_df %>%
              relationship = "many-to-many") %>%
   arrange(cell_ID, period_counter)
 
-# Convert to matrix
-df_wide_forest <- dcast(full_with_periods_df,
-                        cell_ID ~ period_counter,
-                        value.var = "prop_forest")
-setorder(df_wide_forest, cell_ID)
-df_mat_forest <- as.matrix(df_wide_forest, rownames = "cell_ID")
-
-df_wide_unnatural <- dcast(full_with_periods_df,
-                           cell_ID ~ period_counter,
-                           value.var = "prop_unnatural")
-setorder(df_wide_unnatural, cell_ID)
-df_mat_unnatural <- as.matrix(df_wide_unnatural, rownames = "cell_ID")
+head(full_with_periods_df)
 
 # Save 
 fwrite(df_mat_forest, "Covariates for modelling/forest_covariate_10x10km2.csv")
@@ -560,6 +546,12 @@ fwrite(df_mat_unnatural, "Covariates for modelling/unnatural_covariate_10x10km2.
 # Clean up 
 rm(final_df, predictions, full_df, full_expanded, full_with_periods, full_with_periods_df, df_wide_forest, df_wide_unnatural, df_mat_forest, df_mat_unnatural)
 gc()
+
+
+
+## Annual dynamic layers: Seasonal precipitation ------------------------------
+
+# WAITING ON DOWNLOADED WORLDCLIM DATA -- 
 
 
 ## Proportion of cell in protected area (WDPA) --------------------------------
