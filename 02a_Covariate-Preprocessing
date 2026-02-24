@@ -233,20 +233,11 @@ for(i in 1:length(evi_list_raster, target_raster)){
 
 ## Aggregate 1km2 data to 10km2 scale: Monthly climate data -------------------
 
-input_dir <- "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2000-2009"
-out_dir   <- "10x10 km spatial layers/precipitation"
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-
-# List all monthly tif files
-prec_files <- list.files(input_dir, pattern = "\\.tif$", full.names = TRUE)
-
-# Extract year-month from filename
-ym <- substr(basename(prec_files), nchar(basename(prec_files))-10, nchar(basename(prec_files))-4)
-years <- unique(substr(ym, 1, 4))    
+# Load 10x10km2 raster grid 
+ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
 
 #  Function: aggregate per year (12 months → 12-layer 10 km raster)
-
-aggregate_year_prec <- function(yr, files_all, ref, outdir) {
+aggregate_year_clim <- function(yr, files_all, ref, outdir) {
   
   # Select files for this year
   pat <- paste0(yr, "-")
@@ -280,17 +271,121 @@ aggregate_year_prec <- function(yr, files_all, ref, outdir) {
   return(out_file)
 }
 
-#  Run for all years
-out_files <- lapply(years, aggregate_year_prec,
-                    files_all = prec_files,
-                    ref       = ref_raster,
-                    outdir    = out_dir)
+# Precipitation 
+input_dir_list <- c("Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2000-2009", 
+               "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2010-2019", 
+               "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2020-2024") 
+out_dir   <- "10x10 km spatial layers/precipitation"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-# Show what we created
-message("Created files:")
-print(unlist(out_files))
+for(i in 1:length(input_dir_list)){
+  input_dir <- input_dir_list[i]
+  
+  # List all monthly tif files
+  prec_files <- list.files(input_dir, pattern = "\\.tif$", full.names = TRUE)
+  
+  # Extract year-month from filename
+  ym <- substr(basename(prec_files), nchar(basename(prec_files))-10, nchar(basename(prec_files))-4)
+  years <- unique(substr(ym, 1, 4))    
+  
+  #  Run for all years
+  out_files <- lapply(years, aggregate_year_clim,
+                      files_all = prec_files,
+                      ref       = ref_raster,
+                      outdir    = out_dir)
+  
+  # Show what we created
+  message("Created files:")
+}
 
-RERUN FOR OTHER FOLDERS 
+# Temperature  
+input_dir_list <- c("Raw spatial layers/wc2.1_cruts4.09_2.5m_tmax_2000-2009", 
+                    "Raw spatial layers/wc2.1_cruts4.09_2.5m_tmax_2010-2019", 
+                    "Raw spatial layers/wc2.1_cruts4.09_2.5m_tmax_2020-2024") 
+out_dir   <- "10x10 km spatial layers/temperature"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+for(i in 1:length(input_dir_list)){
+  input_dir <- input_dir_list[i]
+  
+  # List all monthly tif files
+  temp_files <- list.files(input_dir, pattern = "\\.tif$", full.names = TRUE)
+  
+  # Extract year-month from filename
+  ym <- substr(basename(temp_files), nchar(basename(temp_files))-10, nchar(basename(temp_files))-4)
+  years <- unique(substr(ym, 1, 4))    
+  
+  #  Run for all years
+  out_files <- lapply(years, aggregate_year_clim,
+                      files_all = temp_files,
+                      ref       = ref_raster,
+                      outdir    = out_dir)
+  
+  # Show what we created
+  message("Created files:")
+}
+
+
+## Aggregate 1km2 data to 10km2 scale: Human impact data ----------------------
+
+# Load 10x10km2 raster grid 
+ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
+ref_target <- ref_raster[[2]]
+
+# Load files
+aa_paths <- list.files("Raw spatial layers/GHM", pattern = "_AA\\.tif$", full.names = TRUE)
+years <- as.integer(sub(".*_(\\d{4})[cs]_AA\\.tif", "\\1", basename(aa_paths)))
+
+# Get the approximate aggregation factor (should be ~3700 in each direction)
+fact_val <- round(res(ref_target) / res(rast(aa_paths[1]))[1])  # use x-res; assume square cells
+agg_list <- vector("list", length(aa_paths))
+names(agg_list) <- paste0("HM_mean_", years)
+
+for (i in seq_along(aa_paths)) {
+  t0 <- Sys.time()
+  r <- rast(aa_paths[i])
+  r_aligned <- project(r, ref_target, method = "bilinear")
+  agg <- aggregate(r_aligned, fact = fact_val, fun = "mean", na.rm = TRUE)
+  agg <- project(agg, ref_target)   
+  agg_list[[i]] <- agg
+  elapsed <- round(difftime(Sys.time(), t0, units = "secs"), 1)
+  message(sprintf("Year %d/%d (%s) done in %s sec", i, length(aa_paths), years[i], elapsed))
+}
+
+# Combine into single multi-layer raster 
+agg_multi <- rast(agg_list)
+print(agg_multi)
+
+writeRaster(agg_multi, 
+            "HM_aggregated_10km_mean_1990-2022.tif",
+            overwrite = TRUE,
+            gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2"))
+
+
+# ── Combine into one multi-layer SpatRaster ─────────────────────────
+# This is usually the safest way
+agg_multi <- rast(agg_list)
+
+# Alternative if above fails (rare)
+# agg_multi <- sprc(agg_list) |> merge()
+
+# Force geometry match if still off
+if (!compareGeom(agg_multi, ref_target)) {
+  message("Final geometry adjustment")
+  agg_multi <- project(agg_multi, ref_target)
+}
+
+names(agg_multi) <- paste0("HM_mean_", years)
+
+print(agg_multi)
+
+# Save
+writeRaster(agg_multi, 
+            "HM_aggregated_10km_mean_1990-2022.tif",
+            overwrite = TRUE,
+            gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2"))
+
+
 
 
 ## Aggregate 1km2 data to 10km2 scale: PROPORTION DATA ------------------------
