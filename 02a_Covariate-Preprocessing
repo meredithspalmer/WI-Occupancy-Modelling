@@ -328,64 +328,43 @@ for(i in 1:length(input_dir_list)){
 
 ## Aggregate 1km2 data to 10km2 scale: Human impact data ----------------------
 
-# Load 10x10km2 raster grid 
+# Load reference (target geometry)
 ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
-ref_target <- ref_raster[[2]]
+ref_target <- ref_raster[[2]]  # use this as the exact target template
 
-# Load files
+# Load source files
 aa_paths <- list.files("Raw spatial layers/GHM", pattern = "_AA\\.tif$", full.names = TRUE)
-years <- as.integer(sub(".*_(\\d{4})[cs]_AA\\.tif", "\\1", basename(aa_paths)))
-
-# Get the approximate aggregation factor (should be ~3700 in each direction)
-fact_val <- round(res(ref_target) / res(rast(aa_paths[1]))[1])  # use x-res; assume square cells
+years    <- as.integer(sub(".*_(\\d{4})[cs]_AA\\.tif", "\\1", basename(aa_paths)))
 agg_list <- vector("list", length(aa_paths))
 names(agg_list) <- paste0("HM_mean_", years)
 
-for (i in seq_along(aa_paths)) {
+n <- length(aa_paths)
+for (i in seq_len(n)) {
   t0 <- Sys.time()
   r <- rast(aa_paths[i])
-  r_aligned <- project(r, ref_target, method = "bilinear")
-  agg <- aggregate(r_aligned, fact = fact_val, fun = "mean", na.rm = TRUE)
-  agg <- project(agg, ref_target)   
+  r_proj <- project(r, ref_target, method = "bilinear")
+  agg <- resample(r_proj, ref_target, method = "bilinear")
   agg_list[[i]] <- agg
   elapsed <- round(difftime(Sys.time(), t0, units = "secs"), 1)
-  message(sprintf("Year %d/%d (%s) done in %s sec", i, length(aa_paths), years[i], elapsed))
+  message(sprintf("Year %d/%d (%s) done in %s sec", i, n, years[i], elapsed))
 }
 
-# Combine into single multi-layer raster 
+# Combine
 agg_multi <- rast(agg_list)
-print(agg_multi)
 
+# Inspect — should now show real variation (min ≠ max per layer)
+print(agg_multi)
+summary(agg_multi)  # more informative than just min/max
+
+# Plot first year — should show spatial patterns now
+plot(agg_multi[[1]], main = paste("Mean HM - 1990"), 
+     col = terrain.colors(100), range = c(0, 1))
+
+# Save if good
 writeRaster(agg_multi, 
             "HM_aggregated_10km_mean_1990-2022.tif",
             overwrite = TRUE,
             gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2"))
-
-
-# ── Combine into one multi-layer SpatRaster ─────────────────────────
-# This is usually the safest way
-agg_multi <- rast(agg_list)
-
-# Alternative if above fails (rare)
-# agg_multi <- sprc(agg_list) |> merge()
-
-# Force geometry match if still off
-if (!compareGeom(agg_multi, ref_target)) {
-  message("Final geometry adjustment")
-  agg_multi <- project(agg_multi, ref_target)
-}
-
-names(agg_multi) <- paste0("HM_mean_", years)
-
-print(agg_multi)
-
-# Save
-writeRaster(agg_multi, 
-            "HM_aggregated_10km_mean_1990-2022.tif",
-            overwrite = TRUE,
-            gdal = c("COMPRESS=DEFLATE", "PREDICTOR=2"))
-
-
 
 
 ## Aggregate 1km2 data to 10km2 scale: PROPORTION DATA ------------------------
