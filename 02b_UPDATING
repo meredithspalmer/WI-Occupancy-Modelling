@@ -546,10 +546,231 @@ fwrite(full_with_periods_df, "Covariates for modelling/CCI_covariate_10x10km2.cs
 rm(final_df, predictions, full_df, full_expanded, full_with_periods, full_with_periods_df); gc()
 
 
+## Annual dynamic layers: Annual temperature ----------------------------------
 
-## Annual dynamic layers: Seasonal precipitation ------------------------------
+# Load TIF files  
+temp_files <- list.files("10x10 km spatial layers/temperature/",
+                         pattern = "\\.tif$", full.names = TRUE)
+r_stack <- rast(temp_files)
 
-# WAITING ON DOWNLOADED WORLDCLIM DATA -- 
+# Crop and mask
+temp_aligned <- crop(r_stack, reference_species_10km)
+temp_aligned <- mask(temp_aligned, reference_species_10km)
+
+# Extract time info 
+ti <- time(temp_aligned)  
+years_vec  <- floor(ti)
+frac       <- ti - years_vec
+months_vec <- round(frac * 12) + 1
+
+# Approximate mid-month dates for period matching
+time_info <- as.Date(paste(years_vec, months_vec, "15", sep = "-"))
+
+# Build mapping table: layer → year/month/date
+layer_info <- data.table(
+  layer_idx = 1:nlyr(temp_aligned),
+  year      = years_vec,
+  month     = months_vec,
+  date_mid  = time_info
+)
+
+# Zonal extraction: mean per cell_ID per month
+extracted <- terra::zonal(temp_aligned,
+                          reference_species_10km,
+                          fun = "mean", na.rm = TRUE,
+                          df = TRUE)
+setDT(extracted)
+
+# Melt to long 
+dt_long <- melt(extracted,
+                id.vars = "cell_ID",
+                variable.name = "layer_name",
+                value.name = "cov_value")
+
+# Assign layer index sequentially per cell 
+dt_long[, layer_idx := seq_len(.N), by = cell_ID]
+dt_long[, layer_name := NULL]
+
+# Join year/month/date info
+dt_long <- layer_info[dt_long, on = "layer_idx"]
+dt_long[cov_value %in% c(Inf, -Inf), cov_value := NA_real_]
+
+# Match monthly values to periods
+periods <- setDT(periods)
+periods[, `:=`(start_period = as.IDate(start_period),
+               end_period   = as.IDate(end_period))]
+dt_long[, date_mid := as.IDate(date_mid)]
+
+monthly_with_period <- dt_long[
+  periods,
+  on = c("date_mid >= start_period", "date_mid <= end_period"),
+  allow.cartesian = TRUE,   
+  nomatch = NA              
+]
+
+monthly_with_period <- monthly_with_period[, .(
+  layer_idx, cell_ID, cov_value, date_mid, month, 
+  year_raster = year, 
+  period, season,
+  period_year = i.year,
+  period_counter
+)]
+
+# Aggregate: mean temperature per cell + period
+temp_period <- monthly_with_period[
+  !is.na(period_counter),
+  .(cov_value = mean(cov_value, na.rm = TRUE)),
+  by = .(cell_ID, period_counter, period_year)
+]
+setnames(temp_period, "period_year", "year")
+
+# Full grid
+full_grid <- CJ(cell_ID        = unique(dt_long$cell_ID),
+                period_counter = unique(periods$period_counter))
+
+# Add year from periods
+full_grid <- merge(full_grid,
+                   periods[, .(period_counter, year)],
+                   by = "period_counter",
+                   all.x = TRUE)
+
+# Join the aggregated temperature values
+temp_final <- merge(full_grid,
+                    temp_period[, .(cell_ID, period_counter, cov_value)],
+                    by = c("cell_ID", "period_counter"),
+                    all.x = TRUE)
+setorder(temp_final, cell_ID, period_counter)
+
+# Imputation
+
+# Carry forward / backward within each cell  
+temp_final[, cov_value := nafill(cov_value, type = "locf"), by = cell_ID]
+temp_final[, cov_value := nafill(cov_value, type = "nocb"), by = cell_ID]
+
+# Final fallback: global mean  
+if (any(is.na(temp_final$cov_value))) {
+  global_mean <- mean(temp_final$cov_value, na.rm = TRUE)
+  temp_final[is.na(cov_value), cov_value := global_mean]
+}
+
+# Save 
+fwrite(prec_final, "Covariates for modelling/temperature_covariate_10x10km2.csv")
+
+# Clean 
+rm(temp_aligned, extracted, dt_long, monthly_with_period, temp_period, full_grid, temp_final); gc()
+
+
+## Annual dynamic layers: Annual temperature ----------------------------------
+
+# Load TIF files  
+prec_files <- list.files("10x10 km spatial layers/precipitation/",
+                         pattern = "\\.tif$", full.names = TRUE)
+r_stack <- rast(prec_files)
+
+# Crop and mask
+prec_aligned <- crop(r_stack, reference_species_10km)
+prec_aligned <- mask(prec_aligned, reference_species_10km)
+
+# Extract time info 
+ti <- time(prec_aligned)  
+years_vec  <- floor(ti)
+frac       <- ti - years_vec
+months_vec <- round(frac * 12) + 1
+
+# Approximate mid-month dates for period matching
+time_info <- as.Date(paste(years_vec, months_vec, "15", sep = "-"))
+
+# Build mapping table: layer → year/month/date
+layer_info <- data.table(
+  layer_idx = 1:nlyr(prec_aligned),
+  year      = years_vec,
+  month     = months_vec,
+  date_mid  = time_info
+)
+
+# Zonal extraction: mean per cell_ID per month
+extracted <- terra::zonal(prec_aligned,
+                          reference_species_10km,
+                          fun = "mean", na.rm = TRUE,
+                          df = TRUE)
+setDT(extracted)
+
+# Melt to long 
+dt_long <- melt(extracted,
+                id.vars = "cell_ID",
+                variable.name = "layer_name",
+                value.name = "cov_value")
+
+# Assign layer index sequentially per cell 
+dt_long[, layer_idx := seq_len(.N), by = cell_ID]
+dt_long[, layer_name := NULL]
+
+# Join year/month/date info
+dt_long <- layer_info[dt_long, on = "layer_idx"]
+dt_long[cov_value %in% c(Inf, -Inf), cov_value := NA_real_]
+
+# Match monthly values to periods
+periods <- setDT(periods)
+periods[, `:=`(start_period = as.IDate(start_period),
+               end_period   = as.IDate(end_period))]
+dt_long[, date_mid := as.IDate(date_mid)]
+
+monthly_with_period <- dt_long[
+  periods,
+  on = c("date_mid >= start_period", "date_mid <= end_period"),
+  allow.cartesian = TRUE,   
+  nomatch = NA              
+]
+monthly_with_period <- monthly_with_period[, .(
+  layer_idx, cell_ID, cov_value, date_mid, month, 
+  year_raster = year, 
+  period, season,
+  period_year = i.year,
+  period_counter
+)]
+
+# Aggregate: mean precipitation per cell + period
+prec_period <- monthly_with_period[
+  !is.na(period_counter),
+  .(cov_value = mean(cov_value, na.rm = TRUE)),
+  by = .(cell_ID, period_counter, period_year)
+]
+setnames(prec_period, "period_year", "year")
+
+# Full grid
+full_grid <- CJ(cell_ID       = unique(dt_long$cell_ID),
+                period_counter = unique(periods$period_counter))
+
+# Add year from periods
+full_grid <- merge(full_grid,
+                   periods[, .(period_counter, year)],
+                   by = "period_counter",
+                   all.x = TRUE)
+
+# Join the aggregated precipitation values
+prec_final <- merge(full_grid,
+                    prec_period[, .(cell_ID, period_counter, cov_value)],
+                    by = c("cell_ID", "period_counter"),
+                    all.x = TRUE)
+setorder(prec_final, cell_ID, period_counter)
+
+# Imputation
+
+# Carry forward / backward within each cell  
+prec_final[, cov_value := nafill(cov_value, type = "locf"), by = cell_ID]
+prec_final[, cov_value := nafill(cov_value, type = "nocb"), by = cell_ID]
+
+# Final fallback: global mean  
+if (any(is.na(prec_final$cov_value))) {
+  global_mean <- mean(prec_final$cov_value, na.rm = TRUE)
+  prec_final[is.na(cov_value), cov_value := global_mean]
+}
+
+# Save 
+fwrite(prec_final, "Covariates for modelling/precipitation_covariate_10x10km2.csv")
+
+# Clean 
+rm(prec_aligned, extracted, dt_long, monthly_with_period, prec_period, full_grid, prec_final); gc()
 
 
 ## Proportion of cell in protected area (WDPA) --------------------------------
@@ -584,84 +805,3 @@ head(WDPA_joined)
 subset_mat <- WDPA_joined[WDPA_joined[, "cell_ID"] %in% site_cells$cell_ID, ]
 write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_WDPA_sites.csv", row.names=F)
 
-
-
-
-
-# WPDA 
-
-################################################################################
-### Prop WDPA ##################################################################
-################################################################################
-
-# Calculates the proportion of each grid cell contained within a WDPA polygon
-
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Raw spatial layers/WDPA_Jan2025_Public_shp")
-rm(list=ls()); gc()
-
-library(terra)
-library(sf)
-library(rnaturalearth)
-library(dplyr)
-library(tidyr)
-
-# Create and load reference rasters with all site ids -------------------------
-
-# All terrestrial areas 
-reference <- reference <- rast("../../10x10 km spatial layers/raster_100km2_with_cellID.tif")
-land <- ne_countries(scale = "medium", returnclass = "sf")
-land_terra <- vect(land)
-if (crs(reference) != crs(land_terra)) {land_terra <- project(land_terra, crs(reference))}
-reference_land <- mask(reference, land_terra)
-
-# NOTE some sites not captured in land mask -- add manually 
-site_cells <- read.csv("../../10x10 km spatial layers/WI_loc_matching_cell_ID.csv") 
-existing_ids <- reference_land$cell_ID
-missing_ids <- setdiff(site_cells$cell_ID, existing_ids)
-add_raster <- reference
-add_raster[!values(add_raster) %in% missing_ids] <- NA
-reference_land <- cover(reference_land, add_raster)
-
-# Create 1km2 raster
-ref_1km <- rast("../../Raw spatial layers/Global_1km_CEA_reference_raster.tif") 
-
-# Load and format WDPA polygons -----------------------------------------------
-shape1 <- st_read("WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp")
-shape2 <- st_read("WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp")
-shape3 <- st_read("WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
-wdpa <- rbind(shape1, shape2, shape3)
-wdpa <- st_transform(wdpa, crs(ref_1km))
-
-# Rasterize and extract protected area proportions ----------------------------
-years <- 1999:2024
-results_list <- vector("list", length(years))
-
-for (i in seq_along(years)) {
-  yr <- years[i]
-  wdpa_yr <- wdpa %>% filter(STATUS_YR <= yr)
-  
-  r1_pa <- rasterize(vect(wdpa_yr), ref_1km, field=1, touches=TRUE)
-  r1_pa[is.na(r1_pa)] <- 0  # convert NA to 0
-  
-  # Use nearest assignment: each 1km cell inherits ID of 10km cell it falls in
-  r1_id <- resample(reference_land, ref_1km, method="near")
-  
-  # Extract values as data frame
-  df <- data.frame(
-    cell_ID = as.vector(r1_id$cell_ID),
-    inPA   = as.vector(r1_pa$layer)) 
-  sum(is.na(df$cell_ID))
-  
-  # Proportion of 1km cells inside PA per 10km cell
-  summary_df <- df %>%
-    group_by(cell_ID) %>%
-    summarise(prop_in_PA = mean(inPA, na.rm=TRUE)) %>% 
-    mutate(year = yr)
-  
-  results_list[[i]] <- summary_df
-}
-
-results_df <- dplyr::bind_rows(results_list)
-head(results_df); unique(results_df$year)
-
-write.csv(results_df, "/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/10x10 km spatial layers/prop_wdpa_full_new.csv", row.names=F)
