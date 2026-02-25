@@ -660,7 +660,7 @@ fwrite(prec_final, "Covariates for modelling/temperature_covariate_10x10km2.csv"
 rm(temp_aligned, extracted, dt_long, monthly_with_period, temp_period, full_grid, temp_final); gc()
 
 
-## Annual dynamic layers: Annual temperature ----------------------------------
+## Annual dynamic layers: Annual precipitation --------------------------------
 
 # Load TIF files  
 prec_files <- list.files("10x10 km spatial layers/precipitation/",
@@ -771,6 +771,103 @@ fwrite(prec_final, "Covariates for modelling/precipitation_covariate_10x10km2.cs
 
 # Clean 
 rm(prec_aligned, extracted, dt_long, monthly_with_period, prec_period, full_grid, prec_final); gc()
+
+
+## Annual dynamic layers: Human Modification mean (HM) ────────────────────────
+
+# Load TIF file 
+r_stack <- rast("10x10 km spatial layers/ghm_10km_1990-2022.tif")
+
+# Crop and mask 
+ghm_aligned <- crop(r_stack, reference_species_10km)
+ghm_aligned <- mask(ghm_aligned, reference_species_10km)
+
+# Extract observed years from layer names  
+observed_years <- as.integer(sub("HM_mean_([0-9]{4})$", "\\1", names(ghm_aligned)))
+
+# Zonal extraction: mean per cell_ID per observed year
+extracted <- terra::zonal(ghm_aligned,
+                          reference_species_10km,
+                          fun = "mean", na.rm = TRUE,
+                          df = TRUE)
+setDT(extracted)
+
+# Melt to long format
+dt_long <- melt(extracted,
+                id.vars = "cell_ID",
+                variable.name = "layer_name",
+                value.name = "cov_value")
+dt_long[, year := as.integer(sub("HM_mean_([0-9]{4})$", "\\1", layer_name))]
+dt_long[, layer_name := NULL]
+
+# Clean infinite values → NA
+dt_long[cov_value %in% c(Inf, -Inf), cov_value := NA_real_]
+
+# Temporal interpolation 
+all_relevant_years <- 1999:2024
+
+interpolated_dt <- dt_long[, {
+  if (.N == 0 || all(is.na(cov_value))) {
+    data.table(year = all_relevant_years, cov_value = NA_real_)
+  } else {
+    # Remove duplicates and sort
+    unique_obs <- unique(.SD[!is.na(cov_value), .(year, cov_value)])
+    setorder(unique_obs, year)
+    
+    # Linear interpolation + constant extrapolation (rule = 2)
+    filled <- approx(x = unique_obs$year,
+                     y = unique_obs$cov_value,
+                     xout = all_relevant_years,
+                     method = "linear",
+                     rule = 2)$y
+    
+    data.table(year = all_relevant_years, cov_value = filled)
+  }
+}, by = cell_ID]
+
+# Remove any accidental duplicates
+interpolated_dt <- unique(interpolated_dt, by = c("cell_ID", "year"))
+
+# Create complete grid
+full_grid <- CJ(cell_ID        = unique(interpolated_dt$cell_ID),
+                period_counter = unique(periods$period_counter))
+
+# Bring in year from periods
+full_grid <- merge(full_grid,
+                   periods[, .(period_counter, year)],
+                   by = "period_counter",
+                   all.x = TRUE)
+
+# Join interpolated HM values by cell_ID and year
+hm_final <- merge(full_grid,
+                  interpolated_dt,
+                  by = c("cell_ID", "year"),
+                  all.x = TRUE)
+setorder(hm_final, cell_ID, period_counter)
+
+head(hm_final)
+
+# Imputation 
+hm_final[, cov_value := nafill(cov_value, type = "locf"), by = cell_ID]
+hm_final[, cov_value := nafill(cov_value, type = "nocb"), by = cell_ID]
+na_after_fill <- hm_final[, sum(is.na(cov_value))]
+if (na_after_fill > 0) {
+  global_mean <- mean(hm_final$cov_value, na.rm = TRUE)
+  hm_final[is.na(cov_value), cov_value := global_mean]
+  cat("Filled", na_after_fill, "remaining NAs with global mean =", 
+      round(global_mean, 4), "\n")
+} else {
+  cat("No remaining NAs after forward/backward fill\n")
+}
+
+# Optional: add coordinates for checking 
+# hm_final <- coords_10km[hm_final, on = "cell_ID"]
+
+# Save 
+fwrite(hm_final, "Covariates for modelling/GHM_covariate_10x10km2.csv")
+
+# Clean 
+rm(ghm_aligned, extracted, dt_long, interpolated_dt, full_grid, hm_final); gc()
 
 
 ## Proportion of cell in protected area (WDPA) --------------------------------
