@@ -406,17 +406,41 @@ if(to_plot == "YES"){
 # Trimming manually now -- come up with an automated rule to streamline for future? 
 
 # Record trimmings: 
-# - Ceratotherium simum: 2010-01-01
+# - Acinonyx jubatus: 2009-06-01
+# - Canis rufus: 2015-03-01
+# - Castor fiber: 2018-05-01
+# - Cephalophus_adersi: 2019-01-01
+# - Chrysocyon brachyurus: 2009-07-01
+# - Crocuta crocuta: 2009-06-01
+# - Cuniculus paca: 2008-01-01
+# - Dasypus pastasae: 2010-04-01
+# - Diceros bicornis: 2009-06-01
+# - Didelphis marsupialis: 2008-01-01
+# - Equus quagga: 2009-06-01
+# - Hemigalus derbyanus: 2010-03-01
+# - Hystrix cristata: 2009-06-01
+# - Leptailurus serval: 2009-06-01
+# - Loxodonta africana: 2008-12-01
+# - Lupulella mesomelas: 2009-06-01
+# - Lycaon pictus: 2017-01-01
 # - Lynx pardinus: 2020-01-01
+# - Mazama americana: 2008-07-01
 # - Melursus ursinus: 2014-11-01
+# - Nasua nasua: 2008-07-01
+# - Panthera leo: 2009-06-01
 # - Panthera onca: 2008-01-01
 # - Panthera uncia: 2009-06-01
+# - Puma concolor: 2006-07-01
+# - Priodontes maximus: 2008-07-01
+# - Proteles cristata: 2009-06-01
+# - Setifer setosus: 2021-05-01
+# - Speothos venaticus: 2008-07-01
+# - Tamandua tetradactyla: 2008-07-01
 # - Tapirus indicus: 2010-02-01
 # - Tapirus terrestris: 2008-07-01
+# - Tayassu pecari: 2008-01-01
 # - Trichosurus vulpecula: 2011-05-01
 # - Vulpes vulpes: 2006-12-01
-# - Tayassu pecari: 2008-01-01
-# - Cuniculus paca: 2008-01-01
 
 need_to_run <- "YES" 
 
