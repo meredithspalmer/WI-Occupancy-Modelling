@@ -86,7 +86,11 @@ cov_subset <- function(cov_dataframe_name, period_data){
 
 ## Select target species ------------------------------------------------------
 
-target_species <- "Tapirus pinchaque"
+species <- fread("WI data/species_counts.csv")
+nrow(species) #109
+target_species <- species$sp_binomial[1] 
+
+#target_species <- "Tapirus pinchaque"
 species_file <- gsub(" ", "_", target_species)
 print(target_species)
 print(species_file)
@@ -104,7 +108,6 @@ mmd_map <- rast(mmd_map_path)
 mmd_poly <- as.polygons(mmd_map, na.rm = TRUE) %>% st_as_sf()
 
 # Mask reference to species range 
-global_cell_id <- reference[["cell_ID"]]
 mmd_aligned <- resample(mmd_map, reference, method = "near")
 reference_species <- crop(global_cell_id, ext(mmd_aligned))
 reference_species <- mask(reference_species, mmd_aligned)  
@@ -115,158 +118,324 @@ species_frame <- as.data.frame(reference_species)
 sites <- unique(species_frame$cell_ID)
 length(sites)
 
+# Format periods
+head(periods)
+periods <- setDT(periods)
+
 
 ## Covariates: static (dim: ncell) ------------------------------------------
 
 # Load static covariates (pre-processed) 
 static_10km <- fread("Covariates for modelling/site_level_covariates_10x10km2.csv") 
-static_df <- static_10km %>% filter(cell_ID %in% sites) %>% arrange(cell_ID) 
+static_data <- static_10km %>% filter(cell_ID %in% sites) %>% arrange(cell_ID) 
 
 # Check and clean 
-length(unique(static_df$cell_ID)) == length(sites)
+length(unique(static_data$cell_ID)) == length(sites)
 rm(static_10km); gc()
 
 
 ## Covariates: primary occasion (dim: ncell x nperiods) ---------------------
 
 ## Global world population density (GWP) ---
+
+# Load data 
 gwp_data <- fread("Covariates for modelling/GPW_covariate_10x10km2.csv")
-THIS IS NOT GOOD - want a product that has cell_IDs, and periods in a more mappable way 
+gwp_species <- gwp_data[gwp_data$cell_ID %in% sites,]
+gwp_species <- setDT(gwp_species)
 
-# Load TIF files
-gwp <- rast("Raw spatial layers/gpw_v4_PopDensity_rev11.tif")
-
-# Crop and mask to the extent of reference_species
-r_c_species <- crop(gwp, reference_species)
-r_c_species <- mask(r_c_species, reference_species)
-
-# Add cell_IDs (crop only — do not mask cell_ID layer)
-cell_id_species <- crop(global_cell_id, reference_species)   
-full_stack <- c(cell_id_species, r_c_species)
-
-# As data frame
-gwp_df <- as.data.frame(full_stack, na.rm = TRUE, xy = TRUE)
-
-# Melt to long
-gwp_long <- melt(gwp_df,
-                 id.vars = c("x", "y", "cell_ID"),
-                 measure.vars = c("GPW_2000", "GPW_2005", "GPW_2010", "GPW_2015", "GPW_2020"),
-                 variable.name = "year_var",
-                 value.name = "gwp")
-
-setDT(gwp_long)
-gwp_long[, year := as.integer(sub("GPW_", "", year_var))]
-gwp_long[, year_var := NULL]
-
-# Years used in your modeling periods
-period_years <- unique(periods$year)
-
-# Observed years that overlap modeling periods 
-observed_in_periods <- intersect(c(2000, 2005, 2010, 2015, 2020), period_years)
-
-# Years to predict 
-target_years <- setdiff(period_years, observed_in_periods)
-
-# Interpolate only for target_years
-gwp_interp <- gwp_long[, {
-  interp_gwp <- approx(year, gwp, xout = target_years, rule = 2)$y
-  .(year = target_years, gwp = interp_gwp)
-}, by = .(x, y, cell_ID)]
-gwp_interp[, gwp := round(gwp, 5)]
-
-# Combine observed + interpolated 
-gwp_observed <- gwp_long[year %in% observed_in_periods]
-gwp_final <- rbindlist(list(gwp_observed, gwp_interp), use.names = TRUE)
-setorder(gwp_final, cell_ID, year)
+# Check cells and years present 
+print(length(unique(gwp_species$cell_ID)) == length(sites))
+print(unique(gwp_species$year))
 
 # Join to periods
-gwp_data <- periods[, .(year, period_counter)][gwp_final, on = "year", allow.cartesian = TRUE]
+gwp_data <- gwp_species[gwp_species$year %in% unique(periods$year),]
+gwp_data <- periods[, .(year, period_counter)][gwp_data, on = "year", allow.cartesian = TRUE]
 setorder(gwp_data, cell_ID, period_counter)
+head(gwp_data)
 
 # Check cells in mmd
 gwp_cells <- gwp_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
 missing_in_gwp <- setdiff(sites, gwp_cells)
 cat("Cells missing in gwp: ", length(missing_in_gwp), "\n")
 
-head(gwp_data)
-rm(gwp_final, gwp_interp, gwp_long, gwp_df, gwp, gwp_observed); gc()
-
-
-
-
-
-## Seasonal precipitation ---
-
-# Load the TIF files 
-r_list <- list(precseas_2010 = rast("1x1 km spatial layers/precseas_1981-2010_1km2.tif"),
-               precseas_2040 = rast("1x1 km spatial layers/precseas_2011-2040_1km2.tif"))
-r_stack <- rast(r_list)
-
-# Crop and mask to the extent of mmd_raster 
-r_c_species <-     crop(r_stack, reference_species)           
-r_c_species <-     mask(r_c_species, reference_species)  
-
-# Add cell_IDs 
-cell_id_species <- crop(global_cell_id, reference_species)
-cell_id_species <- mask(cell_id_species, reference_species)
-full_stack <-      c(cell_id_species, r_c_species)
-
-# As data frame
-precip_df <-       as.data.frame(full_stack, na.rm = TRUE, xy=TRUE)
-
-# Melt to long
-precip_long <- melt(
-  precip_df,
-  id.vars = c("x", "y", "cell_ID"),
-  measure.vars = c("precseas_2010", "precseas_2040"),
-  variable.name = "year_var",
-  value.name = "precseas"
-)
-
-setDT(precip_long)  
-precip_long[, year := as.integer(sub("precseas_", "", year_var))]
-precip_long[, year_var := NULL]
-
-# Target years from periods for interpolation
-target_years <- unique(periods$year)
-
-# Spread to wide for easy calculation (only two years, so very fast)
-precip_wide <- dcast(precip_long, x + y + cell_ID ~ year, value.var = "precseas")
-setnames(precip_wide, c("2010", "2040"), c("val_2010", "val_2040"))
-
-# Linear interpolation function per cell
-interpolate_precseas <- function(v2010, v2040, from = 2010, to = 2040) {
-  prop <- (target_years - from) / (to - from)
-  v2010 + prop * (v2040 - v2010)
-}
-
-# Create interpolated values for all target years
-setDT(precip_wide)
-precip_interp <- precip_wide[, 
-                             .(year = target_years,
-                               precseas = interpolate_precseas(val_2010, val_2040)),
-                             by = .(x, y, cell_ID)
-]
-precip_original <- precip_long[, .(x, y, cell_ID, year, precseas)]
-precip_full_long <- rbindlist(list(precip_original, precip_interp), use.names = TRUE)
-setorder(precip_full_long, cell_ID, year)
-precip_full_long <- precip_full_long[!precip_full_long$year == 2040,]
-
-# Join period_counter to each year 
-seasprec_data <- precip_full_long[periods[, .(year, period_counter)], 
-                                  on = "year", 
-                                  allow.cartesian = TRUE]
-setorder(seasprec_data, cell_ID, year, period_counter)
-head(seasprec_data)
-
-# Check cells in mmd
-precip_cells <- seasprec_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
-missing_in_precip <- setdiff(sites, precip_cells)
-cat("Cells missing in precip: ", length(missing_in_precip), "\n")
+# Check NA values
+sum(is.na(gwp_data$cov_value))
+sum(is.na(gwp_data$period_counter))
 
 # Clean 
-rm(precip_full_long, precip_original, precip_interp, precip_wide, precip_long,
-   precip_cells, precip_df); gc()
+rm(gwp_cells, missing_in_gwp, gwp_species); gc()
+
+
+## Annual temperature --- 
+
+# Load data 
+temp_data <- fread("Covariates for modelling/temperature_covariate_10x10km2.csv")
+temp_species <- temp_data[temp_data$cell_ID %in% sites,]
+temp_species <- setDT(temp_species)
+
+# Check cells and years present 
+print(length(unique(temp_species$cell_ID)) == length(sites))
+print(unique(temp_species$year))
+
+# Join to periods
+temp_data <- temp_species[temp_species$year %in% unique(periods$year),]
+temp_data[, temp_period_counter := period_counter]
+
+# this numbering may not be the case for each species... need to confirm... 
+temp_data[, season := fcase( 
+  temp_period_counter %% 4 == 1, "Winter",
+  temp_period_counter %% 4 == 2, "Spring",
+  temp_period_counter %% 4 == 3, "Summer",
+  temp_period_counter %% 4 == 0, "Fall",   # 4,8,12,...
+  default = NA_character_
+)]
+
+temp_data[, ys_key := paste(year, season, sep = "__")]
+periods[, ys_key := paste(year, season, sep = "__")]
+lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
+
+temp_data[lookup, 
+          new_period_counter := i.new_period_counter,
+          on = "ys_key"]
+
+# Check and clean 
+head(temp_data); tail(temp_data)
+table(temp_data[is.na(temp_data$new_period_counter),]$period_counter)
+
+temp_data <- temp_data[!is.na(temp_data$new_period_counter),]
+temp_data[, c("period_counter", "temp_period_counter", "ys_key", "season") := NULL]
+temp_data[, period_counter := new_period_counter]
+
+# Clean 
+rm(temp_species); gc()
+
+
+## Monthly precipitation --- 
+
+# Load data 
+precip_data <- fread("Covariates for modelling/precipitation_covariate_10x10km2.csv")
+precip_species <- precip_data[precip_data$cell_ID %in% sites,]
+precip_species <- setDT(precip_species)
+
+# Check cells and years present 
+print(length(unique(precip_species$cell_ID)) == length(sites))
+print(unique(precip_species$year))
+
+# Join to periods
+precip_data <- precip_species[precip_species$year %in% unique(periods$year),]
+precip_data[, precip_period_counter := period_counter]
+
+# this numbering may not be the case for each species... need to confirm... 
+precip_data[, season := fcase( 
+  precip_period_counter %% 4 == 1, "Winter",
+  precip_period_counter %% 4 == 2, "Spring",
+  precip_period_counter %% 4 == 3, "Summer",
+  precip_period_counter %% 4 == 0, "Fall",   # 4,8,12,...
+  default = NA_character_
+)]
+
+precip_data[, ys_key := paste(year, season, sep = "__")]
+#periods[, ys_key := paste(year, season, sep = "__")] 
+#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
+
+precip_data[lookup, 
+            new_period_counter := i.new_period_counter,
+            on = "ys_key"]
+
+# Check and clean 
+head(precip_data); tail(precip_data)
+table(precip_data[is.na(precip_data$new_period_counter),]$period_counter)
+
+precip_data <- precip_data[!is.na(precip_data$new_period_counter),]
+precip_data[, c("period_counter", "precip_period_counter", "ys_key", "season") := NULL]
+precip_data[, period_counter := new_period_counter]
+
+# Clean 
+rm(precip_species); gc()
+
+
+## Forested areas --- 
+
+# Load data 
+CCI_data <- fread("Covariates for modelling/CCI_covariate_10x10km2.csv")
+forest_species <- CCI_data[CCI_data$cell_ID %in% sites,] %>% 
+  dplyr::select(c("cell_ID", "year", "prop_forest", "period_counter"))
+forest_species <- setDT(forest_species)
+
+# Check cells and years present 
+print(length(unique(forest_species$cell_ID)) == length(sites))
+print(unique(forest_species$year))
+
+# Join to periods
+forest_data <- forest_species[forest_species$year %in% unique(periods$year),]
+forest_data[, forest_period_counter := period_counter]
+
+# this numbering may not be the case for each species... need to confirm... 
+forest_data[, season := fcase( 
+  forest_period_counter %% 4 == 1, "Winter",
+  forest_period_counter %% 4 == 2, "Spring",
+  forest_period_counter %% 4 == 3, "Summer",
+  forest_period_counter %% 4 == 0, "Fall",   # 4,8,12,...
+  default = NA_character_
+)]
+
+forest_data[, ys_key := paste(year, season, sep = "__")]
+#periods[, ys_key := paste(year, season, sep = "__")] 
+#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
+
+forest_data[lookup, 
+            new_period_counter := i.new_period_counter,
+            on = "ys_key"]
+
+# Check and clean 
+head(forest_data); tail(forest_data)
+table(forest_data[is.na(forest_data$new_period_counter),]$period_counter)
+
+forest_data <- forest_data[!is.na(forest_data$new_period_counter),]
+forest_data[, c("period_counter", "forest_period_counter", "ys_key", "season") := NULL]
+forest_data[, period_counter := new_period_counter]
+
+# Clean 
+rm(forest_species); gc()
+
+
+## Human impacts: Encroachment --- 
+
+# Load data 
+#CCI_data <- fread("Covariates for modelling/CCI_covariate_10x10km2.csv")
+encroach_species <- CCI_data[CCI_data$cell_ID %in% sites,] %>% 
+  dplyr::select(c("cell_ID", "year", "prop_unnatural", "period_counter"))
+encroach_species <- setDT(encroach_species)
+
+# Check cells and years present 
+print(length(unique(encroach_species$cell_ID)) == length(sites))
+print(unique(encroach_species$year))
+
+# Join to periods
+encroach_data <- encroach_species[encroach_species$year %in% unique(periods$year),]
+encroach_data[, encroach_period_counter := period_counter]
+
+# this numbering may not be the case for each species... need to confirm... 
+encroach_data[, season := fcase( 
+  encroach_period_counter %% 4 == 1, "Winter",
+  encroach_period_counter %% 4 == 2, "Spring",
+  encroach_period_counter %% 4 == 3, "Summer",
+  encroach_period_counter %% 4 == 0, "Fall",   # 4,8,12,...
+  default = NA_character_
+)]
+
+encroach_data[, ys_key := paste(year, season, sep = "__")]
+#periods[, ys_key := paste(year, season, sep = "__")] 
+#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
+
+encroach_data[lookup, 
+            new_period_counter := i.new_period_counter,
+            on = "ys_key"]
+
+# Check and clean 
+head(encroach_data); tail(encroach_data)
+table(encroach_data[is.na(encroach_data$new_period_counter),]$period_counter)
+
+encroach_data <- encroach_data[!is.na(encroach_data$new_period_counter),]
+encroach_data[, c("period_counter", "encroach_period_counter", "ys_key", "season") := NULL]
+encroach_data[, period_counter := new_period_counter]
+
+# Clean 
+rm(encroach_species); gc()
+
+
+## Human impacts: Global human modification --- 
+
+# Load data 
+ghm_data <- fread("Covariates for modelling/GHM_covariate_10x10km2.csv")
+ghm_species <- ghm_data[ghm_data$cell_ID %in% sites,] %>% 
+  dplyr::select(-c("x", "y"))
+ghm_species <- setDT(ghm_species)
+
+# Check cells and years present 
+print(length(unique(ghm_species$cell_ID)) == length(sites))
+print(unique(ghm_species$year))
+
+# Join to periods
+ghm_data <- ghm_species[ghm_species$year %in% unique(periods$year),]
+ghm_data[, ghm_period_counter := period_counter]
+
+# this numbering may not be the case for each species... need to confirm... 
+ghm_data[, season := fcase( 
+  ghm_period_counter %% 4 == 1, "Winter",
+  ghm_period_counter %% 4 == 2, "Spring",
+  ghm_period_counter %% 4 == 3, "Summer",
+  ghm_period_counter %% 4 == 0, "Fall",   # 4,8,12,...
+  default = NA_character_
+)]
+
+ghm_data[, ys_key := paste(year, season, sep = "__")]
+#periods[, ys_key := paste(year, season, sep = "__")] 
+#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
+
+ghm_data[lookup, 
+         new_period_counter := i.new_period_counter,
+         on = "ys_key"]
+
+# Check and clean 
+head(ghm_data); tail(ghm_data)
+table(ghm_data[is.na(ghm_data$new_period_counter),]$period_counter)
+
+ghm_data <- ghm_data[!is.na(ghm_data$new_period_counter),]
+ghm_data[, c("period_counter", "ghm_period_counter", "ys_key", "season") := NULL]
+ghm_data[, period_counter := new_period_counter]
+
+# Clean 
+rm(ghm_species); gc()
+
+
+## EVI --- 
+
+# Load data 
+evi_data <- fread("Covariates for modelling/EVI_covariate_10x10km2.csv")
+evi_species <- evi_data[evi_data$cell_ID %in% sites,] %>% 
+  dplyr::select(-c("x", "y"))
+evi_species <- setDT(evi_species)
+
+# Check cells and years present 
+print(length(unique(evi_species$cell_ID)) == length(sites))
+print(unique(evi_species$year))
+
+# Join to periods - REDO FROM HERE 
+ghm_data <- ghm_species[ghm_species$year %in% unique(periods$year),]
+ghm_data[, ghm_period_counter := period_counter]
+
+# this numbering may not be the case for each species... need to confirm... 
+ghm_data[, season := fcase( 
+  ghm_period_counter %% 4 == 1, "Winter",
+  ghm_period_counter %% 4 == 2, "Spring",
+  ghm_period_counter %% 4 == 3, "Summer",
+  ghm_period_counter %% 4 == 0, "Fall",   # 4,8,12,...
+  default = NA_character_
+)]
+
+ghm_data[, ys_key := paste(year, season, sep = "__")]
+#periods[, ys_key := paste(year, season, sep = "__")] 
+#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
+
+ghm_data[lookup, 
+         new_period_counter := i.new_period_counter,
+         on = "ys_key"]
+
+# Check and clean 
+head(ghm_data); tail(ghm_data)
+table(ghm_data[is.na(ghm_data$new_period_counter),]$period_counter)
+
+ghm_data <- ghm_data[!is.na(ghm_data$new_period_counter),]
+ghm_data[, c("period_counter", "ghm_period_counter", "ys_key", "season") := NULL]
+ghm_data[, period_counter := new_period_counter]
+
+# Clean 
+rm(ghm_species); gc()
+
+
+
+
 
 
 ## Protected area status ---
@@ -355,229 +524,6 @@ gc()
 
 
 
-## Human impacts: Encroachment
-
-# Non-natural landcover classes
-unnatural_landcover <- c(10, 11, 12, 20, 30, 190)  
-
-# Load TIF files 
-lc_files <- list.files("Raw spatial layers/CCI landcover 1km2", pattern = "\\.tif$", 
-                       full.names = TRUE)
-
-years <- as.integer(sub(".*CCI_([0-9]{4})_REPRO\\.tif", "\\1", basename(lc_files)))
-lc_files <- lc_files[years >= min(periods$year)]
-r_stack <- rast(lc_files)
-
-# Crop and mask to the extent of mmd_raster 
-r_c_species <-     crop(r_stack, reference_species)           
-r_c_species <-     mask(r_c_species, reference_species)  
-
-# Add cell_IDs 
-cell_id_species <- crop(global_cell_id, reference_species)
-cell_id_species <- mask(cell_id_species, reference_species)
-full_stack <-      c(cell_id_species, r_c_species)
-
-# As data frame
-landcover_df <-       as.data.frame(full_stack, na.rm = TRUE, xy=TRUE)
-
-# Check cells in mmd
-landcover_cells <- landcover_df %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
-missing_in_landcover <- setdiff(sites, landcover_cells)
-cat("Cells missing in landcover: ", length(missing_in_landcover), "\n")
-
-# Melt to long 
-setDT(landcover_df)  
-landcover_long <- melt(landcover_df,
-                       id.vars       = c("x", "y", "cell_ID"),
-                       measure.vars  = grep("^CCI_[0-9]{4}_REPRO$", names(landcover_df), 
-                                            value = TRUE),
-                       variable.name = "year_var",
-                       value.name    = "landcover_class")
-setDT(landcover_long)
-landcover_long[, year := as.integer(sub("^CCI_([0-9]{4})_REPRO$", "\\1", year_var))]
-landcover_long[, year_var := NULL]
-setorder(landcover_long, cell_ID, year)
-
-# Create crop and forest columns 
-landcover_long[, crop   := ifelse(landcover_class %in% crop_class,  1L, 0L)]
-landcover_long[, forest := ifelse(landcover_class %in% forest_class, 1L, 0L)]
-setDT(landcover_long)
-
-# Define future years
-future_years <- c(2023, 2024)
-
-# Extrapolate by carrying forward last observed values per cell_ID
-landcover_future <- landcover_long[, {
-  last_row <- .SD[which.max(year)] 
-  .(year = future_years,
-    crop = last_row$crop,
-    forest = last_row$forest)
-}, by = .(x, y, cell_ID)]
-
-# Combine observed + predicted 
-landcover_full_long <- rbindlist(list(landcover_long[, .(x, y, cell_ID, year, crop, forest)], landcover_future), use.names = TRUE)
-setorder(landcover_full_long, cell_ID, year)
-
-# Join period_counter to each year 
-landcover_data <- landcover_full_long[periods[, .(year, period_counter)], 
-                                      on = "year", 
-                                      allow.cartesian = TRUE]
-setorder(landcover_data, cell_ID, year, period_counter)
-head(landcover_data)
-
-rm(landcover_full_long, landcover_future, landcover_long, landcover_df); gc()
-
-
-## QUICK SAVE 
-filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
-save(target_species, y_array, effort_array, periods, sites, reference_species, 
-     global_cell_id, y_data, effort_array, 
-     landcover_data, seasprec_data, gwp_data, wdpa_data, static_data,
-     file = filename)
-
-
-## EVI --- 
-
-# Load TIF files
-evi_files <- list.files("Raw spatial layers/EVI 1km2", full.names = TRUE)
-
-# Load full stack
-evi_list_raster <- lapply(evi_files, rast)
-evi_stack <- rast(evi_list_raster)
-
-# Crop and mask EVI
-r_c_species <- crop(evi_stack, reference_species)
-r_c_species <- mask(r_c_species, reference_species)
-
-# Add cell_ID (crop only!)
-cell_id_species <- crop(global_cell_id, reference_species)
-full_stack <- c(cell_id_species, r_c_species)
-
-# Extract to data frame (keep all cells)
-evi_df <- as.data.frame(full_stack, na.rm = FALSE, xy = TRUE)
-
-# Melt  
-evi_cols <- names(evi_df)[grepl("^EVI_", names(evi_df))]
-evi_long <- melt(evi_df,
-                 id.vars = c("x", "y", "cell_ID"),
-                 measure.vars = evi_cols,
-                 variable.name = "var",
-                 value.name = "evi")
-
-# Create date
-setDT(evi_long)
-start <- Sys.time()
-evi_long[, year := as.integer(substr(var, 5L, 8L))]
-evi_long[, date := as.IDate(sprintf("%d-%s", year, substr(var, 10L, 12L)), format = "%Y-%j")]
-setorder(evi_long, cell_ID, date)
-end <- Sys.time()
-print(end-start)
-
-# Create full grid  
-all_ids <- evi_long[, unique(cell_ID)]  
-all_periods <- unique(periods$period_counter)
-full_grid <- CJ(cell_ID = all_ids, period_counter = all_periods, unique = TRUE)
-full_grid <- periods[full_grid, on = "period_counter"]
-
-# Match EVI to periods 
-evi_long[, `:=`(start_date = date, end_date = date)]
-setkey(evi_long, cell_ID, start_date, end_date)
-setkey(full_grid, cell_ID, start_period, end_period)
-evi_with_period <- foverlaps(evi_long, full_grid, type = "any", nomatch = NULL)
-evi_with_period[, `:=`(start_date = NULL, end_date = NULL)]
-
-# Average EVI per period 
-evi_period_avg <- evi_with_period[,
-                                  .(evi = mean(evi, na.rm = TRUE)),
-                                  by = .(cell_ID, period_counter, year, season, start_period, end_period, x, y)
-]
-
-# Merge to full grid 
-evi_data <- copy(full_grid)  
-evi_data[evi_period_avg, on = .(cell_ID, period_counter), evi := i.evi]
-evi_data[is.nan(evi), evi := NA]
-setorder(evi_data, cell_ID, period_counter)
-
-# Temporal imputation (your existing code, unchanged)
-if (sum(is.na(evi_data$evi)) > 0) {
-  evi_data[, time_index := as.numeric(start_period)]
-  
-  imputed_dt <- evi_data[order(time_index), {
-    obs_time <- time_index[!is.na(evi)]
-    obs_evi  <- evi[!is.na(evi)]
-    
-    evi_filled <- if (length(obs_time) == 0) {
-      rep(NA_real_, .N)
-    } else if (length(obs_time) == 1) {
-      rep(obs_evi, .N)
-    } else {
-      approx(obs_time, obs_evi, xout = time_index, rule = 2)$y
-    }
-    
-    .(cell_ID, time_index, evi_imputed = evi_filled)
-  }, by = cell_ID]
-  
-  evi_data[imputed_dt, on = .(cell_ID, time_index), evi := i.evi_imputed]
-  evi_data[, time_index := NULL]
-}
-
-# Spatial imputation  
-still_missing <- evi_data[is.na(evi), unique(cell_ID)]
-setDT(evi_df)
-xy_lookup <- unique(evi_df[, .(cell_ID, x, y)])   
-evi_data <- xy_lookup[evi_data, on = "cell_ID"]
-
-# ── Fast spatial imputation: only for cells still fully missing ──
-still_missing <- evi_data[is.na(evi), unique(cell_ID)]
-
-if (length(still_missing) > 0) {
-  library(gstat)
-  
-  non_missing <- evi_data[!is.na(evi)]
-  
-  if (nrow(non_missing) == 0) {
-    # Fallback: global median (more robust than mean for skewed EVI)
-    global_median <- median(evi_data$evi, na.rm = TRUE)
-    evi_data[is.na(evi), evi := global_median]
-    cat("No observed EVI data — used global median for", length(still_missing), "missing cells.\n")
-  } else {
-    # Use latest period for training (stable)
-    train_coords <- non_missing[period_counter == max(period_counter), .(x, y, evi)]
-    train_df <- as.data.frame(train_coords)
-    
-    miss_coords <- unique(evi_data[cell_ID %in% still_missing, .(cell_ID, x, y)])
-    miss_df <- as.data.frame(miss_coords[, .(x, y)])
-    
-    # IDW model
-    gmodel <- gstat(formula = evi ~ 1, locations = ~ x + y, data = train_df, nmax = 50)
-    
-    # Predict
-    pred <- predict(gmodel, newdata = miss_df)
-    
-    # Vectorized assignment
-    lookup <- data.table(cell_ID = miss_coords$cell_ID, evi_pred = pred$var1.pred)
-    evi_data[lookup, on = "cell_ID", evi := i.evi_pred]
-    
-    cat("Spatially imputed", length(still_missing), "cells using IDW.\n")
-  }
-}
-
-# Final check
-cat("Final missing EVI values:", sum(is.na(evi_data$evi)), "\n")
-head(evi_data)
-
-# Check cells in mmd
-evi_cells <- evi_data %>% pull(cell_ID) %>% unique() %>% .[. %in% sites]
-missing_in_evi <- setdiff(sites, evi_cells)
-cat("Cells missing in evi: ", length(missing_in_evi), "\n")
-
-head(evi_data)
-
-# Clean workspace
-rm(evi_period_avg, evi_with_period, full_grid, evi_long, all_ids, all_periods, evi_cols, evi_df)
-gc()
-
-
 ## QUICK SAVE 
 filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
 save(target_species, y_array, effort_array, periods, sites, reference_species, 
@@ -585,53 +531,6 @@ save(target_species, y_array, effort_array, periods, sites, reference_species,
      landcover_data, seasprec_data, gwp_data, wdpa_data, evi_data, static_data,
      file = filename)
 
-
-## Check that all cells are present ----------------------------------------
-(missing_cells <- unique(c(missing_in_static, missing_in_precip, missing_in_wdpa,
-                           missing_in_gwp, missing_in_landcover, missing_in_evi)))
-
-# If missing sites, rebuild arrays 
-n_periods <- max(periods$period_counter)
-n_weeks <- 13
-periods_vec <- sort(unique(y_agg$period_counter))
-
-y_agg <- y_data[, .(effort = sum(effort_days, na.rm = TRUE),   
-                    y = as.integer(any(detected == 1, na.rm = TRUE))),
-                by = .(cell_ID, period_counter, week)]
-y_agg <- periods[, .(period_counter, season, year)][y_agg, on = "period_counter"]
-
-
-if(length(missing_cells) > 0){
-  
-  # Recreate y_array 
-  y_data <- y_data[!(y_data$cell_ID %in% missing_cells),]
-  y_agg <- y_data[, .(effort = sum(effort_days),    
-                      y      = as.integer(any(detected == 1))),
-                  by = .(cell_ID, period_counter, week)
-  ]
-  y_agg <- periods[, .(period_counter, season, year)][y_agg, on = "period_counter"]
-  
-  sites       <- sort(unique(y_agg$cell_ID))
-  n_sites    <- length(sites)
-  y_array      <- array(0L, dim = c(n_sites, n_periods, n_weeks))
-  effort_array <- array(0L, dim = c(n_sites, n_periods, n_weeks))
-  
-  idx <- y_agg[, .(
-    i = match(cell_ID, sites),
-    j = match(period_counter, periods_vec),
-    k = week,
-    y = y,
-    effort = effort
-  )]
-  
-  y_array[cbind(idx$i, idx$j, idx$k)]      <- idx$y
-  effort_array[cbind(idx$i, idx$j, idx$k)] <- idx$effort
-}
-
-dim(y_array)
-dim(effort_array)  
-any(is.na(y_array))       
-length(sites)
 
 
 ## Filter covariates to get correct sites & format to matrix 
@@ -1125,7 +1024,7 @@ if(to_plot == "YES"){
   ggsave(filename = paste0(folder, "/Univariate_models_environmental.jpg"),
          plot = combined_enviro, width = 16, height = 6, dpi = 300, bg = "white")
 }
-  
+
 # Save WAIC table
 write.csv(waic_df %>% arrange(WAIC), paste0(folder, "/WAIC_comparison.csv"), row.names = FALSE)
 
