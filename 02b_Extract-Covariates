@@ -702,6 +702,7 @@ dt_long <- melt(extracted,
                 value.name = "cov_value")
 
 # Assign layer index sequentially per cell 
+dt_long <- setDT(dt_long)
 dt_long[, layer_idx := seq_len(.N), by = cell_ID]
 dt_long[, layer_name := NULL]
 
