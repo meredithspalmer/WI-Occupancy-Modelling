@@ -237,7 +237,7 @@ for(i in 1:length(evi_list_raster, target_raster)){
 ref_raster <- rast("10x10 km spatial layers/reference_10km2.tif")
 
 #  Function: aggregate per year (12 months → 12-layer 10 km raster)
-aggregate_year_clim <- function(yr, files_all, ref, outdir) {
+aggregate_year_clim <- function(yr, files_all, ref, outdir, var_name) {
   
   # Select files for this year
   pat <- paste0(yr, "-")
@@ -255,10 +255,10 @@ aggregate_year_clim <- function(yr, files_all, ref, outdir) {
   s <- rast(r_list)
   s_10km <- project(s, ref, method = "average", threads = TRUE)
   months <- sprintf("%02d", 1:12)
-  names(s_10km) <- paste0("prec_", months)
+  names(s_10km) <- paste0(var_name, "_", months)
   
   # Output path
-  out_file <- file.path(outdir, paste0("prec_10km_", yr, ".tif"))
+  out_file <- file.path(outdir, paste0(var_name, "_10km_", yr, ".tif"))
   
   # Write  
   writeRaster(s_10km, out_file,
@@ -271,10 +271,11 @@ aggregate_year_clim <- function(yr, files_all, ref, outdir) {
   return(out_file)
 }
 
-# Precipitation 
+# Precipitation  
+var_name <- "prec"
 input_dir_list <- c("Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2000-2009", 
-               "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2010-2019", 
-               "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2020-2024") 
+                    "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2010-2019", 
+                    "Raw spatial layers/wc2.1_cruts4.09_2.5m_prec_2020-2024") 
 out_dir   <- "10x10 km spatial layers/precipitation"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -292,13 +293,15 @@ for(i in 1:length(input_dir_list)){
   out_files <- lapply(years, aggregate_year_clim,
                       files_all = prec_files,
                       ref       = ref_raster,
-                      outdir    = out_dir)
+                      outdir    = out_dir, 
+                      var_name  = var_name)
   
   # Show what we created
   message("Created files:")
 }
 
 # Temperature  
+var_name <- "temp"
 input_dir_list <- c("Raw spatial layers/wc2.1_cruts4.09_2.5m_tmax_2000-2009", 
                     "Raw spatial layers/wc2.1_cruts4.09_2.5m_tmax_2010-2019", 
                     "Raw spatial layers/wc2.1_cruts4.09_2.5m_tmax_2020-2024") 
@@ -319,7 +322,8 @@ for(i in 1:length(input_dir_list)){
   out_files <- lapply(years, aggregate_year_clim,
                       files_all = temp_files,
                       ref       = ref_raster,
-                      outdir    = out_dir)
+                      outdir    = out_dir, 
+                      var_name  = var_name)
   
   # Show what we created
   message("Created files:")
