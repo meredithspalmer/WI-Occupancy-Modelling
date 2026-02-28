@@ -588,6 +588,7 @@ dt_long <- melt(extracted,
                 value.name = "cov_value")
 
 # Assign layer index sequentially per cell 
+dt_long <- setDT(dt_long)
 dt_long[, layer_idx := seq_len(.N), by = cell_ID]
 dt_long[, layer_name := NULL]
 
@@ -641,8 +642,7 @@ temp_final <- merge(full_grid,
                     all.x = TRUE)
 setorder(temp_final, cell_ID, period_counter)
 
-# Imputation
-
+# Imputation: 
 # Carry forward / backward within each cell  
 temp_final[, cov_value := nafill(cov_value, type = "locf"), by = cell_ID]
 temp_final[, cov_value := nafill(cov_value, type = "nocb"), by = cell_ID]
@@ -654,7 +654,7 @@ if (any(is.na(temp_final$cov_value))) {
 }
 
 # Save 
-fwrite(prec_final, "Covariates for modelling/temperature_covariate_10x10km2.csv")
+fwrite(temp_final, "Covariates for modelling/temperature_covariate_10x10km2.csv")
 
 # Clean 
 rm(temp_aligned, extracted, dt_long, monthly_with_period, temp_period, full_grid, temp_final); gc()
@@ -901,4 +901,3 @@ write.csv(WDPA_joined, "../Covariates for modelling/primary_occ_covariates_WDPA_
 head(WDPA_joined)
 subset_mat <- WDPA_joined[WDPA_joined[, "cell_ID"] %in% site_cells$cell_ID, ]
 write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_WDPA_sites.csv", row.names=F)
-
