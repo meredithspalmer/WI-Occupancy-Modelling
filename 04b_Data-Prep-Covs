@@ -7,7 +7,7 @@
 
 # Set working directory 
 rm(list=ls()); gc()
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+setwd("/vast/palmer/pi/jetz/from_gibbs/projects/WildlifeInsights")
 set.seed(123)
 
 # Install
@@ -76,9 +76,10 @@ scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
 species <- fread("WI data/species_counts.csv")
 nrow(species) #109
-target_species <- species$sp_binomial[1] 
 
 #target_species <- "Tapirus pinchaque"
+target_species <- species$sp_binomial[109] 
+
 species_file <- gsub(" ", "_", target_species)
 print(target_species)
 print(species_file)
@@ -91,7 +92,7 @@ filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
 load(filename)
 
 # Load range map 
-mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map_path <- paste("/vast/palmer/pi/jetz/from_gibbs/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
 mmd_poly <- as.polygons(mmd_map, na.rm = TRUE) %>% st_as_sf()
 
@@ -120,32 +121,12 @@ periods <- setDT(periods)
 
 # Load static covariates (pre-processed) 
 static_10km <- fread("Covariates for modelling/site_level_covariates_10x10km2.csv") 
-static_data <- static_10km %>% filter(cell_ID %in% sites_predict) %>% arrange(cell_ID) 
 
 # Check and clean 
-length(unique(static_data$cell_ID)) == length(sites_predict)
-rm(static_10km); gc()
-
-# Format for OM
-var <- "cities_lg"
-hist(static_data[[var]])
-hist(log(static_data[[var]]))
-hist(sqrt(static_data[[var]]))
-
-static_predict <- static_data %>% filter(cell_ID %in% sites_predict) %>% 
-  mutate(log_road_dens   = log(road_dens)) %>% 
-  mutate(sqrt_tri.       = sqrt(tri)) %>% 
-  mutate(sqrt_river_dist = sqrt(river_dist)) %>% 
-  mutate(log_coeff_var   = log(coeff_var)) %>% 
-  mutate(sqrt_cities_lg = sqrt(cities_lg))
+static_predict <- static_10km %>% filter(cell_ID %in% sites_predict) %>% arrange(cell_ID) 
 dim(static_predict)
 
-static_model <- static_data %>% filter(cell_ID %in% sites_model) %>% 
-  mutate(log_road_dens   = log(road_dens)) %>% 
-  mutate(sqrt_tri.       = sqrt(tri)) %>% 
-  mutate(sqrt_river_dist = sqrt(river_dist)) %>% 
-  mutate(log_coeff_var   = log(coeff_var)) %>% 
-  mutate(sqrt_cities_lg = sqrt(cities_lg))
+static_model <- static_10km %>% filter(cell_ID %in% sites_model)
 dim(static_model)
 
 
@@ -766,7 +747,7 @@ dim(wdpa_model)
 
 ## Number of deployments ---
 temp_depl <- y_data[, .(n_depl = uniqueN(proj_depl)), 
-               by = .(cell_ID, period_counter)]
+                    by = .(cell_ID, period_counter)]
 temp_wide <- dcast(temp_depl, 
                    cell_ID ~ period_counter, 
                    value.var = "n_depl", 
