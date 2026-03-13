@@ -71,6 +71,25 @@ global_cell_id <- reference[["cell_ID"]]
 scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
 scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
+# Load polygons 
+if (!file.exists("Covariates for modelling/global_wdpa_valid.gpkg")) {
+  wdpa <- rbind(
+    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
+    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
+    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+  )
+  ref_crs <- st_crs(rast("10x10 km spatial layers/reference_10km2.tif"))
+  if (st_crs(wdpa) != ref_crs) {
+    wdpa <- st_transform(wdpa, ref_crs)
+  }
+  wdpa <- st_make_valid(wdpa)
+  wdpa_aoi_vect <- vect(wdpa)   
+  writeVector(wdpa_aoi_vect, "Covariates for modelling/global_wdpa_valid.gpkg")
+  
+} else {
+  wdpa <- st_read("Covariates for modelling/global_wdpa_valid.gpkg")
+}
+
 
 ## Select target species ------------------------------------------------------
 
@@ -95,6 +114,7 @@ load(filename)
 mmd_map_path <- paste("/vast/palmer/pi/jetz/from_gibbs/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
 mmd_map <- rast(mmd_map_path)
 mmd_poly <- as.polygons(mmd_map, na.rm = TRUE) %>% st_as_sf()
+mmd_poly  <- st_make_valid(mmd_poly)
 
 # Mask reference to species range 
 mmd_aligned <- resample(mmd_map, reference, method = "near")
@@ -132,15 +152,17 @@ dim(static_model)
 
 ## Covariates: primary occasion (dim: ncell x nperiods) ---------------------
 
+combined_sites <- unique(c(sites_predict, sites_model))
+
 ## Global world population density (GWP) ---
 
 # Load data 
 gwp_data <- fread("Covariates for modelling/GPW_covariate_10x10km2.csv")
-gwp_species <- gwp_data[gwp_data$cell_ID %in% sites_predict,]
+gwp_species <- gwp_data[gwp_data$cell_ID %in% combined_sites,]
 gwp_species <- setDT(gwp_species)
 
 # Check cells and years present 
-print(length(unique(gwp_species$cell_ID)) == length(sites_predict))
+print(length(unique(gwp_species$cell_ID)) == length(combined_sites))
 print(unique(gwp_species$year))
 
 # Join to periods
@@ -157,18 +179,12 @@ cat("Cells missing in gwp: ", length(missing_in_gwp), "\n")
 # Check NA values
 sum(is.na(gwp_data$cov_value))
 sum(is.na(gwp_data$period_counter))
-
-# Clean 
 rm(gwp_cells, missing_in_gwp, gwp_species); gc()
 
-# Format for OM
-hist(gwp_data$cov_value)
-hist(log(gwp_data$cov_value))
-
+# Format for OM 
 gwp_predict <- gwp_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -181,7 +197,6 @@ dim(gwp_predict)
 gwp_model <- gwp_data %>% 
   filter(cell_ID %in% sites_model) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -196,18 +211,17 @@ dim(gwp_model)
 
 # Load data 
 temp_data <- fread("Covariates for modelling/temperature_covariate_10x10km2.csv")
-temp_species <- temp_data[temp_data$cell_ID %in% sites_predict,]
+temp_species <- temp_data[temp_data$cell_ID %in% combined_sites,]
 temp_species <- setDT(temp_species)
 
 # Check cells and years present 
-print(length(unique(temp_species$cell_ID)) == length(sites_predict))
+print(length(unique(temp_species$cell_ID)) == length(combined_sites))
 print(unique(temp_species$year))
 
 # Join to periods
 temp_data <- temp_species[temp_species$year %in% unique(periods$year),]
 temp_data[, temp_period_counter := period_counter]
 
-# this numbering may not be the case for each species... need to confirm... 
 temp_data[, season := fcase( 
   temp_period_counter %% 4 == 1, "Winter",
   temp_period_counter %% 4 == 2, "Spring",
@@ -231,18 +245,12 @@ table(temp_data[is.na(temp_data$new_period_counter),]$period_counter)
 temp_data <- temp_data[!is.na(temp_data$new_period_counter),]
 temp_data[, c("period_counter", "temp_period_counter", "ys_key", "season") := NULL]
 setnames(temp_data, "new_period_counter", "period_counter")
-
-# Clean 
 rm(temp_species); gc()
 
 # Format for OM 
-hist(temp_data$cov_value) #QUESTION why do these values go up to 800?? is this degrees? 
-hist(log(temp_data$cov_value)) 
-
 temp_predict <- temp_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -255,7 +263,6 @@ dim(temp_predict)
 temp_model <- temp_data %>% 
   filter(cell_ID %in% sites_model) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -270,18 +277,17 @@ dim(temp_model)
 
 # Load data 
 precip_data <- fread("Covariates for modelling/precipitation_covariate_10x10km2.csv")
-precip_species <- precip_data[precip_data$cell_ID %in% sites_predict,]
+precip_species <- precip_data[precip_data$cell_ID %in% combined_sites,]
 precip_species <- setDT(precip_species)
 
 # Check cells and years present 
-print(length(unique(precip_species$cell_ID)) == length(sites_predict))
+print(length(unique(precip_species$cell_ID)) == length(combined_sites))
 print(unique(precip_species$year))
 
 # Join to periods
 precip_data <- precip_species[precip_species$year %in% unique(periods$year),]
 precip_data[, precip_period_counter := period_counter]
 
-# this numbering may not be the case for each species... need to confirm... 
 precip_data[, season := fcase( 
   precip_period_counter %% 4 == 1, "Winter",
   precip_period_counter %% 4 == 2, "Spring",
@@ -291,9 +297,6 @@ precip_data[, season := fcase(
 )]
 
 precip_data[, ys_key := paste(year, season, sep = "__")]
-#periods[, ys_key := paste(year, season, sep = "__")] 
-#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
-
 precip_data[lookup, 
             new_period_counter := i.new_period_counter,
             on = "ys_key"]
@@ -305,18 +308,12 @@ table(precip_data[is.na(precip_data$new_period_counter),]$period_counter)
 precip_data <- precip_data[!is.na(precip_data$new_period_counter),]
 precip_data[, c("period_counter", "precip_period_counter", "ys_key", "season") := NULL]
 setnames(precip_data, "new_period_counter", "period_counter")
-
-# Clean 
 rm(precip_species); gc()
 
 # Format for OM 
-hist(precip_data$cov_value)     #QUESTION why do these values go up to 800?? is this degrees? 
-hist(log(precip_data$cov_value)) 
-
 precip_predict <- precip_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -329,7 +326,6 @@ dim(precip_predict)
 precip_model <- precip_data %>% 
   filter(cell_ID %in% sites_model) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -344,19 +340,18 @@ dim(precip_model)
 
 # Load data 
 CCI_data <- fread("Covariates for modelling/CCI_covariate_10x10km2.csv")
-forest_species <- CCI_data[CCI_data$cell_ID %in% sites,] %>% 
+forest_species <- CCI_data[CCI_data$cell_ID %in% combined_sites,] %>% 
   dplyr::select(c("cell_ID", "year", "prop_forest", "period_counter"))
 forest_species <- setDT(forest_species)
 
 # Check cells and years present 
-print(length(unique(forest_species$cell_ID)) == length(sites))
+print(length(unique(forest_species$cell_ID)) == length(combined_sites))
 print(unique(forest_species$year))
 
 # Join to periods
 forest_data <- forest_species[forest_species$year %in% unique(periods$year),]
 forest_data[, forest_period_counter := period_counter]
 
-# this numbering may not be the case for each species... need to confirm... 
 forest_data[, season := fcase( 
   forest_period_counter %% 4 == 1, "Winter",
   forest_period_counter %% 4 == 2, "Spring",
@@ -366,9 +361,6 @@ forest_data[, season := fcase(
 )]
 
 forest_data[, ys_key := paste(year, season, sep = "__")]
-#periods[, ys_key := paste(year, season, sep = "__")] 
-#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
-
 forest_data[lookup, 
             new_period_counter := i.new_period_counter,
             on = "ys_key"]
@@ -380,14 +372,9 @@ table(forest_data[is.na(forest_data$new_period_counter),]$period_counter)
 forest_data <- forest_data[!is.na(forest_data$new_period_counter),]
 forest_data[, c("period_counter", "forest_period_counter", "ys_key", "season") := NULL]
 setnames(forest_data, "new_period_counter", "period_counter")
-
-# Clean 
 rm(forest_species); gc()
 
 # Format for OM 
-hist(forest_data$prop_forest)    
-hist(log(forest_data$prop_forest)) 
-
 forest_predict <- forest_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
@@ -416,20 +403,18 @@ dim(forest_model)
 ## Human impacts: Encroachment --- 
 
 # Load data 
-#CCI_data <- fread("Covariates for modelling/CCI_covariate_10x10km2.csv")
-encroach_species <- CCI_data[CCI_data$cell_ID %in% sites,] %>% 
+encroach_species <- CCI_data[CCI_data$cell_ID %in% combined_sites,] %>% 
   dplyr::select(c("cell_ID", "year", "prop_unnatural", "period_counter"))
 encroach_species <- setDT(encroach_species)
 
 # Check cells and years present 
-print(length(unique(encroach_species$cell_ID)) == length(sites))
+print(length(unique(encroach_species$cell_ID)) == length(combined_sites))
 print(unique(encroach_species$year))
 
 # Join to periods
 encroach_data <- encroach_species[encroach_species$year %in% unique(periods$year),]
 encroach_data[, encroach_period_counter := period_counter]
 
-# this numbering may not be the case for each species... need to confirm... 
 encroach_data[, season := fcase( 
   encroach_period_counter %% 4 == 1, "Winter",
   encroach_period_counter %% 4 == 2, "Spring",
@@ -439,9 +424,6 @@ encroach_data[, season := fcase(
 )]
 
 encroach_data[, ys_key := paste(year, season, sep = "__")]
-#periods[, ys_key := paste(year, season, sep = "__")] 
-#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
-
 encroach_data[lookup, 
               new_period_counter := i.new_period_counter,
               on = "ys_key"]
@@ -453,14 +435,9 @@ table(encroach_data[is.na(encroach_data$new_period_counter),]$period_counter)
 encroach_data <- encroach_data[!is.na(encroach_data$new_period_counter),]
 encroach_data[, c("period_counter", "encroach_period_counter", "ys_key", "season") := NULL]
 setnames(encroach_data, "new_period_counter", "period_counter")
-
-# Clean 
 rm(encroach_species); gc()
 
 # Format for OM 
-hist(encroach_data$prop_unnatural)    
-hist(log(encroach_data$prop_unnatural)) 
-
 encroach_predict <- encroach_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
@@ -490,19 +467,18 @@ dim(encroach_model)
 
 # Load data 
 ghm_data <- fread("Covariates for modelling/GHM_covariate_10x10km2.csv")
-ghm_species <- ghm_data[ghm_data$cell_ID %in% sites,] %>% 
+ghm_species <- ghm_data[ghm_data$cell_ID %in% combined_sites,] %>% 
   dplyr::select(-c("x", "y"))
 ghm_species <- setDT(ghm_species)
 
 # Check cells and years present 
-print(length(unique(ghm_species$cell_ID)) == length(sites))
+print(length(unique(ghm_species$cell_ID)) == length(combined_sites))
 print(unique(ghm_species$year))
 
 # Join to periods
 ghm_data <- ghm_species[ghm_species$year %in% unique(periods$year),]
 ghm_data[, ghm_period_counter := period_counter]
 
-# this numbering may not be the case for each species... need to confirm... 
 ghm_data[, season := fcase( 
   ghm_period_counter %% 4 == 1, "Winter",
   ghm_period_counter %% 4 == 2, "Spring",
@@ -512,9 +488,6 @@ ghm_data[, season := fcase(
 )]
 
 ghm_data[, ys_key := paste(year, season, sep = "__")]
-#periods[, ys_key := paste(year, season, sep = "__")] 
-#lookup <- unique(periods[, .(ys_key, new_period_counter = period_counter)])
-
 ghm_data[lookup, 
          new_period_counter := i.new_period_counter,
          on = "ys_key"]
@@ -526,18 +499,12 @@ table(ghm_data[is.na(ghm_data$new_period_counter),]$period_counter)
 ghm_data <- ghm_data[!is.na(ghm_data$new_period_counter),]
 ghm_data[, c("period_counter", "ghm_period_counter", "ys_key", "season") := NULL]
 setnames(ghm_data, "new_period_counter", "period_counter")
-
-# Clean 
 rm(ghm_species); gc()
 
 # Format for OM 
-hist(ghm_data$cov_value)    
-hist(log(ghm_data$cov_value)) 
-
 ghm_predict <- ghm_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -550,7 +517,6 @@ dim(ghm_predict)
 ghm_model <- ghm_data %>% 
   filter(cell_ID %in% sites_model) %>% 
   arrange(cell_ID) %>% 
-  mutate(cov_value = log(cov_value)) %>% 
   dplyr::select(cell_ID, period_counter, cov_value) %>% 
   distinct() %>%
   pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value, 
@@ -565,19 +531,18 @@ dim(ghm_model)
 
 # Load data 
 evi_data <- fread("Covariates for modelling/EVI_covariate_10x10km2.csv")
-evi_species <- evi_data[evi_data$cell_ID %in% sites,] %>% 
+evi_species <- evi_data[evi_data$cell_ID %in% combined_sites,] %>% 
   dplyr::select(-c("x", "y"))
 evi_species <- setDT(evi_species)
 
 # Check cells and years present 
-print(length(unique(evi_species$cell_ID)) == length(sites))
+print(length(unique(evi_species$cell_ID)) == length(combined_sites))
 print(unique(evi_species$year))
 
 # Join to periods 
 evi_data <- evi_species[evi_species$year %in% unique(periods$year),]
 evi_data[, evi_period_counter := period_counter]
 
-# this numbering may not be the case for each species... need to confirm... 
 lookup_months <- unique(periods[, .(year, season, new_period_counter = period_counter)])
 lookup_months[, `:=`(year = as.integer(year), season = as.character(season))]
 
@@ -592,14 +557,9 @@ table(evi_data[is.na(evi_data$new_period_counter),]$period_counter)
 evi_data <- evi_data[!is.na(evi_data$new_period_counter),]
 evi_data[, c("period_counter", "evi_period_counter", "season") := NULL]
 setnames(evi_data, old = "new_period_counter", new = "period_counter")
-
-# Clean 
 rm(evi_species); gc()
 
 # Format for OM
-hist(evi_data$cov_value)    
-hist(log(evi_data$cov_value)) 
-
 evi_predict <- evi_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
@@ -626,20 +586,6 @@ dim(evi_model)
 
 
 ## Protected area status ---
-
-# Load polygons 
-wdpa <- rbind(
-  st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
-  st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
-  st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
-)
-
-if (st_crs(wdpa) != st_crs(mmd_poly)) {
-  wdpa <- st_transform(wdpa, st_crs(mmd_poly))
-}
-
-wdpa      <- st_make_valid(wdpa)
-mmd_poly  <- st_make_valid(mmd_poly)
 
 # Keep only PAs that intersect the species range
 wdpa_aoi_sf <- suppressWarnings(st_intersection(wdpa, mmd_poly))
@@ -708,16 +654,11 @@ setorder(wdpa_data, cell_ID, year, period_counter)
 wdpa_data <- wdpa_data %>% dplyr::select(c(cell_ID, protected_prop, period_counter, year))
 
 # Check cells and years present 
-print(length(unique(wdpa_data$cell_ID)) == length(sites))
+print(length(unique(wdpa_data$cell_ID)) == length(combined_sites))
 print(unique(wdpa_data$year))
-
-# Clean workspace
 rm(pa_df_long, df_wide, prot_cols); gc()
 
 # Format for OM 
-hist(wdpa_data$protected_prop)    
-hist(log(wdpa_data$protected_prop)) 
-
 wdpa_predict <- wdpa_data %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
