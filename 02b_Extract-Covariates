@@ -886,6 +886,87 @@ rm(ghm_aligned, extracted, dt_long, interpolated_dt, full_grid, hm_final); gc()
 
 ## Proportion of cell in protected area (WDPA) --------------------------------
 
+# Load full WDPA (vector)
+wdpa_vect <- vect("path/to/your/global_wdpa.gpkg")   # or shapefile / GeoPackage
+# Make sure it has STATUS_YR column
+
+# Target years
+years_global <- 1999:2024
+
+# Pre-allocate list for yearly layers
+pa_global_layers <- vector("list", length(years_global))
+names(pa_global_layers) <- paste0("protected_frac_", years_global)
+
+cat("Building global WDPA fractional cover for", length(years_global), "years...\n")
+
+for (i in seq_along(years_global)) {
+  yr <- years_global[i]
+  
+  # Active PAs: designated on or before this year
+  active <- wdpa_vect[wdpa_vect$STATUS_YR <= yr & !is.na(wdpa_vect$STATUS_YR), ]
+  
+  cat(sprintf("Year %d: %d active PAs\n", yr, nrow(active)))
+  
+  if (nrow(active) == 0) {
+    frac <- reference_global
+    values(frac) <- 0
+  } else {
+    frac <- rasterize(
+      active,
+      reference_global,        # ← full global 10 km grid
+      cover = TRUE,            # fraction covered
+      background = 0,          # no overlap → 0
+      na.rm = TRUE
+    )
+  }
+  
+  pa_global_layers[[i]] <- frac
+}
+
+# Stack them
+wdpa_global_stack <- rast(pa_global_layers)
+
+# Add cell_ID layer
+full_global_stack <- c(global_cell_id, wdpa_global_stack)
+
+# Optional: mask to terrestrial areas only (if reference_global already does this, skip)
+# land_mask <- rast("path/to/land_mask_10km.tif")  # 1 = land, NA = ocean
+# full_global_stack <- mask(full_global_stack, land_mask)
+
+cat("Global WDPA stack created:", nlyr(full_global_stack), "layers\n")
+
+# Extract to data.frame (only cells with cell_ID)
+df_global_wide <- as.data.frame(full_global_stack, na.rm = TRUE, xy = TRUE)
+setDT(df_global_wide)
+
+# Identify protected fraction columns
+prot_cols_global <- grep("^protected_frac_", names(df_global_wide), value = TRUE)
+
+# Melt to long format
+wdpa_global_long <- melt(
+  df_global_wide,
+  id.vars       = c("x", "y", "cell_ID"),
+  measure.vars  = prot_cols_global,
+  variable.name = "year_var",
+  value.name    = "protected_prop"
+)
+
+# Parse year
+wdpa_global_long[, year := as.integer(gsub("protected_frac_", "", year_var))]
+wdpa_global_long[, year_var := NULL]
+
+# Optional: save as compressed file for reuse
+fwrite(wdpa_global_long, "Covariates for modelling/wdpa_global_1999_2024_10km.csv.gz")
+# or saveRDS(wdpa_global_long, "wdpa_global_long.rds")
+
+
+
+
+
+
+
+
+
 # Read WDPA file  
 wdpa <- read.csv("prop_wdpa_full.csv")
 
