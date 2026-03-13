@@ -20,7 +20,7 @@
 
 # Set workspace -----------------------------------------------------------------
 
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/")
+setwd("/vast/palmer/pi/jetz/from_gibbs/projects/WildlifeInsights")
 rm(list=ls()); gc()
 
 library(terra)
@@ -130,27 +130,40 @@ dt_long[, value := {
     value
   } else {
     train <- .SD[!is.na(value), .(value, x, y)]
+    out <- value   
+    
     if (nrow(train) < 3) {
-      value[na_idx] <- global_means[.BY$covariate]
+      out[na_idx] <- global_means[.BY$covariate]
     } else {
       mod <- lm(value ~ x + y, data = train)
-      preds <- predict(mod, newdata = .SD[na_idx, .(x, y)])
-      value[na_idx] <- preds
+      newdata <- .SD[na_idx, .(x, y)]
+      preds <- predict(mod, newdata = newdata)
       
-      # Fallback
-      still_na <- na_idx[is.na(value[na_idx])]
-      if (length(still_na) > 0) value[still_na] <- global_means[.BY$covariate]
+      # Only assign where predict succeeds
+      valid_preds <- !is.na(preds)
+      out[na_idx[valid_preds]] <- preds[valid_preds]
+      
+      # Fallback for remaining NAs
+      still_na <- na_idx[!valid_preds | is.na(preds)]
+      if (length(still_na) > 0) {
+        out[still_na] <- global_means[.BY$covariate]
+      }
     }
-    value
+    out  # always return full length
   }
-}, by = .(block, covariate)]   
+}, by = .(block, covariate)]
 
 # Cast to wide
-imputed_df <- dcast(dt_long, cell + cell_ID + x + y ~ covariate, value.var = "value")
+#imputed_df <- dcast(dt_long, cell + cell_ID + x + y ~ covariate, value.var = "value")
+
+imputed_df <- dcast(dt_long,
+                    cell_ID + x + y ~ covariate,   
+                    value.var = "value",
+                    fill = NA_real_)
 
 # Save 
 setorder(imputed_df, cell_ID)
-imputed_df$cell <- NULL
+#imputed_df$cell <- NULL
 fwrite(imputed_df[, .SD], "Covariates for modelling/site_level_covariates_10x10km2.csv")
 
 # Plot to check 
