@@ -31,18 +31,6 @@ library(gtools)
 scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
 scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
-# Covariate formatting function 
-cov_subset <- function(cov_dataframe_name, period_data){
-  covariate <- read.csv(cov_dataframe_name) %>% 
-    dplyr::select(-any_of("X")) %>% 
-    filter(cell_ID %in% cell_IDs) %>% 
-    arrange(cell_ID)
-  keep_cols <- intersect(paste0("X", unique(period_data$period_counter)), names(covariate))
-  df_subset <- covariate[, keep_cols] %>% 
-    as.matrix()
-  return(df_subset)
-}
-
 
 ## Load prepped data ----------------------------------------------------------
 
@@ -105,6 +93,7 @@ hist(wdpa_model)
 encroach_log <- log1p(encroach_model)
 ghm_log      <- log1p(ghm_model)
 precip_log   <- log1p(precip_model)
+
 
 ## Examine raw occupancy data -------------------------------------------------
 
@@ -194,27 +183,35 @@ dat_ls_mod2 <- list(y = y_array,
 occ.formula_mod1 = ~ scale(encroach) + scale(ghm) + scale(evi) + scale(forest) + 
   scale(precip) + scale(temp) + scale(tri) + scale(coeff_var) + scale(trend) 
 
-occ.formula_mod2 = = ~ scale(wdpa) + scale(evi) + scale(forest) + scale(precip) + 
+occ.formula_mod2 = ~ scale(wdpa) + scale(evi) + scale(forest) + scale(precip) + 
   scale(temp) + scale(tri) + scale(coeff_var) + scale(trend) 
 
 det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
 
 # Covariates whose effects are estimated as SVCs, including intercept
 svc.cols_mod1 = c(1:10)  
-svc.cols_mod1 = c(1:9)
+svc.cols_mod2 = c(1:9)
 
 # Prep inits ---
 z.init <- apply(y_array, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
 dist.data <- dist(coords)            
 
-inits.list <- list(beta = 0,            # occurrence coefficients
-                   alpha = 0,           # detection coefficients
-                   z = z.init,          # latent occurrence values
-                   phi = 3 / mean(dist.data),  
-                   sigma.sq = 0.5,      
-                   w = matrix(0, length(svc.cols), nrow(y_array)),  
-                   #rho = 0,  
-                   sigma.sq.t = 0.5)    # occurrence random effect variances 
+inits.list_mod1 <- list(beta = 0,            # occurrence coefficients
+                        alpha = 0,           # detection coefficients
+                        z = z.init,          # latent occurrence values
+                        phi = 3 / mean(dist.data),  
+                        sigma.sq = 0.5,      
+                        w = matrix(0, length(svc.cols_mod1), nrow(y_array)),  
+                        #rho = 0,  
+                        sigma.sq.t = 0.5)    # occurrence random effect variances 
+inits.list_mod2 <- list(beta = 0,            # occurrence coefficients
+                        alpha = 0,           # detection coefficients
+                        z = z.init,          # latent occurrence values
+                        phi = 3 / mean(dist.data),  
+                        sigma.sq = 0.5,      
+                        w = matrix(0, length(svc.cols_mod2), nrow(y_array)),  
+                        #rho = 0,  
+                        sigma.sq.t = 0.5)    # occurrence random effect variances 
 
 priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
                     beta.normal = list(mean = 0, var = 2.72),
@@ -234,28 +231,25 @@ batch.length <- 25
 n.iter <- n.batch * batch.length 
 
 ## Run model: MOD 1 ---
-
-dat <- dat_ls  # choose dat_ls or dat_ls_split 
-
 start_time <- Sys.time()
-out <- svcTPGOcc(occ.formula = occ.formula, 
-                 det.formula = det.formula,
-                 data = dat, 
-                 inits = inits.list,
-                 n.batch = n.batch,
-                 batch.length = batch.length, 
-                 priors = priors.list,  
-                 svc.cols = svc.cols,
-                 cov.model = "exponential",  #alternative to test could be 'spherical'
-                 NNGP = TRUE, 
-                 n.neighbors = 5,  
-                 tuning = tuning.list, 
-                 n.report = n.report, 
-                 n.burn = n.burn,
-                 n.thin = n.thin,
-                 n.chains = n.chains,
-                 verbose = TRUE,
-                 ar1 = TRUE) 
+out_mod1 <- svcTPGOcc(occ.formula = occ.formula, 
+                      det.formula = det.formula,
+                      data = dat_ls_mod1, 
+                      inits = inits.list_mod1,
+                      n.batch = n.batch,
+                      batch.length = batch.length, 
+                      priors = priors.list,  
+                      svc.cols = svc.cols_mod1,
+                      cov.model = "exponential",  
+                      NNGP = TRUE, 
+                      n.neighbors = 5,  
+                      tuning = tuning.list, 
+                      n.report = n.report, 
+                      n.burn = n.burn,
+                      n.thin = n.thin,
+                      n.chains = n.chains,
+                      verbose = TRUE,
+                      ar1 = TRUE) 
 
 # if using k-fold cross validation, would add k-fold parameters to the model: 
 #k.fold = 4, 
@@ -265,6 +259,39 @@ out <- svcTPGOcc(occ.formula = occ.formula,
 
 end_time <- Sys.time()
 end_time - start_time 
+
+## Run model: MOD 2 ---
+start_time <- Sys.time()
+out_mod2 <- svcTPGOcc(occ.formula = occ.formula, 
+                      det.formula = det.formula,
+                      data = dat_ls_mod2, 
+                      inits = inits.list_mod2,
+                      n.batch = n.batch,
+                      batch.length = batch.length, 
+                      priors = priors.list,  
+                      svc.cols = svc.cols_mod2,
+                      cov.model = "exponential",  
+                      NNGP = TRUE, 
+                      n.neighbors = 5,  
+                      tuning = tuning.list, 
+                      n.report = n.report, 
+                      n.burn = n.burn,
+                      n.thin = n.thin,
+                      n.chains = n.chains,
+                      verbose = TRUE,
+                      ar1 = TRUE) 
+
+# if using k-fold cross validation, would add k-fold parameters to the model: 
+#k.fold = 4, 
+#k.fold.threads = 4,
+#k.fold.only = TRUE) 
+#str(k.fold.sp)
+
+end_time <- Sys.time()
+end_time - start_time 
+
+
+
 
 ## IF THIS ERRORS ON DETECTION COVARIATES ## 
 
