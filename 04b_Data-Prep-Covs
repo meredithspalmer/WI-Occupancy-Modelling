@@ -71,24 +71,7 @@ global_cell_id <- reference[["cell_ID"]]
 scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
 scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
-# Load polygons 
-if (!file.exists("Covariates for modelling/global_wdpa_valid.gpkg")) {
-  wdpa <- rbind(
-    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
-    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
-    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
-  )
-  ref_crs <- st_crs(rast("10x10 km spatial layers/reference_10km2.tif"))
-  if (st_crs(wdpa) != ref_crs) {
-    wdpa <- st_transform(wdpa, ref_crs)
-  }
-  wdpa <- st_make_valid(wdpa)
-  wdpa_aoi_vect <- vect(wdpa)   
-  writeVector(wdpa_aoi_vect, "Covariates for modelling/global_wdpa_valid.gpkg")
-  
-} else {
-  wdpa <- st_read("Covariates for modelling/global_wdpa_valid.gpkg")
-}
+
 
 
 ## Select target species ------------------------------------------------------
@@ -587,79 +570,30 @@ dim(evi_model)
 
 ## Protected area status ---
 
-# Keep only PAs that intersect the species range
-wdpa_aoi_sf <- suppressWarnings(st_intersection(wdpa, mmd_poly))
-wdpa_aoi_sf <- wdpa_aoi_sf[!st_is_empty(wdpa_aoi_sf), ]
-cat("Number of WDPA polygons intersecting species range:", nrow(wdpa_aoi_sf), "\n")
-wdpa_aoi_vect <- vect(wdpa_aoi_sf)
+wdpa <- fread("Covariates for modelling/wdpa_covariate_10x10km2.csv") %>% 
+  filter(cell_ID %in% combined_sites) %>% 
+  select(-period_counter) %>% 
+  distinct()
 
-# Create fractional cover stack – one layer per year
-unique_years <- sort(unique(periods$year))
-pa_layers    <- list()
+unique_cells <- unique(wdpa$cell_ID)
 
-for (yr in unique_years) {
-  
-  # Subset to PAs designated <= this year
-  active <- wdpa_aoi_vect[wdpa_aoi_vect$STATUS_YR <= yr, ]
-  
-  if (nrow(active) == 0) {
-    # No protection → all cells get 0
-    frac <- reference_species
-    values(frac) <- 0
-    
-  } else {
-    # Fractional cover = proportion of cell covered by any PA
-    frac <- rasterize(active, 
-                      reference_species, 
-                      cover = TRUE,          # ← this gives fraction (0–1)
-                      background = 0,        # cells with no overlap get 0
-                      na.rm = TRUE)          # usually not needed here, but safe
-  }
-  
-  pa_layers[[paste0("protected_frac_", yr)]] <- frac
-  cat(sprintf("Year %d: %d active PAs → layer created\n", yr, nrow(active)))
-}
+periods_key <- periods %>%
+  dplyr::select(period_counter, year) %>%
+  distinct()
 
-# Combine into multi-layer SpatRaster with cell_ID
-pa_stack <- rast(pa_layers)
-cell_id_rast <- crop(global_cell_id, reference_species, snap = "out")
-full_stack   <- c(cell_id_rast, pa_stack)
-full_stack   <- mask(full_stack, reference_species, maskvalues = NA)
+full_grid <- expand_grid(cell_ID        = unique_cells,
+                         period_counter = periods_key$period_counter) %>%
+  left_join(periods_key, by = "period_counter")
 
-# Convert to data frame
-df_wide <- as.data.frame(full_stack, na.rm = TRUE, xy = TRUE)
-setDT(df_wide)
-prot_cols <- grep("^protected_", names(df_wide), value = TRUE)
-
-# Melt to long format 
-pa_df_long <- melt(df_wide,
-                   id.vars       = c("x", "y", "cell_ID"),
-                   measure.vars  = prot_cols,
-                   variable.name = "year_var",
-                   value.name    = "protected_prop")
-
-# Clean year column
-pa_df_long <- setDT(pa_df_long)
-pa_df_long[, year := as.integer(gsub("protected_frac_", "", year_var))]
-pa_df_long[, year_var := NULL]
-
-# Join with periods
-periods_join <- periods[, .(year, period_counter, season, ys_key)]
-wdpa_data <- pa_df_long[
-  periods_join,
-  on = "year",
-  allow.cartesian = TRUE
-]
-setorder(wdpa_data, cell_ID, year, period_counter)
-wdpa_data <- wdpa_data %>% dplyr::select(c(cell_ID, protected_prop, period_counter, year))
-
-# Check cells and years present 
-print(length(unique(wdpa_data$cell_ID)) == length(combined_sites))
-print(unique(wdpa_data$year))
-rm(pa_df_long, df_wide, prot_cols); gc()
+wdpa_complete <- full_grid %>%
+  left_join(wdpa %>% dplyr::select(cell_ID, year, protected_prop),
+            by = c("cell_ID", "year"), 
+            relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, protected_prop) %>%
+  arrange(cell_ID, period_counter)
 
 # Format for OM 
-wdpa_predict <- wdpa_data %>% 
+wdpa_predict <- wdpa_complete %>% 
   filter(cell_ID %in% sites_predict) %>% 
   arrange(cell_ID) %>% 
   dplyr::select(cell_ID, period_counter, protected_prop) %>% 
@@ -671,7 +605,7 @@ wdpa_predict <- wdpa_data %>%
   as.matrix()
 dim(wdpa_predict)
 
-wdpa_model <- wdpa_data %>% 
+wdpa_model <- wdpa_complete %>% 
   filter(cell_ID %in% sites_model) %>% 
   arrange(cell_ID) %>% 
   dplyr::select(cell_ID, period_counter, protected_prop) %>% 
