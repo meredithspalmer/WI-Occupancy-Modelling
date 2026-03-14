@@ -154,8 +154,6 @@ dt_long[, value := {
 }, by = .(block, covariate)]
 
 # Cast to wide
-#imputed_df <- dcast(dt_long, cell + cell_ID + x + y ~ covariate, value.var = "value")
-
 imputed_df <- dcast(dt_long,
                     cell_ID + x + y ~ covariate,   
                     value.var = "value",
@@ -163,7 +161,6 @@ imputed_df <- dcast(dt_long,
 
 # Save 
 setorder(imputed_df, cell_ID)
-#imputed_df$cell <- NULL
 fwrite(imputed_df[, .SD], "Covariates for modelling/site_level_covariates_10x10km2.csv")
 
 # Plot to check 
@@ -787,7 +784,7 @@ fwrite(prec_final, "Covariates for modelling/precipitation_covariate_10x10km2.cs
 rm(prec_aligned, extracted, dt_long, monthly_with_period, prec_period, full_grid, prec_final); gc()
 
 
-## Annual dynamic layers: Human Modification mean (HM) ────────────────────────
+## Annual dynamic layers: Global Human Modification mean (GHM) ────────────────
 
 # Load TIF file 
 r_stack <- rast("10x10 km spatial layers/ghm_10km_1990-2022.tif")
@@ -886,9 +883,24 @@ rm(ghm_aligned, extracted, dt_long, interpolated_dt, full_grid, hm_final); gc()
 
 ## Proportion of cell in protected area (WDPA) --------------------------------
 
-# Load full WDPA (vector)
-wdpa_vect <- vect("path/to/your/global_wdpa.gpkg")   # or shapefile / GeoPackage
-# Make sure it has STATUS_YR column
+# WDPA vector 
+if (!file.exists("Covariates for modelling/global_wdpa_valid.gpkg")) {
+  wdpa <- rbind(
+    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_0/WDPA_Jan2025_Public_shp-polygons.shp"),
+    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_1/WDPA_Jan2025_Public_shp-polygons.shp"),
+    st_read("Raw spatial layers/WDPA_Jan2025_Public_shp/WDPA_Jan2025_Public_shp_2/WDPA_Jan2025_Public_shp-polygons.shp")
+  )
+  ref_crs <- st_crs(rast("10x10 km spatial layers/reference_10km2.tif"))
+  if (st_crs(wdpa) != ref_crs) {
+    wdpa <- st_transform(wdpa, ref_crs)
+  }
+  wdpa <- st_make_valid(wdpa)
+  wdpa_aoi_vect <- vect(wdpa)   
+  writeVector(wdpa_aoi_vect, "Covariates for modelling/global_wdpa_valid.gpkg")
+  
+} else {
+  wdpa <- st_read("Covariates for modelling/global_wdpa_valid.gpkg")
+}
 
 # Target years
 years_global <- 1999:2024
@@ -897,29 +909,27 @@ years_global <- 1999:2024
 pa_global_layers <- vector("list", length(years_global))
 names(pa_global_layers) <- paste0("protected_frac_", years_global)
 
-cat("Building global WDPA fractional cover for", length(years_global), "years...\n")
-
+# Loop 
 for (i in seq_along(years_global)) {
   yr <- years_global[i]
   
   # Active PAs: designated on or before this year
-  active <- wdpa_vect[wdpa_vect$STATUS_YR <= yr & !is.na(wdpa_vect$STATUS_YR), ]
+  active <- wdpa[wdpa$STATUS_YR <= yr & !is.na(wdpa$STATUS_YR), ]
   
   cat(sprintf("Year %d: %d active PAs\n", yr, nrow(active)))
   
   if (nrow(active) == 0) {
-    frac <- reference_global
+    frac <- ref_10km
     values(frac) <- 0
   } else {
     frac <- rasterize(
       active,
-      reference_global,        # ← full global 10 km grid
-      cover = TRUE,            # fraction covered
-      background = 0,          # no overlap → 0
+      ref_10km,              
+      cover = TRUE,           
+      background = 0,          
       na.rm = TRUE
     )
   }
-  
   pa_global_layers[[i]] <- frac
 }
 
@@ -928,10 +938,6 @@ wdpa_global_stack <- rast(pa_global_layers)
 
 # Add cell_ID layer
 full_global_stack <- c(global_cell_id, wdpa_global_stack)
-
-# Optional: mask to terrestrial areas only (if reference_global already does this, skip)
-# land_mask <- rast("path/to/land_mask_10km.tif")  # 1 = land, NA = ocean
-# full_global_stack <- mask(full_global_stack, land_mask)
 
 cat("Global WDPA stack created:", nlyr(full_global_stack), "layers\n")
 
@@ -952,47 +958,41 @@ wdpa_global_long <- melt(
 )
 
 # Parse year
+wdpa_global_long <- setDT(wdpa_global_long)
 wdpa_global_long[, year := as.integer(gsub("protected_frac_", "", year_var))]
 wdpa_global_long[, year_var := NULL]
 
-# Optional: save as compressed file for reuse
-fwrite(wdpa_global_long, "Covariates for modelling/wdpa_global_1999_2024_10km.csv.gz")
-# or saveRDS(wdpa_global_long, "wdpa_global_long.rds")
+# Quick save
+fwrite(wdpa_global_long, "Covariates for modelling/wdpa_10km_full.csv")
 
+# Filter to cell_IDs
+ref_cells <- unique(values(reference_species_10km[["cell_ID"]]))         
+ref_cells <- ref_cells[!is.na(ref_cells)]                               
 
+wdpa_subset <- wdpa_global_long %>%
+  filter(cell_ID %in% ref_cells) %>%
+  dplyr::select(cell_ID, year, protected_prop)
 
+# Create full grid: every cell_ID × every period_counter
+full_grid <- expand_grid( cell_ID        = ref_cells,
+                          period_counter = periods$period_counter) %>%
+  left_join(periods %>% select(period_counter, year), by = "period_counter")
 
+# Join
+wdpa_expanded <- full_grid %>% left_join(wdpa_subset, by = c("cell_ID", "year"))
 
+# Interpolate missing values within each cell_ID
+any(is.na(wdpa_expanded$protected_prop)) #FALSE - so skip 
 
+#wdpa_expanded <- wdpa_expanded %>%
+#  group_by(cell_ID) %>%
+#  arrange(period_counter) %>%                   
+#  mutate(
+#    protected_prop_interp = na.approx(
+#      protected_prop,
+#      na.rm = FALSE,                            
+#      rule = 2)) %>%
+#  ungroup()
 
-
-
-# Read WDPA file  
-wdpa <- read.csv("prop_wdpa_full.csv")
-
-WDPA_joined <- wdpa %>%
-  left_join(periods, relationship = "many-to-many") %>% 
-  dplyr::select(cell_ID, period_counter, prop_in_PA) %>% 
-  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_in_PA, 
-              values_fill = NA) %>%
-  arrange(cell_ID) %>% 
-  as.matrix()
-
-head(WDPA_joined)
-
-# Plot to check  
-selected_year <- 2006
-plot_subset <- wdpa %>% filter(year == selected_year) %>% 
-  left_join(coords, by = "cell_ID")
-
-ggplot(plot_subset, aes(x = x, y = y, fill = prop_in_PA)) +
-  geom_tile() + scale_fill_viridis_c(option = "magma") +
-  coord_equal() + theme_minimal()
-
-# Save full dataframe 
-write.csv(WDPA_joined, "../Covariates for modelling/primary_occ_covariates_WDPA_full.csv", row.names=F)
-
-# Subset to sites 
-head(WDPA_joined)
-subset_mat <- WDPA_joined[WDPA_joined[, "cell_ID"] %in% site_cells$cell_ID, ]
-write.csv(subset_mat, "../Covariates for modelling/primary_occ_covariates_WDPA_sites.csv", row.names=F)
+# Save 
+fwrite(wdpa_expanded, "Covariates for modelling/wdpa_covariate_10x10km2.csv")
