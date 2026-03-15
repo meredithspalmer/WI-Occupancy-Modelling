@@ -750,7 +750,8 @@ n_weeks <- 13
 
 # Create arrays
 y_array <- array(NA_integer_, dim = c(n_sites, n_periods, n_weeks))
-effort_array <- array(NA_real_, dim = c(n_sites, n_periods, n_weeks))
+#effort_array <- array(0L, dim = c(n_sites, n_periods, n_weeks))
+effort_array <- array(NA_integer_, dim = c(n_sites, n_periods, n_weeks))
 
 # Index
 idx <- y_agg[, .(
