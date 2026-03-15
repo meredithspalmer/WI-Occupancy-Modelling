@@ -7,7 +7,7 @@
 
 # Set working directory 
 rm(list=ls()); gc()
-setwd("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights")
+setwd("/vast/palmer/pi/jetz/from_gibbs/projects/WildlifeInsights")
 set.seed(123)
 
 # Install
@@ -61,7 +61,7 @@ to_save <- "YES"
 need_to_run <- "NO" 
 
 if(need_to_run == "YES"){
-
+  
   # Load raster + cell_ID
   reference <- rast("Raw spatial layers/Global_1km_CEA_reference_raster.tif")
   cell_id_layer <- init(reference, fun = "cell")   
@@ -127,7 +127,7 @@ reference <- rast("10x10 km spatial layers/reference_10km2.tif")
 
 ## Select target species ------------------------------------------------------
 
-target_species <- "Tapirus pinchaque"
+target_species <- "Acinonyx jubatus"
 species_file <- gsub(" ", "_", target_species)
 print(target_species)
 print(species_file)
@@ -143,7 +143,7 @@ gbif_species <- gbif[gbif$verbatimsciname == target_species, ]
 #gbif_species <- gbif_species[!gbif_species$latitude > 40,] #panthera onca 
 
 # Range map data 
-mmd_map_path <- paste("/gpfs/gibbs/pi/jetz/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map_path <- paste("/vast/palmer/pi/jetz/from_gibbs/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
 mmd_map <- rast(mmd_map_path); plot(mmd_map)
 mmd_poly <- as.polygons(mmd_map, na.rm = TRUE) %>% st_as_sf()
 
@@ -156,7 +156,7 @@ reference_species; plot(reference_species)
 
 
 ## Generate WI data for modelling ---------------------------------------------
-  
+
 # Subset to species data found within range map 
 dat_sp_vect <- vect(dat_sp, geom = c("longitude", "latitude"), crs = "EPSG:4326")
 
@@ -451,7 +451,7 @@ if(need_to_run == "NO") {
   
   ## MANUALLY UPDATE FOR NOW 
   
-  set_date <- "2008-01-01"
+  set_date <- "2009-06-01"
   dat_filtered <- dat %>% filter(sensor_start_date >= as.Date(set_date))
   dat_sp_filtered <- dat_sp %>% filter(sensor_start_date >= as.Date(set_date))
   
@@ -750,7 +750,7 @@ n_weeks <- 13
 
 # Create arrays
 y_array <- array(NA_integer_, dim = c(n_sites, n_periods, n_weeks))
-effort_array <- array(0L, dim = c(n_sites, n_periods, n_weeks))
+effort_array <- array(NA_real_, dim = c(n_sites, n_periods, n_weeks))
 
 # Index
 idx <- y_agg[, .(
