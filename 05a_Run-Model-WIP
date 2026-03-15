@@ -36,7 +36,7 @@ scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
 
 # MANUALLY UPDATE 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
-filename <- filenames[163]
+filename <- filenames[3]
 
 # Load files 
 load(filename)
@@ -61,7 +61,7 @@ cell_IDs <- unique(sites)
 
 ## Format covariates ----------------------------------------------------------
 
-# Static covariates 
+# Static covariates ---
 static <- static_model %>%
   filter(cell_ID %in% cell_IDs) %>%
   dplyr::select(-c(road_dens, river_dist, cities_lg)) %>% 
@@ -69,13 +69,16 @@ static <- static_model %>%
 
 # Check distributions 
 hist(static$tri)
+hist(log(static$tri))
 hist(static$coeff_var)
 hist(log(static$coeff_var))
 
 # Update and scale static covariates  
-static <- static %>% mutate(log_coeff_var = log(coeff_var)) 
+static <- static %>% 
+  mutate(log_coeff_var = log(coeff_var)) %>% 
+  mutate(log_tri       = log(tri))
 
-# Primary-occasion covariates 
+# Primary-occasion covariates ---
 
 # Check distributions 
 hist(encroach_model)
@@ -84,6 +87,7 @@ hist(ghm_model)
 hist(log1p(ghm_model))
 hist(evi_model)
 hist(forest_model)
+hist(log1p(forest_model))
 hist(precip_model)
 hist(log1p(precip_model))
 hist(temp_model)
@@ -92,6 +96,7 @@ hist(wdpa_model)
 # Update covariates IF NECESSARY 
 encroach_log <- log1p(encroach_model)
 ghm_log      <- log1p(ghm_model)
+forest_log   <- log1p(forest_model) 
 precip_log   <- log1p(precip_model)
 
 
@@ -101,15 +106,16 @@ precip_log   <- log1p(precip_model)
 raw_occ_per_period <- apply(y_array, 2, mean, na.rm = TRUE)
 
 # Build data frame using numeric period index
-raw_occ_df <- data.frame(
-  period_counter = 1:length(raw_occ_per_period),
-  y = raw_occ_per_period) %>%
+raw_occ_df <- data.frame(period_counter = 1:length(raw_occ_per_period),
+                         y = raw_occ_per_period) %>%
   left_join(periods %>% select(period_counter, start_period, season, year),
             by = "period_counter") %>%
   rename(period_date = start_period) %>%
-  mutate(label_year = if_else(month(period_date) == 3 & season == "Spring", 
-                              as.character(year), ""),
-         y = coalesce(y, 0)) %>%
+  mutate(period_date = as.Date(period_date),    
+         label_year = if_else(
+           month(period_date) == 3 & season == "Spring",
+           as.character(year), 
+           "")) %>%
   arrange(period_date)
 
 # Quick sanity check
@@ -150,10 +156,10 @@ dat_ls_mod1 <- list(y = y_array,
                     occ.covs = list(encroach  = encroach_log, 
                                     ghm       = ghm_log,
                                     evi       = evi_model, 
-                                    forest    = forest_model,
+                                    forest    = forest_log,
                                     precip    = precip_log,
                                     temp      = temp_model, 
-                                    tri       = static$tri,
+                                    tri       = static$log_tri,
                                     coeff_var = static$log_coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
@@ -166,10 +172,10 @@ dat_ls_mod1 <- list(y = y_array,
 dat_ls_mod2 <- list(y = y_array,
                     occ.covs = list(wdpa      = wdpa_model, 
                                     evi       = evi_model, 
-                                    forest    = forest_model,
+                                    forest    = forest_log,
                                     precip    = precip_log,
                                     temp      = temp_model, 
-                                    tri       = static$tri,
+                                    tri       = static$log_tri,
                                     coeff_var = static$log_coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
@@ -232,7 +238,7 @@ n.iter <- n.batch * batch.length
 
 ## Run model: MOD 1 ---
 start_time <- Sys.time()
-out_mod1 <- svcTPGOcc(occ.formula = occ.formula, 
+out_mod1 <- svcTPGOcc(occ.formula = occ.formula_mod1, 
                       det.formula = det.formula,
                       data = dat_ls_mod1, 
                       inits = inits.list_mod1,
@@ -262,7 +268,7 @@ end_time - start_time
 
 ## Run model: MOD 2 ---
 start_time <- Sys.time()
-out_mod2 <- svcTPGOcc(occ.formula = occ.formula, 
+out_mod2 <- svcTPGOcc(occ.formula = occ.formula_mod2, 
                       det.formula = det.formula,
                       data = dat_ls_mod2, 
                       inits = inits.list_mod2,
@@ -279,12 +285,12 @@ out_mod2 <- svcTPGOcc(occ.formula = occ.formula,
                       n.thin = n.thin,
                       n.chains = n.chains,
                       verbose = TRUE,
-                      ar1 = TRUE) 
+                      ar1 = TRUE, 
+                      k.fold = 4, 
+                      k.fold.seed = 123)  
 
 # if using k-fold cross validation, would add k-fold parameters to the model: 
-#k.fold = 4, 
-#k.fold.threads = 4,
-#k.fold.only = TRUE) 
+## FIGURE OUT K-FOLD CROSS VALIDATION FOR THESE MODELS 
 #str(k.fold.sp)
 
 end_time <- Sys.time()
