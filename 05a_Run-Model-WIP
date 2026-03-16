@@ -82,22 +82,26 @@ static <- static %>%
 
 # Check distributions 
 hist(encroach_model)
-hist(log1p(encroach_model))
+#hist(log1p(encroach_model))
 hist(ghm_model)
 hist(log1p(ghm_model))
 hist(evi_model)
 hist(forest_model)
-hist(log1p(forest_model))
+#hist(log1p(forest_model))
 hist(precip_model)
-hist(log1p(precip_model))
+#hist(log1p(precip_model))
 hist(temp_model)
 hist(wdpa_model)
+hist(log1p(wdpa_model))
 
 # Update covariates IF NECESSARY 
 encroach_log <- log1p(encroach_model)
 ghm_log      <- log1p(ghm_model)
 forest_log   <- log1p(forest_model) 
 precip_log   <- log1p(precip_model)
+
+# Model should be robust without transforming any data... don't transform to keep
+# simple and comparative
 
 
 ## Examine raw occupancy data -------------------------------------------------
@@ -153,14 +157,14 @@ ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units 
 
 # Build data list(s) ---
 dat_ls_mod1 <- list(y = y_array,
-                    occ.covs = list(encroach  = encroach_log, 
-                                    ghm       = ghm_log,
+                    occ.covs = list(encroach  = encroach_model, 
+                                    ghm       = ghm_model,
                                     evi       = evi_model, 
-                                    forest    = forest_log,
-                                    precip    = precip_log,
+                                    forest    = forest_model,
+                                    precip    = precip_model,
                                     temp      = temp_model, 
-                                    tri       = static$log_tri,
-                                    coeff_var = static$log_coeff_var,
+                                    tri       = static$tri,
+                                    coeff_var = static$coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
                                     minjul = minjul,              # already scaled! 
@@ -172,11 +176,11 @@ dat_ls_mod1 <- list(y = y_array,
 dat_ls_mod2 <- list(y = y_array,
                     occ.covs = list(wdpa      = wdpa_model, 
                                     evi       = evi_model, 
-                                    forest    = forest_log,
-                                    precip    = precip_log,
+                                    forest    = forest_model,
+                                    precip    = precip_model,
                                     temp      = temp_model, 
-                                    tri       = static$log_tri,
-                                    coeff_var = static$log_coeff_var,
+                                    tri       = static$tri,
+                                    coeff_var = static$coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
                                     minjul = minjul,              # already scaled! 
@@ -236,7 +240,9 @@ n.report = 40
 batch.length <- 25
 n.iter <- n.batch * batch.length 
 
-## Run model: MOD 1 ---
+
+## Run model: MOD 1 -----------------------------------------------------------
+
 start_time <- Sys.time()
 out_mod1 <- svcTPGOcc(occ.formula = occ.formula_mod1, 
                       det.formula = det.formula,
@@ -255,16 +261,38 @@ out_mod1 <- svcTPGOcc(occ.formula = occ.formula_mod1,
                       n.thin = n.thin,
                       n.chains = n.chains,
                       verbose = TRUE,
-                      ar1 = TRUE) 
-
-# if using k-fold cross validation, would add k-fold parameters to the model: 
-#k.fold = 4, 
-#k.fold.threads = 4,
-#k.fold.only = TRUE) 
-#str(k.fold.sp)
-
+                      ar1 = TRUE, 
+                      k.fold = 4) 
 end_time <- Sys.time()
 end_time - start_time 
+
+# Refit the intercept only occupancy model and compare the deviance metrics from the 4-fold cross-validation: 
+start_time <- Sys.time()
+out_mod1_int <- svcTPGOcc(occ.formula = ~1, 
+                      det.formula = det.formula,
+                      data = dat_ls_mod1, 
+                      inits = inits.list_mod1,
+                      n.batch = n.batch,
+                      batch.length = batch.length, 
+                      priors = priors.list,  
+                      svc.cols = 1,
+                      cov.model = "exponential",  
+                      NNGP = TRUE, 
+                      n.neighbors = 5,  
+                      tuning = tuning.list, 
+                      n.report = n.report, 
+                      n.burn = n.burn,
+                      n.thin = n.thin,
+                      n.chains = n.chains,
+                      verbose = TRUE,
+                      ar1 = TRUE, 
+                      k.fold = 4) 
+end_time <- Sys.time()
+end_time - start_time 
+
+out_mod1$k.fold.deviance
+out_mod1_int$k.fold.deviance
+
 
 ## Run model: MOD 2 ---
 start_time <- Sys.time()
