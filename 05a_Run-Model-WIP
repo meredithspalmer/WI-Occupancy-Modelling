@@ -262,7 +262,8 @@ out_mod1 <- svcTPGOcc(occ.formula = occ.formula_mod1,
                       n.chains = n.chains,
                       verbose = TRUE,
                       ar1 = TRUE, 
-                      k.fold = 4) 
+                      k.fold = 4,
+                      k.fold.seed = 123) 
 end_time <- Sys.time()
 end_time - start_time 
 
@@ -286,7 +287,8 @@ out_mod1_int <- svcTPGOcc(occ.formula = ~1,
                       n.chains = n.chains,
                       verbose = TRUE,
                       ar1 = TRUE, 
-                      k.fold = 4) 
+                      k.fold = 4, 
+                      k.fold.seed = 123) 
 end_time <- Sys.time()
 end_time - start_time 
 
@@ -315,34 +317,38 @@ out_mod2 <- svcTPGOcc(occ.formula = occ.formula_mod2,
                       verbose = TRUE,
                       ar1 = TRUE, 
                       k.fold = 4, 
-                      k.fold.seed = 123)  
-
-# if using k-fold cross validation, would add k-fold parameters to the model: 
-## FIGURE OUT K-FOLD CROSS VALIDATION FOR THESE MODELS 
-#str(k.fold.sp)
-
+                      k.fold.seed = 123)
 end_time <- Sys.time()
 end_time - start_time 
 
 
+# Refit the intercept only occupancy model and compare the deviance metrics from the 4-fold cross-validation: 
+start_time <- Sys.time()
+out_mod2_int <- svcTPGOcc(occ.formula = ~1, 
+                          det.formula = det.formula,
+                          data = dat_ls_mod2, 
+                          inits = inits.list_mod2,
+                          n.batch = n.batch,
+                          batch.length = batch.length, 
+                          priors = priors.list,  
+                          svc.cols = 1,
+                          cov.model = "exponential",  
+                          NNGP = TRUE, 
+                          n.neighbors = 5,  
+                          tuning = tuning.list, 
+                          n.report = n.report, 
+                          n.burn = n.burn,
+                          n.thin = n.thin,
+                          n.chains = n.chains,
+                          verbose = TRUE,
+                          ar1 = TRUE, 
+                          k.fold = 4, 
+                          k.fold.seed = 123) 
+end_time <- Sys.time()
+end_time - start_time 
 
-
-## IF THIS ERRORS ON DETECTION COVARIATES ## 
-
-# Where is there detection but missing effort? 
-discrepancies <- !is.na(y_array) & is.na(effort)
-(idx <- which(discrepancies, arr.ind = TRUE)) #three instances 
-length(idx)
-
-# For now, add 1 to effort where there is a detection; 
-# HOWEVER, working on backtracking to figure out where this issue is coming from
-effort[discrepancies] <- 1
-sum(!is.na(y_array) & is.na(effort))  # should be 0
-
-# Now, rerun code from line 380 ('Organize data') 
-
-ADD IN THE K-FOLD CROSS VALIDATION PIECE ONCE GET MODELS RUNNING 
-
+out_mod2$k.fold.deviance
+out_mod2_int$k.fold.deviance
 
 
 ## Convergence assessment -----------------------------------------------------
@@ -429,4 +435,6 @@ plogis(2.13) #convert logit values to probability scale
 ## Save files -------------------------------------------------------------------
 
 (filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", file_species, "/", file_species, "_svcTPGOcc", "_", Sys.Date(), ".RData", sep = ""))
+
+UPDATE THE SAVE 
 save(y_array, covs, target_species, out, coords, dat_ls, periods, file = filename)
