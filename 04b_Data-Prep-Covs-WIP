@@ -1,0 +1,623 @@
+########################
+###### Data prep #######
+########################
+
+# Project: WI Occupancy Range Wide Trends
+# This file contains code to format the covariate data to run species-level occupancy models.
+
+# Load libraries
+library(broom)
+library(coda)
+library(cowplot)
+library(data.table)
+library(dplyr)
+library(forcats)
+library(ggmap)
+library(ggplot2)
+library(gridExtra)
+#library(gstat)
+library(lubridate)
+library(mgcv)
+library(patchwork)
+library(purrr)
+library(raster)
+library(rasterVis)
+library(reshape2)
+library(rlist)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(spOccupancy)
+library(stringr)
+library(tibble)
+library(tictoc)
+library(tidyr)
+library(tidyterra)
+library(tidyverse)
+library(terra)
+library(tmap)
+library(tmaptools)
+library(tsibble)
+library(viridis)
+
+
+## Plotting & saving ----------------------------------------------------------
+
+to_plot <- "NO"
+to_save <- "NO"
+
+
+#### RUN 1x #### --------------------------------------------------------------
+
+# Load WI data
+all_dat <- fread("WI data/all_dat.csv")
+
+# Load reference raster
+reference <- rast("10x10 km spatial layers/reference_10km2.tif")
+global_cell_id <- reference[["cell_ID"]]
+
+# Load covariate data
+static_10km <- fread("Covariates for modelling/site_level_covariates_10x10km2.csv")
+gwp_data    <- fread("Covariates for modelling/GPW_covariate_10x10km2.csv")
+temp_data   <- fread("Covariates for modelling/temperature_covariate_10x10km2.csv")
+precip_data <- fread("Covariates for modelling/precipitation_covariate_10x10km2.csv")
+CCI_data    <- fread("Covariates for modelling/CCI_covariate_10x10km2.csv")
+ghm_data    <- fread("Covariates for modelling/GHM_covariate_10x10km2.csv")
+evi_data    <- fread("Covariates for modelling/EVI_covariate_10x10km2.csv")
+wdpa_data   <- fread("Covariates for modelling/wdpa_covariate_10x10km2.csv")
+
+# User-defined scaling functions
+scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
+scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
+
+
+## Select target species ------------------------------------------------------
+
+species <- fread("WI data/species_counts.csv")
+nrow(species) #109
+
+#target_species <- "Tapirus pinchaque"
+target_species <- species$sp_binomial[1]
+species_file <- gsub(" ", "_", target_species)
+print(target_species)
+print(species_file)
+
+
+## Load species data ----------------------------------------------------------
+
+# Load processed WI data
+filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+load(filename)
+
+# Load range map
+mmd_map_path <- paste("/vast/palmer/pi/jetz/from_gibbs/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
+mmd_map <- rast(mmd_map_path)
+mmd_poly <- as.polygons(mmd_map, na.rm = TRUE) %>% st_as_sf()
+mmd_poly <- st_make_valid(mmd_poly)
+
+# Mask reference to species range
+mmd_aligned <- resample(mmd_map, reference, method = "near")
+global_cell_id <- reference[["cell_ID"]]
+reference_species <- crop(global_cell_id, ext(mmd_aligned))
+reference_species <- mask(reference_species, mmd_aligned)
+reference_species; plot(reference_species)
+
+# Cells in range
+species_frame <- as.data.frame(reference_species)
+sites_predict <- unique(species_frame$cell_ID)
+length(sites_predict)
+
+# Cells for model
+sites_model <- sites
+length(sites_model)
+
+# Format periods
+head(periods)
+periods <- setDT(periods)
+
+
+## Covariates: static (dim: ncell) ------------------------------------------
+
+# Check and clean
+static_predict <- static_10km %>% filter(cell_ID %in% sites_predict) %>% arrange(cell_ID)
+static_model <- static_10km %>% filter(cell_ID %in% sites_model)
+
+## Covariates: primary occasion (dim: ncell x nperiods) ---------------------
+combined_sites <- unique(c(sites_predict, sites_model))
+
+# Create complete grid once — ensures every covariate has exactly nrow(periods) periods
+full_grid <- expand_grid(
+  cell_ID        = combined_sites,
+  period_counter = periods$period_counter
+) %>%
+  left_join(periods %>% dplyr::select(period_counter, year, season), by = "period_counter") %>%
+  setDT()
+
+## Global world population density (GWP) ---
+gwp_grid <- full_grid %>%
+  left_join(gwp_data %>% dplyr::select(cell_ID, year, cov_value), by = c("cell_ID", "year")) %>%
+  dplyr::select(cell_ID, period_counter, cov_value) %>%
+  distinct()
+
+gwp_predict <- gwp_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+gwp_model <- gwp_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+
+## Annual temperature --- 
+
+# Map new periods to temp_data 
+temp_data[, ys_key := paste(year, fcase(period_counter %% 4 == 1, "Winter",
+                                        period_counter %% 4 == 2, "Spring",
+                                        period_counter %% 4 == 3, "Summer",
+                                        period_counter %% 4 == 0, "Fall",
+                                        default = NA_character_), sep = "__")]
+# ys_key in periods (model periods)
+periods[, ys_key := paste(year, season, sep = "__")]
+
+# Lookup table: model period_counter by season-year key
+lookup <- unique(periods[, .(ys_key, model_period_counter = period_counter)])
+
+# Perform left join: keep all temp_data rows, add matching model period_counter
+temp_periods <- merge(temp_data, lookup, by = "ys_key", all.x = TRUE)
+
+# Drop rows that didn't match any model period (no corresponding season-year)
+temp_periods <- temp_periods[!is.na(model_period_counter)]
+
+# Rename to match model naming
+temp_periods[, period_counter :=  NULL]
+setnames(temp_periods, "model_period_counter", "period_counter")
+temp_periods[, ys_key := NULL]
+
+# Now place into full grid to guarantee dimension
+temp_grid <- full_grid %>%
+  left_join(temp_periods %>% dplyr::select(cell_ID, period_counter, cov_value),
+            by = c("cell_ID", "period_counter")) %>%
+  dplyr::select(cell_ID, period_counter, cov_value) %>%
+  distinct()
+
+# Format predict and model matrices
+temp_predict <- temp_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+temp_model <- temp_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+# Clean up
+rm(temp_periods, temp_grid); gc()
+
+
+## Monthly precipitation ---
+
+# Map new periods to precip_data 
+precip_data[, ys_key := paste(year, fcase(period_counter %% 4 == 1, "Winter",
+                                          period_counter %% 4 == 2, "Spring",
+                                          period_counter %% 4 == 3, "Summer",
+                                          period_counter %% 4 == 0, "Fall",
+                                          default = NA_character_), sep = "__")]
+
+# Perform left join: keep all temp_data rows, add matching model period_counter
+precip_periods <- merge(precip_data, lookup, by = "ys_key", all.x = TRUE)
+
+# Drop rows that didn't match any model period (no corresponding season-year)
+precip_periods <- precip_periods[!is.na(model_period_counter)]
+
+# Rename to match model naming
+precip_periods[, period_counter :=  NULL]
+setnames(precip_periods, "model_period_counter", "period_counter")
+precip_periods[, ys_key := NULL]
+               
+# Now place into full grid to guarantee dimension
+precip_grid <- full_grid %>%
+                 left_join(precip_periods %>% 
+                             dplyr::select(cell_ID, period_counter, cov_value),
+                           by = c("cell_ID", "period_counter")) %>%
+                 dplyr::select(cell_ID, period_counter, cov_value) %>%
+                 distinct()               
+               
+# Format predict and model matrices              
+precip_predict <- precip_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+precip_model <- precip_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+# Clean up
+rm(precip_periods, precip_grid); gc()
+
+## Forested areas ---
+
+forest_data <- CCI_data %>% select(c("cell_ID", "period_counter", "year", "prop_forest"))
+
+# Map new periods to precip_data 
+forest_data[, ys_key := paste(year, fcase(period_counter %% 4 == 1, "Winter",
+                                          period_counter %% 4 == 2, "Spring",
+                                          period_counter %% 4 == 3, "Summer",
+                                          period_counter %% 4 == 0, "Fall",
+                                          default = NA_character_), sep = "__")]
+
+# Perform left join: keep all temp_data rows, add matching model period_counter
+forest_periods <- merge(forest_data, lookup, by = "ys_key", all.x = TRUE)
+
+# Drop rows that didn't match any model period (no corresponding season-year)
+forest_periods <- forest_periods[!is.na(model_period_counter)]
+
+# Rename to match model naming
+forest_periods[, period_counter :=  NULL]
+setnames(forest_periods, "model_period_counter", "period_counter")
+forest_periods[, ys_key := NULL]
+
+# Now place into full grid to guarantee dimension
+forest_grid <- full_grid %>%
+  left_join(forest_periods %>% 
+              dplyr::select(cell_ID, period_counter, prop_forest),
+            by = c("cell_ID", "period_counter")) %>%
+  dplyr::select(cell_ID, period_counter, prop_forest) %>%
+  distinct()      
+
+# Format predict and model matrices   
+forest_predict <- forest_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_forest,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+forest_model <- forest_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_forest,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+
+## Human impacts: Encroachment ---
+
+encroach_data <- CCI_data %>% select(c("cell_ID", "period_counter", "year", "prop_unnatural"))
+
+# Map new periods to precip_data 
+encroach_data[, ys_key := paste(year, fcase(period_counter %% 4 == 1, "Winter",
+                                            period_counter %% 4 == 2, "Spring",
+                                            period_counter %% 4 == 3, "Summer",
+                                            period_counter %% 4 == 0, "Fall",
+                                            default = NA_character_), sep = "__")]
+
+# Perform left join: keep all temp_data rows, add matching model period_counter
+encroach_periods <- merge(encroach_data, lookup, by = "ys_key", all.x = TRUE)
+
+# Drop rows that didn't match any model period (no corresponding season-year)
+encroach_periods <- encroach_periods[!is.na(model_period_counter)]
+
+# Rename to match model naming
+encroach_periods[, period_counter :=  NULL]
+setnames(encroach_periods, "model_period_counter", "period_counter")
+encroach_periods[, ys_key := NULL]
+
+# Now place into full grid to guarantee dimension
+encroach_grid <- full_grid %>%
+  left_join(encroach_periods %>% 
+              dplyr::select(cell_ID, period_counter, prop_unnatural),
+            by = c("cell_ID", "period_counter")) %>%
+  dplyr::select(cell_ID, period_counter, prop_unnatural) %>%
+  distinct()      
+
+# Format predict and model matrices 
+encroach_predict <- encroach_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_unnatural,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+encroach_model <- encroach_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = prop_unnatural,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+
+## Human impacts: Global human modification ---
+
+# Map new periods to precip_data 
+ghm_data[, ys_key := paste(year, fcase(period_counter %% 4 == 1, "Winter",
+                                       period_counter %% 4 == 2, "Spring",
+                                       period_counter %% 4 == 3, "Summer",
+                                       period_counter %% 4 == 0, "Fall",
+                                       default = NA_character_), sep = "__")]
+
+# Perform left join: keep all temp_data rows, add matching model period_counter
+ghm_periods <- merge(ghm_data, lookup, by = "ys_key", all.x = TRUE)
+
+# Drop rows that didn't match any model period (no corresponding season-year)
+ghm_periods <- ghm_periods[!is.na(model_period_counter)]
+
+# Rename to match model naming
+ghm_periods[, period_counter :=  NULL]
+setnames(ghm_periods, "model_period_counter", "period_counter")
+ghm_periods[, ys_key := NULL]
+
+# Now place into full grid to guarantee dimension
+ghm_grid <- full_grid %>%
+  left_join(ghm_periods %>% 
+              dplyr::select(cell_ID, period_counter, cov_value),
+            by = c("cell_ID", "period_counter")) %>%
+  dplyr::select(cell_ID, period_counter, cov_value) %>%
+  distinct()      
+
+# Format predict and model matrices   
+ghm_predict <- ghm_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+ghm_model <- ghm_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+
+## EVI ---
+
+# Map new periods to precip_data 
+evi_data[, ys_key := paste(year, fcase(period_counter %% 4 == 1, "Winter",
+                                       period_counter %% 4 == 2, "Spring",
+                                       period_counter %% 4 == 3, "Summer",
+                                       period_counter %% 4 == 0, "Fall",
+                                       default = NA_character_), sep = "__")]
+
+# Perform left join: keep all temp_data rows, add matching model period_counter
+evi_periods <- merge(evi_data, lookup, by = "ys_key", all.x = TRUE)
+
+# Drop rows that didn't match any model period (no corresponding season-year)
+evi_periods <- evi_periods[!is.na(model_period_counter)]
+
+# Rename to match model naming
+evi_periods[, period_counter :=  NULL]
+setnames(evi_periods, "model_period_counter", "period_counter")
+evi_periods[, ys_key := NULL]
+
+# Now place into full grid to guarantee dimension
+evi_grid <- full_grid %>%
+  left_join(evi_periods %>% 
+              dplyr::select(cell_ID, period_counter, cov_value),
+            by = c("cell_ID", "period_counter")) %>%
+  dplyr::select(cell_ID, period_counter, cov_value) %>%
+  distinct()      
+
+# Format predict and model matrices  
+evi_predict <- evi_grid %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+evi_model <- evi_grid %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = cov_value,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+
+## Protected area status ---
+wdpa_species <- wdpa_data %>%
+  filter(cell_ID %in% combined_sites) %>%
+  select(-period_counter) %>%
+  distinct()
+unique_cells <- unique(wdpa_species$cell_ID)
+periods_key <- periods %>%
+  dplyr::select(period_counter, year) %>%
+  distinct()
+full_grid_wdpa <- expand_grid(cell_ID = unique_cells,
+                              period_counter = periods_key$period_counter) %>%
+  left_join(periods_key, by = "period_counter")
+wdpa_complete <- full_grid_wdpa %>%
+  left_join(wdpa_species %>% dplyr::select(cell_ID, year, protected_prop),
+            by = c("cell_ID", "year"),
+            relationship = "many-to-many") %>%
+  dplyr::select(cell_ID, period_counter, protected_prop) %>%
+  arrange(cell_ID, period_counter)
+
+wdpa_predict <- wdpa_complete %>%
+  filter(cell_ID %in% sites_predict) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = protected_prop,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+wdpa_model <- wdpa_complete %>%
+  filter(cell_ID %in% sites_model) %>%
+  arrange(cell_ID) %>%
+  pivot_wider(id_cols = cell_ID, names_from = period_counter, values_from = protected_prop,
+              values_fill = NA) %>%
+  arrange(cell_ID) %>%
+  dplyr::select(-cell_ID) %>%
+  as.matrix()
+
+
+## Generate remaining observation and detection covariates --------------------
+n_cells <- dim(y_arr)[1]
+n_periods <- dim(y_arr)[2]
+K <- dim(y_arr)[3] # 13
+
+# Function: create empty 3D array with correct dimnames
+make_3d_cov <- function(val = NA_real_) {
+  a <- array(val, dim = c(n_cells, n_periods, K))
+  dimnames(a) <- dimnames(y_arr)
+  a
+}
+
+## Number of unique deployments per cell-period
+n_depl_per_cell_period <- effort_daily[,
+                                       .(n_depl = uniqueN(proj_depl)),
+                                       by = .(cell_ID, period_counter)
+]
+
+# Map to cell_idx
+n_depl_per_cell_period <- merge(n_depl_per_cell_period, cell_idx_dt, by = "cell_ID")
+
+# Build 2D matrix first (cell × period)
+ndepl_2d <- matrix(0L, nrow = n_cells, ncol = n_periods,
+                   dimnames = list(cells, periods$period))
+
+ndepl_2d[cbind(n_depl_per_cell_period$cell_idx,
+               n_depl_per_cell_period$period_counter)] <-
+  n_depl_per_cell_period$n_depl
+
+# Expand to 3D (same value for every week in the period)
+ndepl <- array(ndepl_2d, dim = c(n_cells, n_periods, K))
+dimnames(ndepl) <- dimnames(y_arr)
+
+# ------------------------------------------------------------------
+# 2. Project ID covariate (first deploy_id per cell-period)
+# (your example assigns a unique integer to each proj_depl)
+# ------------------------------------------------------------------
+# If you want to recreate this exactly, you need proj_depl info per cell-period
+# Alternative: use a simple sequence or random effect index
+deploy_map <- unique(effort_daily[, .(proj_depl)])
+deploy_map[, deploy_id := .I]
+# Join back and take first deploy_id per cell-period
+effort_daily_with_id <- merge(effort_daily,
+                              deploy_map,
+                              by = c("proj_depl"))
+proj_dt <- effort_daily_with_id[,
+                                .(deploy_id = first(deploy_id)),
+                                by = .(cell_ID, period_counter)
+]
+proj_dt <- merge(proj_dt, cell_idx_dt, by = "cell_ID")
+proj_2d <- matrix(0L, nrow = n_cells, ncol = n_periods,
+                  dimnames = list(cells, periods$period))
+proj_2d[cbind(proj_dt$cell_idx, proj_dt$period_counter)] <- proj_dt$deploy_id
+proj <- array(proj_2d, dim = c(n_cells, n_periods, K))
+dimnames(proj) <- dimnames(y_arr)
+# ------------------------------------------------------------------
+# 3. Temporal trend (linear 1:n_periods, same for every site)
+# ------------------------------------------------------------------
+trend_2d <- matrix(1:n_periods, nrow = n_cells, ncol = n_periods, byrow = TRUE)
+colnames(trend_2d) <- periods$period
+trend <- array(trend_2d, dim = c(n_cells, n_periods, K))
+dimnames(trend) <- dimnames(y_arr)
+# ------------------------------------------------------------------
+# 4. Julian day covariates (min julian day of period, expanded to 3D)
+# + squared term
+# ------------------------------------------------------------------
+minjul_period <- periods[, .(period_counter, minjul = yday(start_period))]
+minjul_2d <- matrix(minjul_period$minjul[match(1:n_periods, minjul_period$period_counter)],
+                    nrow = n_cells, ncol = n_periods, byrow = TRUE)
+# Scale (your scale3 function — replace with your definition)
+minjul_scaled <- scale3(minjul_2d)
+minjul <- array(minjul_scaled, dim = c(n_cells, n_periods, K))
+dimnames(minjul) <- dimnames(y_arr)
+minjul_sq <- minjul^2
+dimnames(minjul_sq) <- dimnames(y_arr)
+## Coordinates ----------------------------------------------------------------
+coords <- static_model[, .(x, y)]
+coords <- as.matrix(coords)
+## Check dims -----------------------------------------------------------------
+dim(static_predict)
+dim(gwp_predict)
+dim(temp_predict)
+dim(precip_predict)
+dim(forest_predict)
+dim(encroach_predict)
+dim(ghm_predict)
+dim(evi_predict)
+dim(wdpa_predict)
+
+dim(static_model)
+dim(gwp_model)
+dim(temp_model)
+dim(precip_model)
+dim(forest_model)
+dim(encroach_model)
+dim(ghm_model)
+dim(evi_model)
+dim(wdpa_model)
+
+dim(ndepl)
+dim(proj)
+dim(trend)
+dim(minjul)
+dim(minjul_sq)
+dim(coords)
+
+n_periods <- max(periods$period_counter)
+n_sites <- length(sites)
+trend <- matrix(1:n_periods,
+                nrow = n_sites,      
+                ncol = n_periods,    
+                byrow = TRUE)        
+colnames(trend) <- paste0("p", 1:ncol(trend))
+
+
+## Save data ----------------------------------------------------------------
+filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+save(target_species, y_array, coords, effort_array, periods, sites, reference_species,
+     global_cell_id, minjul, minjul_sq, ndepl, proj, trend,
+     static_model, static_predict, gwp_model, gwp_predict, temp_model, temp_predict,
+     precip_model, precip_predict, forest_model, forest_predict,
+     encroach_model, encroach_predict, ghm_model, ghm_predict, evi_model, evi_predict,
+     wdpa_model, wdpa_predict,
+     file = filename)
