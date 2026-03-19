@@ -25,18 +25,12 @@ library(stars)
 library(ggplot2)
 library(gtools)
 
-## User-defined functions -----------------------------------------------------
-
-# Scaling functions
-scale2 <- function(x, na.rm = FALSE) ((x - mean(1:7))/sd(1:7))
-scale3 <- function(x, na.rm = FALSE) ((x - mean(1:365))/sd(1:365))
-
 
 ## Load prepped data ----------------------------------------------------------
 
 # MANUALLY UPDATE 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
-filename <- filenames[3]
+filename <- filenames[6]
 
 # Load files 
 load(filename)
@@ -82,26 +76,21 @@ static <- static %>%
 
 # Check distributions 
 hist(encroach_model)
-#hist(log1p(encroach_model))
+hist(log1p(encroach_model))
 hist(ghm_model)
 hist(log1p(ghm_model))
 hist(evi_model)
 hist(forest_model)
-#hist(log1p(forest_model))
+hist(log1p(forest_model))
 hist(precip_model)
-#hist(log1p(precip_model))
+hist(log1p(precip_model))
 hist(temp_model)
 hist(wdpa_model)
 hist(log1p(wdpa_model))
 
 # Update covariates IF NECESSARY 
-encroach_log <- log1p(encroach_model)
-ghm_log      <- log1p(ghm_model)
-forest_log   <- log1p(forest_model) 
+# Model should be robust without transforming any data... don't transform to keep simple and comparative
 precip_log   <- log1p(precip_model)
-
-# Model should be robust without transforming any data... don't transform to keep
-# simple and comparative
 
 
 ## Examine raw occupancy data -------------------------------------------------
@@ -161,10 +150,10 @@ dat_ls_mod1 <- list(y = y_array,
                                     ghm       = ghm_model,
                                     evi       = evi_model, 
                                     forest    = forest_model,
-                                    precip    = precip_model,
+                                    precip    = precip_log,
                                     temp      = temp_model, 
-                                    tri       = static$tri,
-                                    coeff_var = static$coeff_var,
+                                    tri       = static$log_tri,
+                                    coeff_var = static$log_coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
                                     minjul = minjul,              # already scaled! 
@@ -229,7 +218,6 @@ priors.list <- list(alpha.normal = list(mean = 0, var = 2.72),
                     phi.unif = list(a = 3 / max(dist.data), 
                                     b = 3 / min(dist.data)))
 
-
 # Tuning ---
 n.chains <- 3
 tuning.list <- list(phi = 1, rho = 1)
@@ -270,25 +258,25 @@ end_time - start_time
 # Refit the intercept only occupancy model and compare the deviance metrics from the 4-fold cross-validation: 
 start_time <- Sys.time()
 out_mod1_int <- svcTPGOcc(occ.formula = ~1, 
-                      det.formula = det.formula,
-                      data = dat_ls_mod1, 
-                      inits = inits.list_mod1,
-                      n.batch = n.batch,
-                      batch.length = batch.length, 
-                      priors = priors.list,  
-                      svc.cols = 1,
-                      cov.model = "exponential",  
-                      NNGP = TRUE, 
-                      n.neighbors = 5,  
-                      tuning = tuning.list, 
-                      n.report = n.report, 
-                      n.burn = n.burn,
-                      n.thin = n.thin,
-                      n.chains = n.chains,
-                      verbose = TRUE,
-                      ar1 = TRUE, 
-                      k.fold = 4, 
-                      k.fold.seed = 123) 
+                          det.formula = det.formula,
+                          data = dat_ls_mod1, 
+                          inits = inits.list_mod1,
+                          n.batch = n.batch,
+                          batch.length = batch.length, 
+                          priors = priors.list,  
+                          svc.cols = 1,
+                          cov.model = "exponential",  
+                          NNGP = TRUE, 
+                          n.neighbors = 5,  
+                          tuning = tuning.list, 
+                          n.report = n.report, 
+                          n.burn = n.burn,
+                          n.thin = n.thin,
+                          n.chains = n.chains,
+                          verbose = TRUE,
+                          ar1 = TRUE, 
+                          k.fold = 4, 
+                          k.fold.seed = 123) 
 end_time <- Sys.time()
 end_time - start_time 
 
