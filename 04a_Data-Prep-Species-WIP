@@ -47,8 +47,8 @@ library(viridis)
 
 ## Plotting & saving ----------------------------------------------------------
 
-to_plot <- "YES"
-to_save <- "YES"
+to_plot <- TRUE
+to_save <- TRUE 
 
 
 #### RUN 1x #### --------------------------------------------------------------
@@ -109,13 +109,15 @@ if(need_to_run == TRUE){
   rm("loc", "loc_cell", "loc_cell_ID", "loc_sf", "overview_images", "overview_seq")
   gc()
   
-} 
+  } else {
+    
+  #NOTE! I know the above generates 1x1km2 - the same process works for 10x10km. 
+  wi_match_cell_ids <- fread("10x10 km spatial layers/WI_loc_matching_cell_ID.csv")
+}
+
 
 # Load WI data 
 all_dat <- fread("WI data/all_dat.csv")
-
-# Load GBIF data
-gbif <- fread("WI_GBIF/GBIF_clean.csv") 
 
 # Load refrence raster 
 reference <- rast("10x10 km spatial layers/reference_10km2.tif")
@@ -123,7 +125,7 @@ reference <- rast("10x10 km spatial layers/reference_10km2.tif")
 
 ## Select target species ------------------------------------------------------
 
-target_species <- "Acinonyx jubatus"
+target_species <- "Antilocapra americana"
 species_file <- gsub(" ", "_", target_species)
 print(target_species)
 print(species_file)
@@ -133,10 +135,6 @@ print(species_file)
 
 # WI data 
 dat_sp <- all_dat %>% filter(sp_binomial == target_species) 
-
-# GBIF data
-gbif_species <- gbif[gbif$verbatimsciname == target_species, ]
-#gbif_species <- gbif_species[!gbif_species$latitude > 40,] #panthera onca 
 
 # Range map data 
 mmd_map_path <- paste("/vast/palmer/pi/jetz/from_gibbs/data/species_datasets/rangemaps/mammals/mdd_mammals/rasters_cea/", species_file, ".tif", sep="")
@@ -259,7 +257,7 @@ world_cropped_buffered <- st_crop(world_proj, ext_bbox_buffered)
     labs(title = "Species Detection Sites",
          subtitle = bquote(italic(.(target_species)))))
 
-if(to_plot == "YES"){
+if(to_plot == TRUE){
   ggsave(filename = paste0("Model outputs/", species_file, "/", species_file,
                            "_speciesDetectionsExtended.jpg"), plot = speciesDetExtended, 
          width = 6, height = 5, units = "in", bg = "white")
@@ -321,9 +319,6 @@ print(dat_map_range <- tm_shape(World) +
         tm_dots(col = "red", size = 0.3, popup.vars = c("Lat" = "latitude", "Long" = "longitude")) +
         tm_grid() + tm_style("col_blind") + tm_layout(legend.show = FALSE) +             
         tm_scale_bar(breaks = c(0, 500, 1000), text.size = 1, position = c("LEFT", "BOTTOM")))
-
-# Manually remove bad locations 
-#loc <- loc %>% filter(latitude != min(latitude))  
 
 
 ## Temporal coverage check ----------------------------------------------------
@@ -388,7 +383,7 @@ date_range_text <- paste0(format(date_range[1], "%Y-%m-%d"), " to ",
           legend.position = "none"))
 
 # Save plot
-if(to_plot == "YES"){
+if(to_plot == TRUE){
   species_dir <- file.path("Model outputs", species_file) 
   if (!dir.exists(species_dir)) {dir.create(species_dir, recursive = TRUE)}
   plot_file <- file.path(species_dir, paste0(species_file, "_deployment_plot_original.png"))
@@ -438,9 +433,9 @@ if(to_plot == "YES"){
 # - Trichosurus vulpecula: 2011-05-01
 # - Vulpes vulpes: 2006-12-01
 
-need_to_run <- "YES" 
+need_to_run <- FALSE
 
-if(need_to_run == "NO") {
+if(need_to_run == FALSE) {
   cat("Skipping temporal truncation")
   
 } else {
@@ -526,12 +521,8 @@ if(need_to_run == "NO") {
 
 
 ## Generate y_array and effort_array ------------------------------------------
-# ------------------------------------------------------------------
-# 1. Load, merge cell_ID, and CLEAN data aggressively
-# ------------------------------------------------------------------
-wi_match_cell_ids <- fread("10x10 km spatial layers/WI_loc_matching_cell_ID.csv")
 
-# Merge
+## Add cell_ID ---
 dat <- merge(dat,
              wi_match_cell_ids[, .(project_id, deployment_location_id, cell_ID)],
              by = c("project_id", "deployment_location_id"),
@@ -542,8 +533,10 @@ dat_sp <- merge(dat_sp,
                 by = c("project_id", "deployment_location_id"),
                 all.x = TRUE)
 
-# Remove ANY row with missing/invalid cell_ID
+# Remove missing/invalid cell_ID
+sum(is.na(dat$cell_ID)) #should be 0 
 dat   <- dat[!is.na(cell_ID) & cell_ID != ""]
+sum(is.na(dat_sp$cell_ID)) #should be 0 
 dat_sp <- dat_sp[!is.na(cell_ID) & cell_ID != ""]
 
 cat("Rows after removing NA/invalid cell_ID:\n")
@@ -555,12 +548,12 @@ cat("Any remaining NA cell_ID in dat_sp?", any(is.na(dat_sp$cell_ID)), "\n")
 # Unique cells (sites)
 cells   <- sort(unique(c(dat$cell_ID, dat_sp$cell_ID)))
 n_cells <- length(cells)
-
 cell_idx_dt <- data.table(cell_ID = cells, cell_idx = seq_len(n_cells))
 
-# ------------------------------------------------------------------
-# 2. Generate 91-day primary periods (repo-aligned)
-# ------------------------------------------------------------------
+
+## Generate 91-day primary periods ---
+
+# Set up periods
 min_start <- min(dat$sensor_start_date, na.rm = TRUE)
 max_end <- max(dat$sensor_end_date, na.rm = TRUE)
 
@@ -568,15 +561,14 @@ start_dec <- as.IDate(paste(year(min_start) - 1, "12-01", sep = "-"))
 period_starts <- seq(start_dec, max_end, by = "91 days")
 period_starts <- as.Date(period_starts)
 
-periods_dynamic <- data.table(
-  start_period = period_starts,
-  end_period = c(period_starts[-1] - 1, NA_Date_)
-)[!is.na(end_period)]
+periods_dynamic <- data.table(start_period = period_starts,
+                              end_period = c(period_starts[-1] - 1, NA_Date_)
+                              )[!is.na(end_period)]
 
 periods_dynamic[, `:=`(
   period_counter = .I,
   season = rep(c("Winter", "Spring", "Summer", "Fall"), length.out = .N),
-  year = year(start_period)   # ← FIXED: no subtraction, use calendar year of start
+  year = year(start_period)   
 )]
 
 periods <- periods_dynamic[year >= 2000]
@@ -588,26 +580,22 @@ periods[, `:=`(
 cat("Number of primary periods:", nrow(periods), "\n")
 print(head(periods, 4))
 
-# ------------------------------------------------------------------
-# 3. Per-period week lookup (weeks reset per period)
-# ------------------------------------------------------------------
+# Per-period week lookup (weeks reset per period)
 period_weeks <- periods[, {
   dates <- seq(start_period, end_period, by = "1 day")
   week  <- rep(1:13, each = 7)[seq_along(dates)]
   list(date = dates, week = week)
 }, by = .(period_counter, season, year, start_period, end_period)]
 
-# ------------------------------------------------------------------
-# 4. Effort: daily expansion → total trap-days per cell-week
-# ------------------------------------------------------------------
-# Use the already-cleaned dat
-deployments <- unique(dat[, .(
-  cell_ID,
-  project_id,
-  deployment_location_id,
-  sensor_start_date = as.Date(sensor_start_date),
-  sensor_end_date   = as.Date(sensor_end_date)
-)])
+
+## Effort --- 
+
+# Clean/format dat 
+deployments <- unique(dat[, .(cell_ID,
+                              project_id,
+                              deployment_location_id,
+                              sensor_start_date = as.Date(sensor_start_date),
+                              sensor_end_date   = as.Date(sensor_end_date))])
 
 deployments_valid <- deployments[
   !is.na(cell_ID) &
@@ -624,8 +612,6 @@ effort_daily <- deployments_valid[,
                                   by = .(cell_ID, project_id, deployment_location_id, 
                                          sensor_start_date, sensor_end_date)
 ]
-
-# Keep proj_depl explicitly or the two IDs
 effort_daily[, proj_depl := paste(project_id, deployment_location_id, sep = "_")]
 
 # Restrict to days inside defined periods
@@ -640,81 +626,125 @@ effort_sum <- effort_daily[,
                            .(effort_days = .N),
                            by = .(cell_ID, period_counter, week)
 ]
-
-# Inner merge only → no NA cell_idx
 effort_sum <- merge(effort_sum, cell_idx_dt, by = "cell_ID")
 
-# Final safety filter
+sum(is.na(effort_sum$cell_idx)) #should be 0 
 effort_sum <- effort_sum[!is.na(cell_idx)]
 
 cat("Final effort rows (cell-weeks):", nrow(effort_sum), "\n")
 cat("Unique cells with effort:     ", uniqueN(effort_sum$cell_ID), "\n")
 cat("Any NA cell_idx?              ", any(is.na(effort_sum$cell_idx)), "\n")
 
-# ------------------------------------------------------------------
-# 5. Detections: assign period and week
-# ------------------------------------------------------------------
-dat_sp[, record_date := as.Date(record_date)]
 
+## Detections ---
+
+dat_sp[, record_date := as.Date(record_date)]
 setkey(period_weeks, date)
 dat_sp_time <- period_weeks[dat_sp, on = .(date = record_date), nomatch = 0L]
 
 det_long <- unique(dat_sp_time[, .(cell_ID, period_counter, week)])
 det_long <- merge(det_long, cell_idx_dt, by = "cell_ID")
+sum(is.na(det_long$cell_idx)) #should be 0 
 det_long <- det_long[!is.na(cell_idx)]
 
+
 # ------------------------------------------------------------------
-# 6. Build 3D arrays
+# 6. Build 3D arrays + REMOVE UNSAMPLED SITES EARLY
 # ------------------------------------------------------------------
+
 n_periods <- nrow(periods)
 K <- 13L
 
-y_arr      <- array(NA_integer_, dim = c(n_cells, n_periods, K))
-effort_arr <- array(NA_integer_, dim = c(n_cells, n_periods, K))
+# Temporary full arrays (before filtering)
+y_arr_full <- array(NA_integer_, dim = c(n_cells, n_periods, K))
+effort_arr_full <- array(NA_integer_, dim = c(n_cells, n_periods, K))
 
 # Fill effort
-effort_arr[cbind(effort_sum$cell_idx,
-                 effort_sum$period_counter,
-                 effort_sum$week)] <- effort_sum$effort_days
+effort_arr_full[cbind(effort_sum$cell_idx,
+                      effort_sum$period_counter,
+                      effort_sum$week)] <- effort_sum$effort_days
 
 # Fill y
-has_effort <- !is.na(effort_arr) & effort_arr > 0
-y_arr[has_effort] <- 0L
+has_effort_full <- !is.na(effort_arr_full) & effort_arr_full > 0
+y_arr_full[has_effort_full] <- 0L
 
 if (nrow(det_long) > 0) {
-  y_arr[cbind(det_long$cell_idx,
-              det_long$period_counter,
-              det_long$week)] <- 1L
+  y_arr_full[cbind(det_long$cell_idx,
+                   det_long$period_counter,
+                   det_long$week)] <- 1L
 }
 
-# Continuous effort for det.covs
+# ------------------------------------------------------------------
+# Identify cells to KEEP (those with at least some effort)
+# ------------------------------------------------------------------
+
+# Total effort per cell: sum across ALL periods and ALL weeks
+total_effort_per_cell <- apply(effort_arr_full, MARGIN = 1, FUN = sum, na.rm = TRUE)
+
+# Debug prints
+cat("Length of total_effort_per_cell:", length(total_effort_per_cell), "\n")
+cat("Max total effort:", max(total_effort_per_cell), "\n")
+cat("Number of cells with zero effort:", sum(total_effort_per_cell == 0), "\n")
+
+# Logical vector of length n_cells
+has_any_effort <- total_effort_per_cell > 0
+
+# Confirm it's correct length
+stopifnot(length(has_any_effort) == dim(effort_arr_full)[1])
+
+# Now safe
+keep_idx <- which(has_any_effort)
+
+cat("Keeping", length(keep_idx), "cells with effort > 0\n")
+
+# Your safety check should now pass
+if (any(keep_idx > dim(effort_arr_full)[1])) {
+  stop("keep_idx out of bounds - impossible with correct rowSums/apply")
+}
+
+n_removed <- sum(!has_any_effort)
+if (n_removed > 0) {
+  cat("\nRemoving", n_removed, "cells with zero total effort\n")
+  cat("Removed cell_IDs (sample):", head(sort(cells[!has_any_effort]), 20), "...\n")
+}
+
+# Subset
+cells_clean <- cells[keep_idx]
+n_cells_clean <- length(cells_clean)
+
+y_arr    <- y_arr_full[keep_idx, , , drop = FALSE]
+effort_arr <- effort_arr_full[keep_idx, , , drop = FALSE]
+
+# Update dimnames
+dimnames(y_arr) <- list(cell_ID = as.character(cells_clean),
+                        period = periods$period,
+                        rep = 1:K)
+dimnames(effort_arr) <- dimnames(y_arr)
+
+# Continuous effort
 effort_3d <- array(0.0, dim = dim(y_arr))
 effort_3d[!is.na(effort_arr)] <- effort_arr[!is.na(effort_arr)]
+dimnames(effort_3d) <- dimnames(y_arr)
 
-# Dimnames
-dimnames(y_arr)      <- list(cell_ID = cells,
-                             period   = periods$period,
-                             rep      = 1:K)
-dimnames(effort_arr) <- dimnames(y_arr)
-dimnames(effort_3d)  <- dimnames(y_arr)
+# Optional: update effort_sum and det_long for downstream use
+effort_sum <- effort_sum[cell_ID %in% cells_clean]
+det_long   <- det_long[cell_ID %in% cells_clean]
 
 # ------------------------------------------------------------------
-# 7. Final checks
+# Final checks
 # ------------------------------------------------------------------
 cat("\n=== FINAL CHECKS ===\n")
-cat("y_arr dimensions:       ", dim(y_arr), "\n")
-cat("Unique y values:        ", sort(unique(as.vector(y_arr))), "\n")
-cat("Total detections:       ", sum(y_arr == 1, na.rm = TRUE), "\n")
-cat("Cell-weeks with effort: ", sum(has_effort), "\n")
-cat("Max trap-days in a week:", max(effort_arr, na.rm = TRUE), "\n")
-cat("Unique cells in arrays: ", length(cells), "\n")
-cat("Periods in arrays:      ", n_periods, "\n")
+cat("Original cells:", n_cells, "→ After cleaning:", n_cells_clean, "\n")
+cat("Any remaining all-NA rows in y_arr?", any(apply(is.na(y_arr), 1, all)), "\n")
+cat("Total detections:", sum(y_arr == 1, na.rm = TRUE), "\n")
+cat("Max effort in any cell-week:", max(effort_arr, na.rm = TRUE), "\n")
 
-y_array <- y_arr
-effort_array <- effort_arr
-sites <- cells
+y_array      <- y_arr
+effort_array <- effort_3d    
+sites        <- cells_clean
+deployments  <- deployments_valid
 
 # Save
-filename <- paste("Data for modelling/", target_species, ".RData", sep = "")
+filename <- paste0("Data for modelling/", target_species, ".RData")
 save(target_species, y_array, effort_array, periods, sites, reference_species, 
-     effort_daily, file = filename)
+     deployments, effort_sum, cell_idx_dt, file = filename)
