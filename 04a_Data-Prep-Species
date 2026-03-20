@@ -128,7 +128,7 @@ reference <- rast("10x10 km spatial layers/reference_10km2.tif")
 species <- fread("WI data/species_counts.csv")
 
 for(i in 1:nrow(species)){
-  target_species <- species$sp_binomial[1]
+  target_species <- species$sp_binomial[i]
   species_file <- gsub(" ", "_", target_species)
   print(target_species)
   print(species_file)
