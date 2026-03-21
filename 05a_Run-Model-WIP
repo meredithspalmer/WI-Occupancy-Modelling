@@ -30,11 +30,13 @@ library(gtools)
 
 # MANUALLY UPDATE 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
-filename <- filenames[6]
+filename <- filenames[1]
 
 # Load files 
 load(filename)
 print(target_species)
+species_file <- gsub(" ", "_", target_species)
+print(species_file)
 print("Loaded objects from new scripts:"); print(ls())   
 
 # Create new directory to store outputs 
@@ -62,35 +64,38 @@ static <- static_model %>%
   arrange(cell_ID)
 
 # Check distributions 
+par(mfrow = c(1, 2))
 hist(static$tri)
 hist(log(static$tri))
 hist(static$coeff_var)
 hist(log(static$coeff_var))
+par(mfrow = c(1,1))
 
 # Update and scale static covariates  
 static <- static %>% 
   mutate(log_coeff_var = log(coeff_var)) %>% 
   mutate(log_tri       = log(tri))
 
+
 # Primary-occasion covariates ---
 
 # Check distributions 
+par(mfrow = c(1, 2))
 hist(encroach_model)
 hist(log1p(encroach_model))
 hist(ghm_model)
 hist(log1p(ghm_model))
 hist(evi_model)
+hist(temp_model)
 hist(forest_model)
 hist(log1p(forest_model))
 hist(precip_model)
 hist(log1p(precip_model))
-hist(temp_model)
 hist(wdpa_model)
 hist(log1p(wdpa_model))
+par(mfrow = c(1,1))
 
-# Update covariates IF NECESSARY 
-# Model should be robust without transforming any data... don't transform to keep simple and comparative
-precip_log   <- log1p(precip_model)
+# Model should be robust without transforming any data... don't transform to keep simple and comparative (have tested; difference in waic is ~2-3 pts)
 
 
 ## Examine raw occupancy data -------------------------------------------------
@@ -150,10 +155,10 @@ dat_ls_mod1 <- list(y = y_array,
                                     ghm       = ghm_model,
                                     evi       = evi_model, 
                                     forest    = forest_model,
-                                    precip    = precip_log,
+                                    precip    = precip_model,
                                     temp      = temp_model, 
                                     tri       = static$log_tri,
-                                    coeff_var = static$log_coeff_var,
+                                    #coeff_var = static$log_coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
                                     minjul = minjul,              # already scaled! 
@@ -169,7 +174,7 @@ dat_ls_mod2 <- list(y = y_array,
                                     precip    = precip_model,
                                     temp      = temp_model, 
                                     tri       = static$tri,
-                                    coeff_var = static$coeff_var,
+                                    #coeff_var = static$coeff_var,
                                     trend     = trend),
                     det.covs = list(effort = effort_array,        # already scaled! 
                                     minjul = minjul,              # already scaled! 
@@ -180,7 +185,7 @@ dat_ls_mod2 <- list(y = y_array,
 
 # Model formulas ---
 occ.formula_mod1 = ~ scale(encroach) + scale(ghm) + scale(evi) + scale(forest) + 
-  scale(precip) + scale(temp) + scale(tri) + scale(coeff_var) + scale(trend) 
+  scale(precip) + scale(temp) + scale(tri) + scale(trend) # + scale(coeff_var)
 
 occ.formula_mod2 = ~ scale(wdpa) + scale(evi) + scale(forest) + scale(precip) + 
   scale(temp) + scale(tri) + scale(coeff_var) + scale(trend) 
@@ -188,8 +193,8 @@ occ.formula_mod2 = ~ scale(wdpa) + scale(evi) + scale(forest) + scale(precip) +
 det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
 
 # Covariates whose effects are estimated as SVCs, including intercept
-svc.cols_mod1 = c(1:10)  
-svc.cols_mod2 = c(1:9)
+svc.cols_mod1 = c(1:9)  
+svc.cols_mod2 = c(1:8)
 
 # Prep inits ---
 z.init <- apply(y_array, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
@@ -414,15 +419,8 @@ plogis(2.13) #convert logit values to probability scale
 #k.fold.sp$k.fold.deviance
 
 
-## Model comparison -----------------------------------------------------------
-
-#may want to try running with and without AR1=T vs F ?
-#could try cov.model = "exponential" vs 'spherical'
-
 
 ## Save files -------------------------------------------------------------------
 
-(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", file_species, "/", file_species, "_svcTPGOcc", "_", Sys.Date(), ".RData", sep = ""))
-
-UPDATE THE SAVE 
-save(y_array, covs, target_species, out, coords, dat_ls, periods, file = filename)
+(filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", species_file, "/", file_species, "_svcTPGOcc.RData", sep = ""))
+save(out_mod1, out_mod1_int, out_mod2, out_mod2_int, file = filename)
