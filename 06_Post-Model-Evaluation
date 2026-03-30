@@ -1,0 +1,220 @@
+# ==============================================================================
+# WI-Occupancy-Modelling Post-Fitting Pipeline
+
+# Tasks:
+#   1. Assess convergence (Rhat & n.eff) for mod1, mod2 (and *_int if present)
+#   2. Model comparison (WAIC + k-fold deviance) → identify best model per species
+#   3. Validation (posterior predictive check) + basic sensitivity flag on best model
+
+# Runs on all ~100 species in "Model outputs/"
+# Outputs: per-species summary .txt files + master CSVs + saved PPC objects
+# Author: Grok (with input from team) – based on spOccupancy vignette & repo structure
+# ==============================================================================
+
+# ----------------------------- SETUP ---------------------------------
+rm(list=ls())
+library(spOccupancy)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+
+# Set working directory (update only if needed)
+setwd("/vast/palmer/pi/jetz/from_gibbs/projects/WildlifeInsights")
+
+# Directories
+model_dir     <- "Model outputs"
+diag_dir      <- "Model diagnostics"
+if (!dir.exists(diag_dir)) dir.create(diag_dir, recursive = TRUE)
+
+# Get all species folders (each contains the *_svcTPGOcc.RData)
+species_dirs <- list.dirs(model_dir, full.names = TRUE, recursive = FALSE)
+species_dirs <- species_dirs[c(11:length(species_dirs))]
+
+# Master results containers
+conv_summary_list <- list()
+comp_df_list      <- list()
+ppc_summary_list  <- list()
+
+cat("=== Starting pipeline for", length(species_dirs), "species ===\n\n")
+
+# ----------------------------- LOOP OVER SPECIES -----------------------------
+for (sp_dir in species_dirs) {
+  species <- basename(sp_dir)
+  cat("Processing:", species, "\n")
+  
+  # Locate the saved model file
+  rdata_file <- list.files(sp_dir, pattern = "_svcTPGOcc\\.RData$", full.names = TRUE)
+  if (length(rdata_file) == 0) {
+    cat("  → No RData file found. Skipping.\n")
+    next
+  }
+  rdata_file <- rdata_file[1]
+  
+  # Load (objects: out_mod1, out_mod2, out_mod1_int, out_mod2_int)
+  load(rdata_file)
+  
+  # Find all model objects in environment
+  model_names <- ls(pattern = "^out_mod")
+  if (length(model_names) == 0) {
+    cat("  → No model objects found. Skipping.\n")
+    next
+  }
+  
+  sp_conv   <- list()
+  sp_comp   <- list()
+  best_mod  <- NULL
+  best_name <- NA_character_
+  
+  # ====================== TASK 1: CONVERGENCE ======================
+  for (mname in model_names) {
+    mod <- get(mname)
+    if (!inherits(mod, c("svcTPGOcc", "svcOcc"))) next
+    
+    # Full summary (includes Rhat & n.eff for beta, alpha, phi, sigma.sq, sigma.sq.t, rho)
+    summ_file <- file.path(sp_dir, paste0(species, "_", mname, "_CONVERGENCE.txt"))
+    sink(summ_file)
+    cat("=== CONVERGENCE SUMMARY for", mname, "===\n")
+    print(summary(mod))          # prints Rhat (< 1.1 = good) and n.eff
+    sink()
+    
+    # Extract max Rhat / min n.eff for quick flag (summary returns list with Rhat/n.eff columns)
+    s <- summary(mod)
+    rhat_vals <- c()
+    ess_vals  <- c()
+    for (comp in names(s)) {
+      if (is.matrix(s[[comp]]) && "Rhat" %in% colnames(s[[comp]])) {
+        rhat_vals <- c(rhat_vals, s[[comp]][, "Rhat"])
+        ess_vals  <- c(ess_vals,  s[[comp]][, "n.eff"])
+      }
+    }
+    max_rhat <- if (length(rhat_vals) > 0) max(rhat_vals, na.rm = TRUE) else NA_real_
+    min_ess  <- if (length(ess_vals)  > 0) min(ess_vals,  na.rm = TRUE) else NA_real_
+    
+    conv_flag <- (!is.na(max_rhat) && max_rhat <= 1.1) && (!is.na(min_ess) && min_ess >= 100)
+    
+    sp_conv[[mname]] <- tibble(
+      model      = mname,
+      max_rhat   = max_rhat,
+      min_ess    = min_ess,
+      converged  = conv_flag,
+      summary_file = basename(summ_file)
+    )
+  }
+  
+  # ====================== TASK 2: MODEL COMPARISON ======================
+  for (mname in names(sp_conv)) {
+    mod <- get(mname)
+    
+    # WAIC (preferred for Bayesian model comparison)
+    waic_val <- tryCatch(waicOcc(mod)$WAIC, error = function(e) NA_real_)
+    
+    # k-fold deviance (if computed during fitting)
+    kfold_dev <- if (!is.null(mod$k.fold.deviance)) {
+      mean(mod$k.fold.deviance, na.rm = TRUE)   # average across folds
+    } else NA_real_
+    
+    sp_comp[[mname]] <- tibble(
+      model          = mname,
+      WAIC           = waic_val,
+      kfold_deviance = kfold_dev
+    )
+  }
+  
+  # Determine best model (lowest WAIC; fallback to k-fold deviance)
+  comp_df <- bind_rows(sp_comp)
+  if (nrow(comp_df) > 0) {
+    comp_df <- comp_df %>%
+      mutate(delta_WAIC = WAIC - min(WAIC, na.rm = TRUE))
+    
+    # Prefer WAIC; if tie/NA use k-fold
+    best_row <- comp_df %>%
+      filter(!is.na(WAIC)) %>%
+      slice(which.min(WAIC))
+    if (nrow(best_row) == 0) {
+      best_row <- comp_df %>% filter(!is.na(kfold_deviance)) %>% slice(which.min(kfold_deviance))
+    }
+    best_name <- best_row$model[1]
+    best_mod  <- get(best_name)
+    
+    cat("  → Best model:", best_name, 
+        "(WAIC =", round(best_row$WAIC, 2), 
+        "| ΔWAIC =", round(best_row$delta_WAIC, 2), ")\n")
+  }
+  
+  # ====================== TASK 3: VALIDATION & SENSITIVITY ======================
+  ppc_res <- NULL
+  bayes_p <- NA_real_
+  if (!is.null(best_mod)) {
+    cat("  → Running PPC on best model (Freeman-Tukey)...\n")
+    ppc_res <- tryCatch({
+      ppcOcc(best_mod, 
+             fit.stat = "freeman-tukey",   # recommended for occupancy data
+             group = NULL)                 # overall (not per-site)
+    }, error = function(e) {
+      cat("    PPC failed:", conditionMessage(e), "\n")
+      NULL
+    })
+    
+    if (!is.null(ppc_res)) {
+      # Bayesian p-value (ideal ~0.5 = good fit)
+      bayes_p <- ppc_res$fit.y.rep / (ppc_res$fit.y.rep + ppc_res$fit.y)
+      bayes_p <- mean(bayes_p, na.rm = TRUE)   # overall p-value
+      
+      # Save full PPC object (can be reloaded for plots)
+      saveRDS(ppc_res, file = file.path(sp_dir, paste0(species, "_", best_name, "_PPC.rds")))
+      
+      # Flag for sensitivity (simple check: extreme p-value suggests sensitivity/misfit)
+      fit_flag <- ifelse(abs(bayes_p - 0.5) > 0.3, "POOR_FIT (review)", "GOOD_FIT")
+      cat("    Bayesian p-value =", round(bayes_p, 3), "→", fit_flag, "\n")
+    }
+  }
+  
+  # ====================== STORE FOR MASTER TABLES ======================
+  conv_summary_list[[species]] <- bind_rows(sp_conv) %>% mutate(species = species)
+  comp_df_list[[species]]      <- comp_df %>% mutate(species = species) %>% 
+    mutate(best_model = best_name)
+  ppc_summary_list[[species]]  <- tibble(
+    species     = species,
+    best_model  = best_name,
+    bayes_p     = bayes_p,
+    fit_flag    = if (!is.na(bayes_p)) ifelse(abs(bayes_p - 0.5) > 0.3, "POOR_FIT", "GOOD_FIT") else NA_character_
+  )
+  
+  # Clean environment
+  rm(list = model_names, envir = .GlobalEnv)
+  gc()
+  cat("  → Done.\n\n")
+}
+
+# ----------------------------- SAVE MASTER OUTPUTS -----------------------------
+cat("=== Saving master summaries ===\n")
+
+# Convergence overview
+conv_master <- bind_rows(conv_summary_list)
+write.csv(conv_master, file.path(diag_dir, "01_convergence_all_species.csv"), row.names = FALSE)
+
+# Model comparison (with best-model flag)
+comp_master <- bind_rows(comp_df_list)
+write.csv(comp_master, file.path(diag_dir, "02_model_comparison_all_species.csv"), row.names = FALSE)
+
+# PPC validation summary
+ppc_master <- bind_rows(ppc_summary_list)
+write.csv(ppc_master, file.path(diag_dir, "03_ppc_validation_all_species.csv"), row.names = FALSE)
+
+# Quick report
+cat("\nPipeline complete!\n")
+cat("• Convergence files (Rhat/n.eff) saved per species/model → check *_CONVERGENCE.txt\n")
+cat("• Master tables saved to", diag_dir, "\n")
+cat("• Best model selected via WAIC (fallback k-fold deviance)\n")
+cat("• PPC validation + fit flag on best model (Freeman-Tukey)\n")
+cat("Number of species processed:", length(conv_summary_list), "\n")
+cat("Review the three CSVs and per-species .txt files for full diagnostics.\n")
+
+# Optional: flag species needing attention
+if (nrow(conv_master) > 0) {
+  bad_conv <- conv_master %>% filter(!converged)
+  if (nrow(bad_conv) > 0) {
+    cat("\nWARNING: ", nrow(bad_conv), "model(s) failed convergence. See 01_convergence_all_species.csv\n")
+  }
+}
