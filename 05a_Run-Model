@@ -25,323 +25,313 @@ library(stars)
 library(ggplot2)
 library(gtools)
 
+## Save plots? ----------------------------------------------------------------
+
+save_plots <- FALSE
+
 
 ## Load prepped data ----------------------------------------------------------
 
 # MANUALLY UPDATE 
 (filenames <- list.files("Data for modelling", full.names = TRUE))
-filename <- filenames[1]
 
-# Load files 
-load(filename)
-print(target_species)
-species_file <- gsub(" ", "_", target_species)
-print(species_file)
-print("Loaded objects from new scripts:"); print(ls())   
-
-# Create new directory to store outputs 
-file_species <- gsub(" ", "_", target_species)
-new_dir_path <- paste("Model outputs/", file_species, sep="")
-if (!dir.exists(new_dir_path)) {
-  dir.create(new_dir_path)
-} else {
-  print("Directory already exists")
+for(i in 5:9){
+  filename <- "Dasyprocta punctata"
+  
+  # Load files 
+  load(filename)
+  print(target_species)
+  species_file <- gsub(" ", "_", target_species)
+  print(species_file)
+  print("Loaded objects from new scripts:"); print(ls())   
+  
+  # Create new directory to store outputs 
+  file_species <- gsub(" ", "_", target_species)
+  new_dir_path <- paste("Model outputs/", file_species, sep="")
+  if (!dir.exists(new_dir_path)) {
+    dir.create(new_dir_path)
+  } else {
+    print("Directory already exists")
+  }
+  
+  # Dimensions and periods  
+  ncell   <- dim(y_array)[1]
+  nperiod <- dim(y_array)[2]
+  nweek   <- dim(y_array)[3]
+  cell_IDs <- unique(sites)
+  
+  
+  ## Format covariates ----------------------------------------------------------
+  
+  # Static covariates ---
+  static <- static_model %>%
+    filter(cell_ID %in% cell_IDs) %>%
+    dplyr::select(-c(road_dens, river_dist, cities_lg)) %>% 
+    arrange(cell_ID)
+  
+  # Check distributions 
+  par(mfrow = c(1, 2))
+  hist(static$tri)
+  hist(log(static$tri))
+  hist(static$coeff_var)
+  hist(log(static$coeff_var))
+  par(mfrow = c(1,1))
+  
+  # Update and scale static covariates  
+  static <- static %>% 
+    mutate(log_coeff_var = log(coeff_var)) %>% 
+    mutate(log_tri       = log(tri))
+  
+  
+  # Primary-occasion covariates ---
+  
+  # Check distributions 
+  par(mfrow = c(1, 2))
+  hist(encroach_model)
+  hist(log1p(encroach_model))
+  hist(ghm_model)
+  hist(log1p(ghm_model))
+  hist(evi_model)
+  hist(temp_model)
+  hist(forest_model)
+  hist(log1p(forest_model))
+  hist(precip_model)
+  hist(log1p(precip_model))
+  hist(wdpa_model)
+  hist(log1p(wdpa_model))
+  par(mfrow = c(1,1))
+  
+  # Model should be robust without transforming any data... don't transform to keep simple and comparative (have tested; difference in waic is ~2-3 pts)
+  
+  
+  ## Examine raw occupancy data -------------------------------------------------
+  
+  if(save_plots == TRUE){ 
+    # Average over cells (dim 1) and weeks (dim 3)
+    raw_occ_per_period <- apply(y_array, 2, mean, na.rm = TRUE)
+    
+    # Build data frame using numeric period index
+    raw_occ_df <- data.frame(period_counter = 1:length(raw_occ_per_period),
+                             y = raw_occ_per_period) %>%
+      left_join(periods %>% select(period_counter, start_period, season, year),
+                by = "period_counter") %>%
+      rename(period_date = start_period) %>%
+      mutate(period_date = as.Date(period_date),    
+             label_year = if_else(
+               month(period_date) == 3 & season == "Spring",
+               as.character(year), 
+               "")) %>%
+      arrange(period_date)
+    
+    # Quick sanity check
+    cat("Number of periods in y_array:", length(raw_occ_per_period), "\n")
+    cat("Number of periods after join:", nrow(raw_occ_df), "\n")
+    cat("Any missing y values filled?", any(is.na(raw_occ_df$y)), "\n")
+    
+    # Plot 
+    (raw_occ_plot <- ggplot(raw_occ_df, aes(x = period_date, y = y)) +
+        geom_point(size = 2.5, color = "steelblue") +
+        geom_line(color = "grey60", alpha = 0.5, linewidth = 0.8) +  # optional trend line
+        theme_bw(base_size = 12) +
+        labs(x = "Time (start of period)",
+             y = "Raw Occurrence Proportion",
+             title = "Raw Occupancy",
+             subtitle = bquote(italic(.(target_species)))) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+              panel.grid.minor = element_blank(),
+              plot.subtitle = element_text(face = "italic")) +
+        scale_x_date(date_breaks = "1 year",
+                     date_labels = "%Y",
+                     expand = expansion(mult = c(0.02, 0.02))))
+    
+    file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
+    ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in") 
+  }
+  
+  
+  ## Modelling ------------------------------------------------------------------
+  
+  # Following vignette found at: 
+  # https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
+  
+  ## FIRST SET OF MODELS USE HUMAN ENCROACHMENT & HUMAN PRESENCE 
+  ## SECOND SET OF MODELS USE WDPA INSTEAD OF THESE TWO VARIABLE
+  
+  # Build data list(s) ---
+  dat_ls_mod1 <- list(y = y_array,
+                      occ.covs = list(encroach  = encroach_model, 
+                                      ghm       = ghm_model,
+                                      evi       = evi_model, 
+                                      forest    = forest_model,
+                                      precip    = precip_model,
+                                      temp      = temp_model, 
+                                      tri       = static$log_tri,
+                                      trend     = trend),
+                      det.covs = list(effort = effort_array,        # already scaled! 
+                                      minjul = minjul,              # already scaled! 
+                                      minjul_sq = minjul_sq,        # already scaled! 
+                                      ndepl = ndepl, 
+                                      proj = proj),
+                      coords = coords)
+  
+  dat_ls_mod2 <- list(y = y_array,
+                      occ.covs = list(wdpa      = wdpa_model, 
+                                      evi       = evi_model, 
+                                      forest    = forest_model,
+                                      precip    = precip_model,
+                                      temp      = temp_model, 
+                                      tri       = static$tri,
+                                      trend     = trend),
+                      det.covs = list(effort = effort_array,        # already scaled! 
+                                      minjul = minjul,              # already scaled! 
+                                      minjul_sq = minjul_sq,        # already scaled! 
+                                      ndepl = ndepl, 
+                                      proj = proj),
+                      coords = coords)
+  
+  # Model formulas ---
+  occ.formula_mod1 = ~ scale(encroach) + scale(ghm) + scale(evi) + scale(forest) + 
+    scale(precip) + scale(temp) + scale(tri) + scale(trend)  
+  
+  occ.formula_mod2 = ~ scale(wdpa) + scale(evi) + scale(forest) + scale(precip) + 
+    scale(temp) + scale(tri) + scale(trend) 
+  
+  occ.formula_null = ~ scale(trend)
+  
+  det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
+  
+  # Covariates whose effects are estimated as SVCs, including intercept
+  svc.cols_mod1 = c(1:9)  
+  svc.cols_mod2 = c(1:8)
+  svc.cols_null = 1
+  
+  # Prep inits ---
+  z.init <- apply(y_array, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
+  dist.data <- dist(coords)            
+  
+  inits.list_mod1 <- list(beta = 0,            # occurrence coefficients
+                          alpha = 0,           # detection coefficients
+                          z = z.init,          # latent occurrence values
+                          phi = 3 / mean(dist.data),  
+                          sigma.sq = 0.5,      
+                          w = matrix(0, length(svc.cols_mod1), nrow(y_array)),  
+                          sigma.sq.t = 0.5)    # occurrence random effect variances 
+  
+  inits.list_mod2 <- list(beta = 0,            # occurrence coefficients
+                          alpha = 0,           # detection coefficients
+                          z = z.init,          # latent occurrence values
+                          phi = 3 / mean(dist.data),  
+                          sigma.sq = 0.5,      
+                          w = matrix(0, length(svc.cols_mod2), nrow(y_array)),  
+                          sigma.sq.t = 0.5)    # occurrence random effect variances 
+  
+  inits.list_null <- list(beta = 0,            # occurrence coefficients
+                          alpha = 0,           # detection coefficients
+                          z = z.init,          # latent occurrence values
+                          phi = 3 / mean(dist.data),  
+                          sigma.sq = 0.5,      
+                          w = matrix(0, length(svc.cols_null), nrow(y_array)),  
+                          sigma.sq.t = 0.5)    # occurrence random effect variances 
+  
+  priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
+                      beta.normal = list(mean = 0, var = 2.72),
+                      sigma.sq.ig = list(a = 2, b = 0.5),
+                      phi.unif = list(a = 3 / max(dist.data), 
+                                      b = 3 / min(dist.data)))
+  
+  # Tuning ---
+  n.chains <- 3
+  tuning.list <- list(phi = 1, rho = 1)
+  n.batch <- 400  
+  n.burn = 2000  
+  n.thin = 10 
+  n.report = 40  
+  batch.length <- 25
+  n.iter <- n.batch * batch.length 
+  
+  
+  ## Run model: MOD 1 ---
+  
+  start_time <- Sys.time()
+  out_mod1 <- svcTPGOcc(occ.formula = occ.formula_mod1, 
+                        det.formula = det.formula,
+                        data = dat_ls_mod1, 
+                        inits = inits.list_mod1,
+                        n.batch = n.batch,
+                        batch.length = batch.length, 
+                        priors = priors.list,  
+                        svc.cols = svc.cols_mod1,
+                        cov.model = "exponential",  
+                        NNGP = TRUE, 
+                        n.neighbors = 5,  
+                        tuning = tuning.list, 
+                        n.report = n.report, 
+                        n.burn = n.burn,
+                        n.thin = n.thin,
+                        n.chains = n.chains,
+                        verbose = TRUE,
+                        ar1 = TRUE, 
+                        k.fold = 3,
+                        k.fold.seed = 123) 
+  end_time <- Sys.time()
+  print(end_time - start_time) 
+  
+  ## Run model: MOD 2 ---
+  start_time <- Sys.time()
+  out_mod2 <- svcTPGOcc(occ.formula = occ.formula_mod2, 
+                        det.formula = det.formula,
+                        data = dat_ls_mod2, 
+                        inits = inits.list_mod2,
+                        n.batch = n.batch,
+                        batch.length = batch.length, 
+                        priors = priors.list,  
+                        svc.cols = svc.cols_mod2,
+                        cov.model = "exponential",  
+                        NNGP = TRUE, 
+                        n.neighbors = 5,  
+                        tuning = tuning.list, 
+                        n.report = n.report, 
+                        n.burn = n.burn,
+                        n.thin = n.thin,
+                        n.chains = n.chains,
+                        verbose = TRUE,
+                        ar1 = TRUE, 
+                        k.fold = 3, 
+                        k.fold.seed = 123)
+  end_time <- Sys.time()
+  print(end_time - start_time) 
+  
+  
+  ## Run model: NULL ---
+  start_time <- Sys.time()
+  out_null <- svcTPGOcc(occ.formula = occ.formula_null,
+                        det.formula = det.formula,       
+                        data = dat_ls_mod1,             
+                        inits = inits.list_null,        
+                        priors = priors.list,
+                        svc.cols = 1,                  
+                        cov.model = "exponential",
+                        NNGP = TRUE,
+                        n.neighbors = 5,
+                        n.batch = n.batch,
+                        batch.length = batch.length,
+                        n.burn = n.burn,
+                        n.thin = n.thin,
+                        n.chains = n.chains,
+                        verbose = TRUE,
+                        ar1 = TRUE,
+                        k.fold = 3,                    
+                        k.fold.seed = 123)
+  
+  end_time <- Sys.time()
+  print(end_time - start_time)
+  
+  
+  ## Save files -------------------------------------------------------------------
+  
+  filename <- paste("Model outputs/", species_file, "/", file_species, "_svcTPGOcc.RData", sep = "")
+  save(out_mod1, out_mod2, out_null, file = filename)
 }
-
-# Dimensions and periods  
-ncell   <- dim(y_array)[1]
-nperiod <- dim(y_array)[2]
-nweek   <- dim(y_array)[3]
-cell_IDs <- unique(sites)
-
-
-## Format covariates ----------------------------------------------------------
-
-# Static covariates ---
-static <- static_model %>%
-  filter(cell_ID %in% cell_IDs) %>%
-  dplyr::select(-c(road_dens, river_dist, cities_lg)) %>% 
-  arrange(cell_ID)
-
-# Check distributions 
-par(mfrow = c(1, 2))
-hist(static$tri)
-hist(log(static$tri))
-hist(static$coeff_var)
-hist(log(static$coeff_var))
-par(mfrow = c(1,1))
-
-# Update and scale static covariates  
-static <- static %>% 
-  mutate(log_coeff_var = log(coeff_var)) %>% 
-  mutate(log_tri       = log(tri))
-
-
-# Primary-occasion covariates ---
-
-# Check distributions 
-par(mfrow = c(1, 2))
-hist(encroach_model)
-hist(log1p(encroach_model))
-hist(ghm_model)
-hist(log1p(ghm_model))
-hist(evi_model)
-hist(temp_model)
-hist(forest_model)
-hist(log1p(forest_model))
-hist(precip_model)
-hist(log1p(precip_model))
-hist(wdpa_model)
-hist(log1p(wdpa_model))
-par(mfrow = c(1,1))
-
-# Model should be robust without transforming any data... don't transform to keep simple and comparative (have tested; difference in waic is ~2-3 pts)
-
-
-## Examine raw occupancy data -------------------------------------------------
-
-# Average over cells (dim 1) and weeks (dim 3)
-raw_occ_per_period <- apply(y_array, 2, mean, na.rm = TRUE)
-
-# Build data frame using numeric period index
-raw_occ_df <- data.frame(period_counter = 1:length(raw_occ_per_period),
-                         y = raw_occ_per_period) %>%
-  left_join(periods %>% select(period_counter, start_period, season, year),
-            by = "period_counter") %>%
-  rename(period_date = start_period) %>%
-  mutate(period_date = as.Date(period_date),    
-         label_year = if_else(
-           month(period_date) == 3 & season == "Spring",
-           as.character(year), 
-           "")) %>%
-  arrange(period_date)
-
-# Quick sanity check
-cat("Number of periods in y_array:", length(raw_occ_per_period), "\n")
-cat("Number of periods after join:", nrow(raw_occ_df), "\n")
-cat("Any missing y values filled?", any(is.na(raw_occ_df$y)), "\n")
-
-# Plot 
-(raw_occ_plot <- ggplot(raw_occ_df, aes(x = period_date, y = y)) +
-    geom_point(size = 2.5, color = "steelblue") +
-    geom_line(color = "grey60", alpha = 0.5, linewidth = 0.8) +  # optional trend line
-    theme_bw(base_size = 12) +
-    labs(x = "Time (start of period)",
-         y = "Raw Occurrence Proportion",
-         title = "Raw Occupancy",
-         subtitle = bquote(italic(.(target_species)))) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-          panel.grid.minor = element_blank(),
-          plot.subtitle = element_text(face = "italic")) +
-    scale_x_date(date_breaks = "1 year",
-                 date_labels = "%Y",
-                 expand = expansion(mult = c(0.02, 0.02))))
-
-file_name <- paste(new_dir_path, "/", target_species, "_rawOccProp.jpg", sep="")
-ggsave(filename = file_name, plot = raw_occ_plot, width = 10, height = 4, units = "in")
-
-
-## Modelling ------------------------------------------------------------------
-
-# Following vignette found at: 
-# https://doserlab.com/files/spoccupancy-web/articles/svcmodels#introduction
-
-## FIRST SET OF MODELS USE HUMAN ENCROACHMENT & HUMAN PRESENCE 
-## SECOND SET OF MODELS USE WDPA INSTEAD OF THESE TWO VARIABLE
-
-# Build data list(s) ---
-dat_ls_mod1 <- list(y = y_array,
-                    occ.covs = list(encroach  = encroach_model, 
-                                    ghm       = ghm_model,
-                                    evi       = evi_model, 
-                                    forest    = forest_model,
-                                    precip    = precip_model,
-                                    temp      = temp_model, 
-                                    tri       = static$log_tri,
-                                    #coeff_var = static$log_coeff_var,
-                                    trend     = trend),
-                    det.covs = list(effort = effort_array,        # already scaled! 
-                                    minjul = minjul,              # already scaled! 
-                                    minjul_sq = minjul_sq,        # already scaled! 
-                                    ndepl = ndepl, 
-                                    proj = proj),
-                    coords = coords)
-
-dat_ls_mod2 <- list(y = y_array,
-                    occ.covs = list(wdpa      = wdpa_model, 
-                                    evi       = evi_model, 
-                                    forest    = forest_model,
-                                    precip    = precip_model,
-                                    temp      = temp_model, 
-                                    tri       = static$tri,
-                                    #coeff_var = static$coeff_var,
-                                    trend     = trend),
-                    det.covs = list(effort = effort_array,        # already scaled! 
-                                    minjul = minjul,              # already scaled! 
-                                    minjul_sq = minjul_sq,        # already scaled! 
-                                    ndepl = ndepl, 
-                                    proj = proj),
-                    coords = coords)
-
-# Model formulas ---
-occ.formula_mod1 = ~ scale(encroach) + scale(ghm) + scale(evi) + scale(forest) + 
-  scale(precip) + scale(temp) + scale(tri) + scale(trend) # + scale(coeff_var)
-
-occ.formula_mod2 = ~ scale(wdpa) + scale(evi) + scale(forest) + scale(precip) + 
-  scale(temp) + scale(tri) + scale(coeff_var) + scale(trend) 
-
-det.formula = ~ effort + minjul + minjul_sq + ndepl + (1|proj) #already scaled 
-
-# Covariates whose effects are estimated as SVCs, including intercept
-svc.cols_mod1 = c(1:9)  
-svc.cols_mod2 = c(1:8)
-
-# Prep inits ---
-z.init <- apply(y_array, c(1, 2), function(a) as.numeric(sum(a, na.rm = TRUE) > 0))
-dist.data <- dist(coords)            
-
-inits.list_mod1 <- list(beta = 0,            # occurrence coefficients
-                        alpha = 0,           # detection coefficients
-                        z = z.init,          # latent occurrence values
-                        phi = 3 / mean(dist.data),  
-                        sigma.sq = 0.5,      
-                        w = matrix(0, length(svc.cols_mod1), nrow(y_array)),  
-                        #rho = 0,  
-                        sigma.sq.t = 0.5)    # occurrence random effect variances 
-inits.list_mod2 <- list(beta = 0,            # occurrence coefficients
-                        alpha = 0,           # detection coefficients
-                        z = z.init,          # latent occurrence values
-                        phi = 3 / mean(dist.data),  
-                        sigma.sq = 0.5,      
-                        w = matrix(0, length(svc.cols_mod2), nrow(y_array)),  
-                        #rho = 0,  
-                        sigma.sq.t = 0.5)    # occurrence random effect variances 
-
-priors.list <- list(alpha.normal = list(mean = 0, var = 2.72), 
-                    beta.normal = list(mean = 0, var = 2.72),
-                    sigma.sq.ig = list(a = 2, b = 0.5),
-                    phi.unif = list(a = 3 / max(dist.data), 
-                                    b = 3 / min(dist.data)))
-
-# Tuning ---
-n.chains <- 3
-tuning.list <- list(phi = 1, rho = 1)
-n.batch <- 400  
-n.burn = 2000  
-n.thin = 10 
-n.report = 40  
-batch.length <- 25
-n.iter <- n.batch * batch.length 
-
-
-## Run model: MOD 1 -----------------------------------------------------------
-
-start_time <- Sys.time()
-out_mod1 <- svcTPGOcc(occ.formula = occ.formula_mod1, 
-                      det.formula = det.formula,
-                      data = dat_ls_mod1, 
-                      inits = inits.list_mod1,
-                      n.batch = n.batch,
-                      batch.length = batch.length, 
-                      priors = priors.list,  
-                      svc.cols = svc.cols_mod1,
-                      cov.model = "exponential",  
-                      NNGP = TRUE, 
-                      n.neighbors = 5,  
-                      tuning = tuning.list, 
-                      n.report = n.report, 
-                      n.burn = n.burn,
-                      n.thin = n.thin,
-                      n.chains = n.chains,
-                      verbose = TRUE,
-                      ar1 = TRUE, 
-                      k.fold = 4,
-                      k.fold.seed = 123) 
-end_time <- Sys.time()
-end_time - start_time 
-
-# Refit the intercept only occupancy model and compare the deviance metrics from the 4-fold cross-validation: 
-start_time <- Sys.time()
-out_mod1_int <- svcTPGOcc(occ.formula = ~1, 
-                          det.formula = det.formula,
-                          data = dat_ls_mod1, 
-                          inits = inits.list_mod1,
-                          n.batch = n.batch,
-                          batch.length = batch.length, 
-                          priors = priors.list,  
-                          svc.cols = 1,
-                          cov.model = "exponential",  
-                          NNGP = TRUE, 
-                          n.neighbors = 5,  
-                          tuning = tuning.list, 
-                          n.report = n.report, 
-                          n.burn = n.burn,
-                          n.thin = n.thin,
-                          n.chains = n.chains,
-                          verbose = TRUE,
-                          ar1 = TRUE, 
-                          k.fold = 4, 
-                          k.fold.seed = 123) 
-end_time <- Sys.time()
-end_time - start_time 
-
-out_mod1$k.fold.deviance
-out_mod1_int$k.fold.deviance
-
-
-## Run model: MOD 2 ---
-start_time <- Sys.time()
-out_mod2 <- svcTPGOcc(occ.formula = occ.formula_mod2, 
-                      det.formula = det.formula,
-                      data = dat_ls_mod2, 
-                      inits = inits.list_mod2,
-                      n.batch = n.batch,
-                      batch.length = batch.length, 
-                      priors = priors.list,  
-                      svc.cols = svc.cols_mod2,
-                      cov.model = "exponential",  
-                      NNGP = TRUE, 
-                      n.neighbors = 5,  
-                      tuning = tuning.list, 
-                      n.report = n.report, 
-                      n.burn = n.burn,
-                      n.thin = n.thin,
-                      n.chains = n.chains,
-                      verbose = TRUE,
-                      ar1 = TRUE, 
-                      k.fold = 4, 
-                      k.fold.seed = 123)
-end_time <- Sys.time()
-end_time - start_time 
-
-
-# Refit the intercept only occupancy model and compare the deviance metrics from the 4-fold cross-validation: 
-start_time <- Sys.time()
-out_mod2_int <- svcTPGOcc(occ.formula = ~1, 
-                          det.formula = det.formula,
-                          data = dat_ls_mod2, 
-                          inits = inits.list_mod2,
-                          n.batch = n.batch,
-                          batch.length = batch.length, 
-                          priors = priors.list,  
-                          svc.cols = 1,
-                          cov.model = "exponential",  
-                          NNGP = TRUE, 
-                          n.neighbors = 5,  
-                          tuning = tuning.list, 
-                          n.report = n.report, 
-                          n.burn = n.burn,
-                          n.thin = n.thin,
-                          n.chains = n.chains,
-                          verbose = TRUE,
-                          ar1 = TRUE, 
-                          k.fold = 4, 
-                          k.fold.seed = 123) 
-end_time <- Sys.time()
-end_time - start_time 
-
-out_mod2$k.fold.deviance
-out_mod2_int$k.fold.deviance
 
 
 ## Convergence assessment -----------------------------------------------------
@@ -417,9 +407,6 @@ plogis(2.13) #convert logit values to probability scale
 # If performed K-fold cross validation (want lower values):
 #k.fold.non.sp$k.fold.deviance
 #k.fold.sp$k.fold.deviance
-
-
-
 ## Save files -------------------------------------------------------------------
 
 (filename <- paste("/gpfs/gibbs/pi/jetz/projects/WildlifeInsights/Model outputs/", species_file, "/", file_species, "_svcTPGOcc.RData", sep = ""))
