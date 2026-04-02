@@ -87,13 +87,11 @@ for (sp_dir in species_dirs) {
     
     conv_flag <- (max_rhat <= 1.1) && (min_ess >= 100)
     
-    sp_conv[[mname]] <- tibble(
-      model        = mname,
-      max_rhat     = max_rhat,
-      min_ess      = min_ess,
-      converged    = conv_flag,
-      summary_file = basename(summ_file)
-    )
+    sp_conv[[mname]] <- tibble( model        = mname,
+                                max_rhat     = max_rhat,
+                                min_ess      = min_ess,
+                                converged    = conv_flag,
+                                summary_file = basename(summ_file))
   }
   
   # ====================== TASK 2: MODEL COMPARISON ======================
@@ -101,18 +99,17 @@ for (sp_dir in species_dirs) {
     mod <- get(mname)
     
     # WAIC (preferred for Bayesian model comparison)
-    waic_val <- tryCatch(waicOcc(mod)$WAIC, error = function(e) NA_real_)
+    waic_result <- waicOcc(mod)
+    waic_val    <- unname(waic_result["WAIC"])
     
     # k-fold deviance (if computed during fitting)
     kfold_dev <- if (!is.null(mod$k.fold.deviance)) {
       mean(mod$k.fold.deviance, na.rm = TRUE)   # average across folds
     } else NA_real_
     
-    sp_comp[[mname]] <- tibble(
-      model          = mname,
-      WAIC           = waic_val,
-      kfold_deviance = kfold_dev
-    )
+    sp_comp[[mname]] <- tibble(model          = mname,
+                               WAIC           = waic_val,
+                               kfold_deviance = kfold_dev)
   }
   
   # Determine best model (lowest WAIC; fallback to k-fold deviance)
