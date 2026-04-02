@@ -51,7 +51,7 @@ for (sp_dir in species_dirs) {
   }
   rdata_file <- rdata_file[1]
   
-  # Load (objects: out_mod1, out_mod2, out_mod1_int, out_mod2_int)
+  # Load 
   load(rdata_file)
   
   # Find all model objects in environment
@@ -78,26 +78,20 @@ for (sp_dir in species_dirs) {
     print(summary(mod))          # prints Rhat (< 1.1 = good) and n.eff
     sink()
     
-    # Extract max Rhat / min n.eff for quick flag (summary returns list with Rhat/n.eff columns)
+    # Extract max Rhat and min ESS for convergence check
     s <- summary(mod)
-    rhat_vals <- c()
-    ess_vals  <- c()
-    for (comp in names(s)) {
-      if (is.matrix(s[[comp]]) && "Rhat" %in% colnames(s[[comp]])) {
-        rhat_vals <- c(rhat_vals, s[[comp]][, "Rhat"])
-        ess_vals  <- c(ess_vals,  s[[comp]][, "n.eff"])
-      }
-    }
-    max_rhat <- if (length(rhat_vals) > 0) max(rhat_vals, na.rm = TRUE) else NA_real_
-    min_ess  <- if (length(ess_vals)  > 0) min(ess_vals,  na.rm = TRUE) else NA_real_
+    rhat_vals <- s[, "Rhat"]
+    ess_vals  <- s[, "ESS"]          
+    max_rhat <- max(rhat_vals, na.rm = TRUE)
+    min_ess  <- min(ess_vals,  na.rm = TRUE)
     
-    conv_flag <- (!is.na(max_rhat) && max_rhat <= 1.1) && (!is.na(min_ess) && min_ess >= 100)
+    conv_flag <- (max_rhat <= 1.1) && (min_ess >= 100)
     
     sp_conv[[mname]] <- tibble(
-      model      = mname,
-      max_rhat   = max_rhat,
-      min_ess    = min_ess,
-      converged  = conv_flag,
+      model        = mname,
+      max_rhat     = max_rhat,
+      min_ess      = min_ess,
+      converged    = conv_flag,
       summary_file = basename(summ_file)
     )
   }
@@ -217,4 +211,3 @@ if (nrow(conv_master) > 0) {
   if (nrow(bad_conv) > 0) {
     cat("\nWARNING: ", nrow(bad_conv), "model(s) failed convergence. See 01_convergence_all_species.csv\n")
   }
-}
