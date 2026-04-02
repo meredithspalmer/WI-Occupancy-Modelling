@@ -55,7 +55,7 @@ for (sp_dir in species_dirs) {
   load(rdata_file)
   
   # Find all model objects in environment
-  model_names <- ls(pattern = "^out_mod")
+  model_names <- ls(pattern = "^out_")
   if (length(model_names) == 0) {
     cat("  → No model objects found. Skipping.\n")
     next
